@@ -5,6 +5,53 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Schema evolution across a **version-drifted fleet**. The rule TalaDB now enforces:
+*a replica must preserve fields it does not model.* Under whole-document LWW, an old
+client that silently narrows a newer peer's document does not merely fail to see a
+field — it **deletes** that field, for everyone.
+
+### Fixed
+
+- **Read-time write-back no longer deletes a newer peer's fields.** With
+  `persistMigrations: true`, the write-back computed `$unset` for every field absent
+  from `migrateDocument`'s output. But a migration written today cannot mention a
+  field a newer peer will add tomorrow, so an innocent `(doc) => ({ _id, name })`
+  emitted `$unset: { fullName: true }` — deleting a v2 field a v1 client had simply
+  never heard of, and replicating that deletion to the fleet. The write-back is now
+  **additive-only** (`$set`); declare intentional removals with `retiredFields`.
+- **`validateOnRead` no longer strips unknown fields from future-version documents.** `z.object({...})` and
+  `v.object({...})` drop undeclared keys, and `parse()`'s output was returned
+  verbatim — so a v1 client read a v2 document back minus v2's fields, and the next
+  read-modify-write wrote the truncation home. Reads now parse for the check and its
+  coercions, then restore keys the parse dropped when the stored `_v` is newer
+  than this client's `syncSchema.version`. At-version/local documents retain the
+  validator's normal strictness.
+
+### Added
+
+- **`CollectionOptions.downgradeDocument(doc, fromVersion)`** — the **downcast**, the
+  missing mirror of `migrateDocument`. Projects a document whose `_v` is *above*
+  `syncSchema.version` into the shape this build reads, so a client that was offline
+  for three weeks on v1 can still read what the v2 fleet wrote. Always a **view**:
+  never persisted (not even under `persistMigrations`), and the returned document
+  keeps its true, higher `_v` — this replica still has to hand that document on to
+  other peers intact.
+- **`CollectionOptions.retiredFields`** — explicitly lists fields an upcast may
+  remove during persist-on-read. This is the preferred, narrow retirement control.
+- **`CollectionOptions.allowFieldRemoval`** (default `false`, deprecated) — treat
+  every field absent
+  from `migrateDocument`'s output as an intentional removal rather than as one the
+  migration never heard of. For collections that never sync, or the **retire** step
+  of an add → backfill → dual-read → retire rollout.
+
+### Changed
+
+- `persistMigrations` write-backs are additive-only by default (see Fixed). A
+  migration that relied on `$unset` firing now needs `retiredFields`, or the
+  deprecated broad `allowFieldRemoval: true` escape hatch.
+
 ## [0.9.4] - 2026-07-13
 
 `useQuery` is rebuilt around **coverage**: once a collection is fully replicated for

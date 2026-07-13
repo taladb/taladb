@@ -183,8 +183,8 @@ const users = db.collection<User>('users', {
 
 By default `migrateDocument` transforms the *returned* value only. To make a
 lazy migration permanent, set `persistMigrations: true` — an upgraded document
-is then written back to storage (a best-effort `$set`/`$unset` diff), after
-which filters and indexes on the new shape match it:
+is then written back to storage (a best-effort `$set` diff), after which filters
+and indexes on the new shape match it:
 
 ```ts
 db.collection<User>('users', {
@@ -201,6 +201,69 @@ db.collection<User>('users', {
 > `persistMigrations: true` writes it back — that write fires live-query and
 > sync notifications like any other, so prefer an eager `openDB({ migrations })`
 > sweep when you want to migrate the whole collection at once.
+
+### Reading a *newer* document — `downgradeDocument`
+
+`migrateDocument` only ever runs **upward** (`_v` below the target). The mirror
+case is just as real in a drifted fleet: a client that has been offline for
+three weeks on v1 reconnects and pulls documents a v2 peer wrote. Give it a
+downcast and old code sees a shape it can actually read:
+
+```ts
+// This build speaks v1. A v2 peer split `name` into `first`/`last`.
+db.collection<User>('users', {
+  syncSchema: { version: 1 },
+  downgradeDocument: (doc) => ({ ...doc, name: `${doc.first} ${doc.last}` }),
+});
+```
+
+A downcast is **always a view**. It is never persisted — not even under
+`persistMigrations` — and the returned document keeps its true (higher) `_v`.
+The stored document stays exactly as the v2 peer wrote it, because this replica
+still has to hand that document on to other peers intact. An old client is a
+*reader* of a newer shape, never its editor: persisting the projection would
+overwrite the truth with a lossy view of it and then replicate that outward
+under LWW.
+
+> **Standard:** old clients get a `downgradeDocument` for every synced collection
+> whose shape has moved on. Downcasts are read-only projections; never write one
+> back.
+
+### The invariant underneath all of it: don't narrow what you don't understand
+
+Every layer above obeys one rule, and it is the rule that keeps LWW safe:
+
+> **A replica must preserve fields it does not model.**
+
+Under whole-document LWW, silently dropping an unknown field is not a failure to
+*see* it — it is a **deletion**, and it replicates. Two ways that bite, both of
+which TalaDB now closes for you:
+
+- **Validators strip.** `z.object({...})` and Valibot's `v.object({...})` drop
+  unknown keys by default. For a document newer than this client's declared
+  schema version, TalaDB parses for the *check* and its coercions, then restores
+  any key the parse removed — so a v2 field
+  survives a read on a v1 client instead of vanishing into the next
+  read-modify-write.
+- **Migrations omit.** A migration written today cannot mention a field that a
+  newer peer will add tomorrow. So a field absent from `migrateDocument`'s output
+  is treated as **ignorance, not intent**: it is kept on the returned document,
+  and the `persistMigrations` write-back is **additive-only** (`$set`, never
+  `$unset`). Otherwise an innocent `(doc) => ({ _id, name })` becomes a
+  fleet-wide deletion of a field its author never heard of.
+
+If you genuinely mean to remove a field, list it in `retiredFields` — and only
+at the **retire** step of the rollout in §5, once you know the whole fleet has
+stopped writing it. The broad `allowFieldRemoval` switch is deprecated.
+
+```ts
+db.collection<User>('users', {
+  syncSchema: { version: 3 },
+  migrateDocument: (doc) => { const { mail, ...rest } = doc; return { ...rest, email: mail }; },
+  persistMigrations: true,
+  retiredFields: ['mail'], // yes, really drop `mail` — the fleet is off it
+});
+```
 
 ---
 
@@ -225,8 +288,11 @@ The correct primitive is per-document `_v` + import-time normalization:
 
 ## 5. Additive-only evolution (the discipline that keeps LWW safe)
 
-Until per-document `_v` + `migrateDocument` are fully wired through every client,
-and as a permanent good habit for synced collections:
+The engine now defends the additive path for you (§3: preserved unknown fields,
+additive-only write-back). That defence is a floor, not a licence — it stops an
+old client destroying a field it never modelled; it cannot stop *you* pushing a
+structural change the fleet can't absorb. So, as a permanent habit for synced
+collections:
 
 **Only ever add optional fields. Never rename, remove, or retype a field in
 place.**
@@ -257,6 +323,8 @@ Adopt these as review gates for any synced collection:
 - [ ] No sync path gates on connection-level `db_version` equality.
 - [ ] Schema changes to synced collections are additive-only (or add→backfill→retire).
 - [ ] Quarantine counts are monitored (`report.quarantined`, `db.quarantined()`).
+- [ ] A collection whose shape has moved on has a `downgradeDocument` for old clients.
+- [ ] Every `retiredFields` entry is justified by a completed **retire** step.
 
 ---
 

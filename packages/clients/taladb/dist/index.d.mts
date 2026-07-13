@@ -222,11 +222,41 @@ interface CollectionOptions<T extends Document = Document> {
      */
     migrateDocument?: (doc: T, fromVersion: number) => T;
     /**
+     * Lazy, read-time **downcast** — the mirror of {@link migrateDocument}, for a
+     * document written by a *newer* peer. When set, every document returned by
+     * `find` / `findOne` whose `_v` is **above** `syncSchema.version` is passed
+     * through `downgradeDocument(doc, fromVersion)` and projected into the shape
+     * this build understands, so application code on an old client sees a shape
+     * it can actually read instead of an unexpected future one.
+     *
+     * Requires `syncSchema.version`. Must be pure and deterministic.
+     *
+     * **The projection is view-only and is never persisted**, regardless of
+     * {@link persistMigrations}. The stored document keeps its original `_v` and
+     * its newer fields intact, because this replica must continue to replicate
+     * that document faithfully to other peers — an old client is a *reader* of a
+     * newer shape, never its editor. For the same reason the returned document
+     * keeps its original (higher) `_v`: it is a projection of a v-N document, not
+     * a v-M one, and writing it back wholesale would tell the fleet otherwise.
+     *
+     * @example
+     * // This build understands v1. A v2 peer split `name` into first/last.
+     * const users = db.collection<User>('users', {
+     *   syncSchema: { version: 1 },
+     *   downgradeDocument: (doc) => ({ ...doc, name: `${doc.first} ${doc.last}` }),
+     * });
+     */
+    downgradeDocument?: (doc: Readonly<T>, fromVersion: number) => T;
+    /**
      * When `true`, a document upgraded by {@link migrateDocument} on read is
-     * **written back** to storage (a best-effort `updateOne` computing the
-     * `$set`/`$unset` diff) so the migration becomes permanent — after which
-     * filters and indexes on the new shape match it. Default `false` (the
-     * migrated shape is returned but not persisted).
+     * **written back** to storage (a best-effort `updateOne` computing a `$set`
+     * diff) so the migration becomes permanent — after which filters and indexes
+     * on the new shape match it. Default `false` (the migrated shape is returned
+     * but not persisted).
+     *
+     * The write-back is **additive-only** except for fields explicitly listed in
+     * {@link retiredFields}. A field present in storage but absent from the
+     * migrated document is otherwise left alone rather than `$unset`.
      *
      * Trade-offs: reads that encounter un-migrated documents now issue writes
      * (which fire live-query and sync-hook notifications like any other write);
@@ -234,6 +264,35 @@ interface CollectionOptions<T extends Document = Document> {
      * one-shot eager rewrite instead, prefer `openDB({ migrations })`.
      */
     persistMigrations?: boolean;
+    /**
+     * Fields an upcast is explicitly allowed to remove during persist-on-read.
+     * Prefer this precise list to {@link allowFieldRemoval}: omissions of any
+     * other field remain additive and are preserved.
+     */
+    retiredFields?: (keyof T & string)[];
+    /**
+     * How to read a field that {@link migrateDocument} left out of its output:
+     * as an intentional removal (`true`), or as a field the migration simply
+     * never heard of (`false`, the default).
+     *
+     * Default `false` — omitted fields are **preserved**: kept on the document
+     * returned to your code, and left in storage by the {@link persistMigrations}
+     * write-back rather than `$unset`.
+     *
+     * This default exists because on a synced collection the two cases are
+     * indistinguishable from the migration's output, and guessing "removal" is
+     * the destructive guess. A migration written today cannot mention a field a
+     * *newer* peer will add tomorrow, so an innocent `(doc) => ({ id, name })`
+     * becomes a deletion of a field its author never heard of — and under
+     * whole-document LWW that deletion replicates to the whole fleet. An old
+     * replica has to stay a faithful carrier of shapes it does not understand.
+     *
+     * Set `true` only on a collection that never syncs, or during a deliberate
+     * add → backfill → dual-read → **retire** rollout, where you already know the
+     * whole fleet has stopped writing the field.
+     */
+    /** @deprecated Prefer {@link retiredFields}; this treats every omission as removal. */
+    allowFieldRemoval?: boolean;
 }
 /** A single MongoDB-style aggregation stage. */
 type AggregateStage<T extends Document = Document> = {
