@@ -147,6 +147,34 @@ export declare class CollectionNode {
    */
   upgradeVectorIndex(field: string): void
   /**
+   * Return the indexes on this collection as a JSON string
+   * `{ btree: string[], fts: string[], vector: string[] }`.
+   */
+  listIndexes(): string
+  /** Create a full-text search index on a string field. */
+  createFtsIndex(field: string): void
+  /** Drop a full-text search index and everything it stores. */
+  dropFtsIndex(field: string): void
+  /**
+   * Rank documents against a free-text query using BM25.
+   *
+   * Unlike the `$contains` filter, which requires every token, this uses
+   * OR semantics — matching more query terms simply scores higher.
+   *
+   * Returns an array of `{ document: {...}, score: number }` objects.
+   */
+  searchText(field: string, query: string, topK: number, filter?: JsonValue | undefined | null, options?: JsonValue | undefined | null): Array<JsonValue>
+  /**
+   * Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+   * rank fusion.
+   *
+   * `options` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+   * Returns `{ document, score, textRank, vectorRank }`, where the ranks are
+   * zero-based positions in each retriever's list or `null` if that
+   * retriever did not return the document.
+   */
+  hybridSearch(textField: string, text: string, vectorField: string, vector: Array<number>, topK: number, filter?: JsonValue | undefined | null, options?: JsonValue | undefined | null): Array<JsonValue>
+  /**
    * Find the `top_k` nearest documents to `query`.
    *
    * `filter` — optional pre-filter in the same JSON object format as `find`.

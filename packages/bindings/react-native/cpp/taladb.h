@@ -293,6 +293,33 @@ char *taladb_find_nearest(TalaDbHandle *handle,
                           size_t        top_k,
                           const char   *filter_json);
 
+/* BM25 full-text ranking. Returns a JSON array `[{document, score}, ...]`,
+ * or NULL on error. filter_json / options_json may be NULL. options_json
+ * accepts `{ k1, b }`. Caller must free with taladb_free_string. */
+char *taladb_search_text(TalaDbHandle *handle,
+                         const char   *collection,
+                         const char   *field,
+                         const char   *query,
+                         size_t        top_k,
+                         const char   *filter_json,
+                         const char   *options_json);
+
+/* Hybrid retrieval (BM25 + vector, fused with RRF). Returns a JSON array
+ * `[{document, score, textRank, vectorRank}, ...]`, or NULL on error.
+ * filter_json / options_json may be NULL. options_json accepts
+ * `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+ * Caller must free with taladb_free_string. */
+char *taladb_hybrid_search(TalaDbHandle *handle,
+                           const char   *collection,
+                           const char   *text_field,
+                           const char   *text,
+                           const char   *vector_field,
+                           const float  *vector_ptr,
+                           size_t        vector_len,
+                           size_t        top_k,
+                           const char   *filter_json,
+                           const char   *options_json);
+
 char *taladb_sync_status(TalaDbHandle *handle);
 int32_t taladb_sync_flush(TalaDbHandle *handle, uint64_t timeout_ms);
 

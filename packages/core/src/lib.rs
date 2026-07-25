@@ -1,5 +1,6 @@
 pub mod aggregate;
 pub mod audit;
+pub mod bm25;
 pub mod collection;
 pub mod config;
 pub mod crdt;

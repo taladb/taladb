@@ -3,7 +3,7 @@
 Node.js native module for TalaDB — high-performance local-first storage via a napi-rs Rust binding.
 
 [![npm](https://img.shields.io/npm/v/@taladb/node)](https://www.npmjs.com/package/@taladb/node)
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](LICENSE)
 
 > **Note:** Most users should install [`taladb`](https://www.npmjs.com/package/taladb) instead, which auto-selects this package when running in Node.js.
 
@@ -91,4 +91,4 @@ pnpm --filter @taladb/node build
 
 ## License
 
-MIT © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)

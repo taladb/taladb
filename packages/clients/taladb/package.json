@@ -1,7 +1,7 @@
 {
   "name": "taladb",
-  "version": "0.9.4",
-  "description": "Local-first document and vector database for React, React Native, and Node.js",
+  "version": "0.10.0",
+  "description": "The embedded vector database for on-device AI — documents, similarity search, and offline sync for browser, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -36,9 +36,14 @@
     "embeddings",
     "semantic-search",
     "ai",
-    "hybrid-search"
+    "rag",
+    "vector-database",
+    "embedded-database",
+    "on-device-ai",
+    "knn",
+    "hnsw"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/thinkgrid-labs/taladb.git",

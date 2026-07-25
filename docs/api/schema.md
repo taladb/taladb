@@ -80,6 +80,12 @@ const all = await users.find()   // throws if any doc fails
 
 This is useful during migrations or when evolving a schema on existing data. For most production use cases, leave it off — `validateOnRead` adds a parse call per document on every read.
 
+::: tip Unknown fields survive the parse
+`z.object({...})` and `v.object({...})` **strip keys they don't declare**. On a synced collection that would be a live data-loss bug: a v1 client reading a document a v2 peer wrote would get it back minus v2's fields, and the next read-modify-write would replicate the truncation to the whole fleet under LWW.
+
+So, when a document's `_v` is newer than this client's `syncSchema.version`, `validateOnRead` parses for the *check* (and any coercions the schema applies), then restores keys the parse dropped. Your v1 code sees the v1 shape it expects; the v2 field rides along untouched. Documents that are not future-version keep the validator's normal strict behavior. See [Schema, Versioning & Sync — Standards](/guide/schema-and-sync-standards).
+:::
+
 ## Works with Valibot
 
 The `schema` option is duck-typed — it only requires a `parse(data: unknown): T` method. Valibot schemas expose this via `v.parse()`, but you can also pass a wrapped version:
@@ -118,7 +124,13 @@ const users = db.collection<User>('users', {
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `schema` | `{ parse(data: unknown): T }` | `undefined` | Schema validator. When set, `insert` and `insertMany` run every document through `schema.parse()`. Compatible with Zod, Valibot, or any object with a `parse` method. |
-| `validateOnRead` | `boolean` | `false` | When `true`, documents returned by `find` and `findOne` are also passed through `schema.parse()`. |
+| `validateOnRead` | `boolean` | `false` | When `true`, documents returned by read and shape-preserving aggregate APIs are passed through `schema.parse()`. Stripped keys are restored only for documents newer than `syncSchema.version` — see above. |
+| `syncSchema` | `SyncSchema` | `undefined` | Tolerant structural schema applied to documents arriving via `db.sync()`, and the source of the `version` the two hooks below migrate toward. |
+| `migrateDocument` | `(doc: T, from: number) => T` | `undefined` | **Upcast.** Lazily normalizes a document whose `_v` is *below* `syncSchema.version` on read. |
+| `downgradeDocument` | `(doc: Readonly<T>, from: number) => T` | `undefined` | **Downcast.** Projects a document whose `_v` is *above* `syncSchema.version` into the shape this build reads — for old clients pulling newer peers' writes. Always view-only; never persisted. |
+| `persistMigrations` | `boolean` | `false` | Write an upcast document back to storage so the migration becomes permanent. The write-back is additive-only (`$set`) unless fields are named in `retiredFields`. |
+| `retiredFields` | `(keyof T & string)[]` | `[]` | Fields an upcast may intentionally remove during persist-on-read. Prefer this precise retirement list. |
+| `allowFieldRemoval` | `boolean` | `false` | **Deprecated.** Treat every field absent from `migrateDocument`'s output as an intentional removal. Destructive on a synced collection — prefer `retiredFields`. |
 
 ## Cloudflare Workers
 

@@ -2,12 +2,12 @@
 
 <img src=".github/assets/tala-db-banner.png" alt="TalaDB" width="800" />
 
-**The embedded database for local-first JavaScript apps.**<br/>
-Documents + vector search built in Rust — browser, Node.js, and React Native. No cloud. No compromise.
+**The embedded vector database for on-device AI.**<br/>
+Documents + similarity search built in Rust — browser, Node.js, and React Native. Runs where your model runs. No cloud. No compromise.
 
 [![npm](https://img.shields.io/npm/v/taladb?label=npm)](https://www.npmjs.com/package/taladb)
 [![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/thinkgrid-labs/taladb)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
@@ -20,7 +20,9 @@ Documents + vector search built in Rust — browser, Node.js, and React Native. 
 
 ---
 
-Most JavaScript apps require three separate tools to handle structured queries, vector similarity search, and offline-first storage — each with its own API, each requiring a server. TalaDB replaces all three with a single embedded database that runs entirely on the user's device, across every JavaScript runtime.
+AI inference is moving onto the device — transformers.js and ONNX Runtime Web in the browser, Core ML and ExecuTorch on mobile. The model runs locally, but the *retrieval* layer usually doesn't: embeddings get shipped to a hosted vector database, which puts back the latency, the per-query cost, and the privacy exposure that running locally was supposed to remove.
+
+TalaDB is the other half. Structured queries, vector similarity search, and offline-first storage in a single embedded database that runs entirely on the user's device — the same Rust core in the browser, React Native, and Node.js, behind one TypeScript API.
 
 ## Why TalaDB?
 
@@ -47,13 +49,15 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 ## Highlights
 
-- **Vector search** — on-device similarity search (cosine, dot, euclidean) with optional metadata pre-filter; pairs naturally with on-device AI models (transformers.js, ONNX Web)
-- **Hybrid queries** — combine a regular document filter with vector ranking in one call: find the 5 most semantically similar *english-language support articles* without two round-trips
+- **Vector search** — exact k-NN by default (cosine, dot, euclidean) with no recall trade-off, plus optional HNSW when scale demands it; pairs directly with on-device embedding models (transformers.js, ONNX Runtime Web)
+- **Full-text search** — BM25-ranked keyword search (`searchText`), the same relevance model Elasticsearch and Lucene use, running on-device
+- **Hybrid search** — fuse keyword and vector rankings with reciprocal rank fusion (`hybridSearch`), so an exact SKU and a semantic paraphrase both surface from one query
+- **Filtered similarity search** — narrow by metadata *before* ranking, in one call: the 5 most semantically similar *english-language support articles*, without two round-trips or a post-filter that silently drops your top-k
 - **MongoDB-like API** — familiar filter and update DSL, fully typed with TypeScript generics
 - **ACID transactions** — powered by [redb](https://github.com/cberner/redb), a pure-Rust B-tree storage engine
 - **Live queries** — subscribe to a filter and receive snapshots after every write, no polling
 
-\+ encryption at rest, full-text search, schema migrations, snapshot export/import, CLI tools.
+\+ encryption at rest, schema migrations, snapshot export/import, CLI tools.
 
 ## Performance
 
@@ -68,7 +72,7 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web
 | Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
 | `findNearest` (384-dim, exact k-NN) | 10k vectors | **17 ms** |
 | `findNearest` (384-dim, exact k-NN) | 50k vectors | **85 ms** |
-| Hybrid: indexed filter + vector rank | 50k vectors | **123 ms** |
+| Filtered vector search (metadata + rank) | 50k vectors | **123 ms** |
 
 **Node.js (native)** — file-backed, `fsync`-durable per write:
 
@@ -79,7 +83,7 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web
 | `find`, two-sided range (`$gte`+`$lt`) | 100k docs | **1.4 ms** |
 | Bulk ingest (`insertMany`) | batches of 5k | **~36k docs/s** |
 | `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **18 ms / 198 ms** |
-| Hybrid: indexed filter + vector rank | 100k vectors | **346 ms** |
+| Filtered vector search (metadata + rank) | 100k vectors | **346 ms** |
 
 Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (93 ms → 15 ms at 50k vectors). The v0.9.0 scan rewrite roughly **halved** native flat vector search and turned two-sided range queries into a single bounded index scan (~463 ms → 1.4 ms). The v0.9.4 browser release build now measures at near-native flat-search parity on the same hardware. Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
 
@@ -209,9 +213,9 @@ results.forEach(({ document, score }) => {
 
 ---
 
-### Hybrid search — filter then rank
+### Filtered vector search — narrow, then rank
 
-Filter by metadata first, then rank by vector similarity. One call, no extra round-trips.
+Metadata filter is applied **before** ranking, so your top-k is k results that actually match — not a post-filter that quietly returns three rows because the other seven were the wrong locale.
 
 ```ts
 // "Find the 5 most relevant english support articles for this query"
@@ -223,6 +227,58 @@ const results = await articles.findNearest('embedding', query, 5, {
 // Works across all runtimes — browser, React Native, Node.js
 // Data never leaves the device
 ```
+
+---
+
+### Full-text search — BM25 ranking
+
+Keyword search that ranks by relevance, not just presence. Create an FTS index,
+then `searchText` returns the best matches first — the same BM25 model Lucene
+and Elasticsearch use, running on-device.
+
+```ts
+await articles.createFtsIndex('body')
+
+const hits = await articles.searchText('body', 'reset my password', 5)
+hits.forEach(({ document, score }) => console.log(score.toFixed(2), document.title))
+// 3.14  How to reset your password
+// 1.87  Account recovery options
+```
+
+Unlike the `$contains` filter — which requires *every* token — `searchText` uses
+OR semantics: matching more of the query simply scores higher. Pass a filter to
+scope the search, and `{ k1, b }` to tune term saturation and length
+normalisation.
+
+---
+
+### Hybrid search — keyword + vector, fused
+
+Keyword search misses paraphrases; vector search misses exact identifiers, SKUs,
+and rare proper nouns. `hybridSearch` runs both and fuses the rankings with
+[reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf),
+so a document both retrievers like beats one only a single retriever found — the
+standard recipe for RAG retrieval, entirely on-device.
+
+```ts
+await articles.createFtsIndex('body')
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+const results = await articles.hybridSearch(
+  { textField: 'body',      text: 'how do I get my money back' },
+  { vectorField: 'embedding', vector: await embed('how do I get my money back') },
+  5,
+)
+
+results.forEach(({ document, score, textRank, vectorRank }) => {
+  // textRank / vectorRank show which retriever found each hit (null = missed)
+  console.log(document.title, { textRank, vectorRank })
+})
+```
+
+Fusion works on *ranks*, not scores, so no fragile normalisation between
+unbounded BM25 and cosine ∈ [-1, 1]. A metadata filter applies to both
+retrievers; `{ rrfK, textWeight, vectorWeight, candidates }` tune the fusion.
 
 ---
 
@@ -323,7 +379,9 @@ TalaDB is free and open-source, maintained by one person. If it saves you time, 
 
 ## License
 
-MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright © [thinkgrid-labs](https://github.com/thinkgrid-labs)
 
 ---
 

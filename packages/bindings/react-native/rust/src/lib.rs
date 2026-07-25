@@ -1246,9 +1246,200 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
     }
 }
 
+/// Rank documents against a free-text query using BM25 (OR semantics).
+///
+/// `filter_json` / `options_json` may be NULL. `options_json` accepts
+/// `{ k1, b }`.
+///
+/// Returns a JSON array string `[{document, score}, ...]`, or NULL on error.
+/// Caller must free with `taladb_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_search_text(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+    query: *const c_char,
+    top_k: usize,
+    filter_json: *const c_char,
+    options_json: *const c_char,
+) -> *mut c_char {
+    let (Some(h), Some(col), Some(fld), Some(q)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+        cstr_to_string(query),
+    ) else {
+        return std::ptr::null_mut();
+    };
+
+    let pre_filter = match optional_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
+    let options = cstr_to_string(options_json).and_then(|s| serde_json::from_str(&s).ok());
+    let bm25 = bm25_from_options(options.as_ref());
+
+    let result =
+        h.db.collection(&col)
+            .and_then(|c| c.search_text_with(&fld, &q, top_k, &bm25, pre_filter));
+
+    match result {
+        Ok(results) => {
+            let arr: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score })
+                })
+                .collect();
+            to_cstring(serde_json::to_string(&arr).unwrap_or_default())
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Hybrid retrieval — BM25 and vector similarity fused with reciprocal rank
+/// fusion.
+///
+/// `vector_ptr` must point to `vector_len` consecutive `f32` values.
+/// `options_json` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+///
+/// Returns a JSON array string `[{document, score, textRank, vectorRank}, ...]`,
+/// or NULL on error. Caller must free with `taladb_free_string`.
+///
+/// # Safety
+/// `vector_ptr` must be valid for `vector_len` `f32` reads.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn taladb_hybrid_search(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    text_field: *const c_char,
+    text: *const c_char,
+    vector_field: *const c_char,
+    vector_ptr: *const f32,
+    vector_len: usize,
+    top_k: usize,
+    filter_json: *const c_char,
+    options_json: *const c_char,
+) -> *mut c_char {
+    let (Some(h), Some(col), Some(tf), Some(t), Some(vf)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(text_field),
+        cstr_to_string(text),
+        cstr_to_string(vector_field),
+    ) else {
+        return std::ptr::null_mut();
+    };
+
+    if vector_ptr.is_null() && vector_len != 0 {
+        set_last_error("null vector pointer".to_string());
+        return std::ptr::null_mut();
+    }
+    let vector: &[f32] = if vector_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(vector_ptr, vector_len) }
+    };
+
+    let pre_filter = match optional_filter(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
+    let options: Option<serde_json::Value> =
+        cstr_to_string(options_json).and_then(|s| serde_json::from_str(&s).ok());
+
+    let mut query = taladb_core::fts::HybridQuery::new(&tf, &t, &vf, vector, top_k);
+    query.filter = pre_filter;
+    query.bm25 = bm25_from_options(options.as_ref());
+    query.rrf = rrf_from_options(options.as_ref());
+    query.candidates = options
+        .as_ref()
+        .and_then(|o| o.get("candidates"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    match h.db.collection(&col).and_then(|c| c.hybrid_search(query)) {
+        Ok(results) => {
+            let arr: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "document": doc_to_json(&r.document),
+                        "score": r.score,
+                        "textRank": r.text_rank,
+                        "vectorRank": r.vector_rank,
+                    })
+                })
+                .collect();
+            to_cstring(serde_json::to_string(&arr).unwrap_or_default())
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Parse an optional filter argument shared by the search entry points.
+///
+/// A malformed filter is an error rather than "no filter" — silently
+/// widening a query is how a scoped search turns into a full scan.
+fn optional_filter(filter_json: *const c_char) -> Result<Option<Filter>, String> {
+    let Some(s) = cstr_to_string(filter_json) else {
+        return Ok(None);
+    };
+    if s.is_empty() || s == "null" || s == "{}" {
+        return Ok(None);
+    }
+    match parse_filter(&s) {
+        Ok(Filter::All) => Ok(None),
+        Ok(f) => Ok(Some(f)),
+        Err(e) => Err(e),
+    }
+}
+
+fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
+    let mut params = taladb_core::bm25::Bm25Params::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+            params.k1 = v as f32;
+        }
+        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+            params.b = v as f32;
+        }
+    }
+    params
+}
+
+fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
+    let mut params = taladb_core::bm25::RrfParams::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+            params.k = v as f32;
+        }
+        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+            params.text_weight = v as f32;
+        }
+        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+            params.vector_weight = v as f32;
+        }
+    }
+    params
+}
 
 fn ptr_to_ref<'a>(handle: *mut TalaDbHandle) -> Option<&'a TalaDbHandle> {
     if handle.is_null() {

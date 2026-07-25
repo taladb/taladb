@@ -9,15 +9,15 @@
         </div>
 
         <h1 class="hero-headline">
-          The embedded database<br />
-          for <span class="hero-accent">local-first</span> JavaScript apps
+          The embedded vector database<br />
+          for <span class="hero-accent">on-device</span> AI
         </h1>
 
         <p class="hero-sub">
-          Most JS apps stitch together a document store, a vector DB, and a
-          sync layer — each with its own API, each requiring a server. TalaDB
-          replaces all three with one embedded database built in Rust, running
-          on device across browser, Node.js, and React Native.
+          Your model already runs on the device. Your vector store probably
+          doesn't — so every query still pays for a network round-trip. TalaDB
+          puts documents, similarity search, and sync in one embedded database
+          built in Rust, running on device across browser, Node.js, and React Native.
         </p>
 
         <div class="hero-actions">
@@ -68,7 +68,7 @@
   embedding<span class="token-punctuation">:</span> <span class="token-keyword">await</span> <span class="token-function">embed</span><span class="token-punctuation">(</span>article<span class="token-punctuation">.</span>body<span class="token-punctuation">)</span><span class="token-punctuation">,</span>
 <span class="token-punctuation">})</span>
 
-<span class="token-comment">// Hybrid search — metadata filter + vector ranking</span>
+<span class="token-comment">// Filtered vector search — narrow, then rank</span>
 <span class="token-keyword">const</span> results <span class="token-operator">=</span> <span class="token-keyword">await</span> articles<span class="token-punctuation">.</span><span class="token-function">findNearest</span><span class="token-punctuation">(</span>
   <span class="token-string">'embedding'</span><span class="token-punctuation">,</span>
   <span class="token-keyword">await</span> <span class="token-function">embed</span><span class="token-punctuation">(</span><span class="token-string">'how do I reset my password?'</span><span class="token-punctuation">)</span><span class="token-punctuation">,</span>

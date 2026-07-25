@@ -1,14 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
 use crate::aggregate::{Stage, execute_pipeline};
 use crate::audit::{AuditOp, write_audit_entry};
+use crate::bm25::{Bm25Params, FtsStats};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::fts::{FtsDef, encode_fts_key, fts_table_name, tokenize};
+use crate::fts::{
+    FTS_STATS_KEY, FTS_VERSION, FtsDef, HybridQuery, HybridSearchResult, TextSearchResult,
+    decode_doc_len, decode_fts_def, encode_doc_len, encode_fts_key, encode_tf, fts_len_table_name,
+    fts_stats_table_name, fts_table_name, token_frequencies, tokenize,
+};
 use crate::index::{
     CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, compound_meta_key,
     compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
@@ -468,6 +473,7 @@ impl Collection {
         let def = FtsDef {
             collection: self.name.clone(),
             field: field.to_string(),
+            version: FTS_VERSION,
         };
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_FTS_TABLE, meta_key.as_bytes(), &bytes)?;
@@ -480,15 +486,22 @@ impl Collection {
             std::ops::Bound::Unbounded,
         )?;
         let fts_table = fts_table_name(&self.name, field);
+        let len_table = fts_len_table_name(&self.name, field);
+        let mut stats = FtsStats::default();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(crate::document::Value::Str(text)) = doc.get(field) {
-                for token in tokenize(text) {
-                    let fts_key = encode_fts_key(&token, &doc.id);
-                    wtxn.put(&fts_table, &fts_key, &[])?;
+                let (freqs, doc_len) = token_frequencies(text);
+                for (token, tf) in &freqs {
+                    let fts_key = encode_fts_key(token, &doc.id);
+                    wtxn.put(&fts_table, &fts_key, &encode_tf(*tf))?;
                 }
+                wtxn.put(&len_table, &doc.id.to_bytes(), &encode_doc_len(doc_len))?;
+                stats.add_doc(doc_len);
             }
         }
+        let stats_table = fts_stats_table_name(&self.name, field);
+        wtxn.put(&stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
 
         wtxn.commit()?;
         self.invalidate_index_cache();
@@ -504,20 +517,256 @@ impl Collection {
             return Err(TalaDbError::IndexNotFound(format!("fts:{}", meta_key)));
         }
 
-        // Clear all FTS entries for this field
-        let fts_table = fts_table_name(&self.name, field);
-        let all = wtxn.range(
-            &fts_table,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
-        for (k, _) in all {
-            wtxn.delete(&fts_table, &k)?;
+        // Clear all FTS entries for this field, plus its ranking side tables
+        for table in [
+            fts_table_name(&self.name, field),
+            fts_len_table_name(&self.name, field),
+            fts_stats_table_name(&self.name, field),
+        ] {
+            let all = wtxn.range(
+                &table,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+            )?;
+            for (k, _) in all {
+                wtxn.delete(&table, &k)?;
+            }
         }
         wtxn.delete(META_FTS_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
+    }
+
+    /// Rank documents against a free-text query using BM25.
+    ///
+    /// Unlike the `$contains` filter, which requires *every* token to be
+    /// present, this uses OR semantics: a document matching more query terms
+    /// simply scores higher. That is what BM25 is built for, and it is the
+    /// behaviour hybrid retrieval needs.
+    ///
+    /// Returns at most `top_k` results, most relevant first.
+    pub fn search_text(
+        &self,
+        field: &str,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<TextSearchResult>, TalaDbError> {
+        self.search_text_with(field, query, top_k, &Bm25Params::default(), None)
+    }
+
+    /// [`Collection::search_text`] with explicit BM25 tuning and an optional
+    /// metadata pre-filter.
+    ///
+    /// As with `find_nearest`, the filter is resolved *before* ranking, so
+    /// `top_k` is `k` documents that actually match rather than whatever
+    /// survives a post-filter.
+    pub fn search_text_with(
+        &self,
+        field: &str,
+        query: &str,
+        top_k: usize,
+        params: &Bm25Params,
+        pre_filter: Option<Filter>,
+    ) -> Result<Vec<TextSearchResult>, TalaDbError> {
+        let def = self
+            .load_fts_indexes()?
+            .into_iter()
+            .find(|d| d.field == field)
+            .ok_or_else(|| TalaDbError::IndexNotFound(format!("fts:{}::{}", self.name, field)))?;
+
+        // A v0 index has no term frequencies, lengths, or corpus stats, so
+        // every match would score identically. Failing loudly beats returning
+        // a ranking that only looks like one.
+        if !def.supports_ranking() {
+            return Err(TalaDbError::InvalidOperation(format!(
+                "fts index on '{}.{}' predates ranking support; drop and recreate it to enable search_text",
+                self.name, field
+            )));
+        }
+
+        let tokens = {
+            let (freqs, _) = token_frequencies(query);
+            freqs.into_keys().collect::<Vec<_>>()
+        };
+        if tokens.is_empty() || top_k == 0 {
+            return Ok(vec![]);
+        }
+
+        // Resolve the pre-filter up front so scoring skips candidates that
+        // could never appear in the result.
+        let id_filter: Option<HashSet<[u8; 16]>> = match pre_filter {
+            Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id.to_bytes()).collect()),
+            None => None,
+        };
+        if let Some(ids) = &id_filter
+            && ids.is_empty()
+        {
+            return Ok(vec![]);
+        }
+
+        let rtxn = self.backend.begin_read()?;
+        let fts_table = fts_table_name(&self.name, field);
+        let len_table = fts_len_table_name(&self.name, field);
+        let stats_table = fts_stats_table_name(&self.name, field);
+
+        let stats: FtsStats = rtxn
+            .get(&stats_table, FTS_STATS_KEY)?
+            .and_then(|b| postcard::from_bytes(&b).ok())
+            .unwrap_or_default();
+        let avg_len = stats.avg_doc_len();
+
+        let mut scores: HashMap<[u8; 16], f32> = HashMap::new();
+        let mut lengths: HashMap<[u8; 16], u32> = HashMap::new();
+
+        for token in &tokens {
+            let (start, end) = crate::fts::fts_token_range(token);
+            let postings = rtxn.range(
+                &fts_table,
+                std::ops::Bound::Included(start.as_slice()),
+                std::ops::Bound::Included(end.as_slice()),
+            )?;
+            // The postings scan *is* the document frequency — no counter to keep.
+            // Note this counts the whole corpus, not the filtered subset: IDF
+            // describes how informative a term is overall, and recomputing it
+            // per filter would make scores incomparable between queries.
+            let doc_freq = postings.len() as u64;
+            if doc_freq == 0 {
+                continue;
+            }
+            let token_idf = crate::bm25::idf(stats.doc_count, doc_freq);
+
+            for (key, value) in postings {
+                let Some(ulid) = crate::fts::ulid_from_fts_key(&key) else {
+                    continue;
+                };
+                let id = ulid.to_bytes();
+                if let Some(ids) = &id_filter
+                    && !ids.contains(&id)
+                {
+                    continue;
+                }
+                let doc_len = match lengths.get(&id) {
+                    Some(len) => *len,
+                    None => {
+                        let len = rtxn
+                            .get(&len_table, &id)?
+                            .map(|b| decode_doc_len(&b))
+                            .unwrap_or(0);
+                        lengths.insert(id, len);
+                        len
+                    }
+                };
+                let score = crate::bm25::term_score(
+                    crate::fts::decode_tf(&value),
+                    doc_len,
+                    avg_len,
+                    token_idf,
+                    params,
+                );
+                *scores.entry(id).or_insert(0.0) += score;
+            }
+        }
+
+        let mut ranked: Vec<([u8; 16], f32)> = scores.into_iter().collect();
+        // Ties break on ULID so results are stable across identical queries.
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        ranked.truncate(top_k);
+
+        let docs_table = docs_table_name(&self.name);
+        let mut out = Vec::with_capacity(ranked.len());
+        for (id, score) in ranked {
+            if let Some(bytes) = rtxn.get(&docs_table, &id)? {
+                let document: Document = postcard::from_bytes(&bytes)?;
+                out.push(TextSearchResult { document, score });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Hybrid retrieval: rank by BM25 *and* vector similarity, then fuse the
+    /// two rankings with reciprocal rank fusion.
+    ///
+    /// This is what "hybrid search" means everywhere else in the industry —
+    /// sparse plus dense — and it exists because the two retrievers fail
+    /// differently. Keyword search misses paraphrases; vector search misses
+    /// exact identifiers, product codes, and rare proper nouns. Fusing them
+    /// recovers both, and a document both retrievers like outranks one that
+    /// only a single retriever loved.
+    ///
+    /// The optional filter is applied to both sides before ranking, so the
+    /// two candidate pools stay comparable.
+    pub fn hybrid_search(
+        &self,
+        query: HybridQuery<'_>,
+    ) -> Result<Vec<HybridSearchResult>, TalaDbError> {
+        let HybridQuery {
+            text_field,
+            text,
+            vector_field,
+            vector,
+            top_k,
+            filter,
+            rrf,
+            bm25,
+            candidates,
+        } = query;
+
+        if top_k == 0 {
+            return Ok(vec![]);
+        }
+        // Fusing only `top_k` from each side loses documents that sit just
+        // outside one ranking but high in the other — exactly the recall the
+        // technique is meant to recover. Over-fetch, fuse, then truncate.
+        let pool = candidates.unwrap_or_else(|| (top_k * 4).max(20));
+
+        let text_hits = self.search_text_with(text_field, text, pool, &bm25, filter.clone())?;
+        let vector_hits = self.find_nearest(vector_field, vector, pool, filter)?;
+
+        let mut fused: HashMap<[u8; 16], FusedEntry> = HashMap::new();
+        let mut docs: HashMap<[u8; 16], Document> = HashMap::new();
+
+        for (rank, hit) in text_hits.into_iter().enumerate() {
+            let id = hit.document.id.to_bytes();
+            let entry = fused.entry(id).or_default();
+            entry.score += crate::bm25::rrf_contribution(rank, rrf.k, rrf.text_weight);
+            entry.text_rank = Some(rank);
+            docs.entry(id).or_insert(hit.document);
+        }
+
+        for (rank, hit) in vector_hits.into_iter().enumerate() {
+            let id = hit.document.id.to_bytes();
+            let entry = fused.entry(id).or_default();
+            entry.score += crate::bm25::rrf_contribution(rank, rrf.k, rrf.vector_weight);
+            entry.vector_rank = Some(rank);
+            docs.entry(id).or_insert(hit.document);
+        }
+
+        let mut ranked: Vec<([u8; 16], FusedEntry)> = fused.into_iter().collect();
+        // Ties break on ULID so identical queries return identical order.
+        ranked.sort_by(|a, b| {
+            b.1.score
+                .partial_cmp(&a.1.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        ranked.truncate(top_k);
+
+        Ok(ranked
+            .into_iter()
+            .filter_map(|(id, entry)| {
+                docs.remove(&id).map(|document| HybridSearchResult {
+                    document,
+                    score: entry.score,
+                    text_rank: entry.text_rank,
+                    vector_rank: entry.vector_rank,
+                })
+            })
+            .collect())
     }
 
     // ------------------------------------------------------------------
@@ -1010,8 +1259,8 @@ impl Collection {
         for (k, v) in all {
             let key_str = String::from_utf8_lossy(&k);
             if key_str.starts_with(&prefix) {
-                let def: FtsDef = postcard::from_bytes(&v)?;
-                defs.push(def);
+                // Tolerates pre-versioning metadata; see `decode_fts_def`.
+                defs.push(decode_fts_def(&v)?);
             }
         }
         Ok(defs)
@@ -1067,6 +1316,11 @@ impl Collection {
         // FTS indexes
         for fts in cache.fts_indexes.iter() {
             let fts_table = fts_table_name(&self.name, &fts.field);
+            let len_table = fts_len_table_name(&self.name, &fts.field);
+            let stats_table = fts_stats_table_name(&self.name, &fts.field);
+            let mut removed_len: Option<u32> = None;
+            let mut added_len: Option<u32> = None;
+
             // Remove old tokens
             if let Some(old) = old_doc
                 && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
@@ -1075,13 +1329,29 @@ impl Collection {
                     let key = encode_fts_key(&token, &old.id);
                     wtxn.delete(&fts_table, &key)?;
                 }
+                // Trust the recorded length over a re-tokenization of the old
+                // text: if the tokenizer ever changes, the stored value is
+                // what the running totals were actually built from.
+                let stored = wtxn
+                    .get(&len_table, &old.id.to_bytes())?
+                    .map(|b| decode_doc_len(&b));
+                removed_len = Some(stored.unwrap_or_else(|| token_frequencies(old_text).1));
+                wtxn.delete(&len_table, &old.id.to_bytes())?;
             }
+
             // Write new tokens
             if let Some(crate::document::Value::Str(new_text)) = doc.get(&fts.field) {
-                for token in tokenize(new_text) {
-                    let key = encode_fts_key(&token, &doc.id);
-                    wtxn.put(&fts_table, &key, &[])?;
+                let (freqs, doc_len) = token_frequencies(new_text);
+                for (token, tf) in &freqs {
+                    let key = encode_fts_key(token, &doc.id);
+                    wtxn.put(&fts_table, &key, &encode_tf(*tf))?;
                 }
+                wtxn.put(&len_table, &doc.id.to_bytes(), &encode_doc_len(doc_len))?;
+                added_len = Some(doc_len);
+            }
+
+            if removed_len.is_some() || added_len.is_some() {
+                adjust_fts_stats(wtxn, &stats_table, removed_len, added_len)?;
             }
         }
 
@@ -2134,11 +2404,19 @@ impl Collection {
 
         for fts in cache.fts_indexes.iter() {
             let fts_table = fts_table_name(&self.name, &fts.field);
+            let len_table = fts_len_table_name(&self.name, &fts.field);
             if let Some(crate::document::Value::Str(text)) = doc.get(&fts.field) {
                 for token in tokenize(text) {
                     let key = encode_fts_key(&token, &doc.id);
                     wtxn.delete(&fts_table, &key)?;
                 }
+                let stored = wtxn
+                    .get(&len_table, &doc.id.to_bytes())?
+                    .map(|b| decode_doc_len(&b));
+                let removed = stored.unwrap_or_else(|| token_frequencies(text).1);
+                wtxn.delete(&len_table, &doc.id.to_bytes())?;
+                let stats_table = fts_stats_table_name(&self.name, &fts.field);
+                adjust_fts_stats(wtxn, &stats_table, Some(removed), None)?;
             }
         }
 
@@ -2160,6 +2438,40 @@ impl Collection {
 
         Ok(())
     }
+}
+
+/// A document's running fusion state while the two rankings are merged.
+#[derive(Default)]
+struct FusedEntry {
+    score: f32,
+    text_rank: Option<usize>,
+    vector_rank: Option<usize>,
+}
+
+/// Apply a document's arrival and/or departure to a field's corpus statistics.
+///
+/// Read-modify-write is safe here because every caller already holds the
+/// single write transaction.
+fn adjust_fts_stats(
+    wtxn: &mut dyn crate::engine::WriteTxn,
+    stats_table: &str,
+    removed_len: Option<u32>,
+    added_len: Option<u32>,
+) -> Result<(), TalaDbError> {
+    let mut stats: FtsStats = match wtxn.get(stats_table, FTS_STATS_KEY)? {
+        // A corrupt or truncated stats record must not fail the write; the
+        // worst case is a slightly wrong average until the index is rebuilt.
+        Some(bytes) => postcard::from_bytes(&bytes).unwrap_or_default(),
+        None => FtsStats::default(),
+    };
+    if let Some(len) = removed_len {
+        stats.remove_doc(len);
+    }
+    if let Some(len) = added_len {
+        stats.add_doc(len);
+    }
+    wtxn.put(stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
+    Ok(())
 }
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {

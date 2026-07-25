@@ -89,7 +89,7 @@ Bounded two-sided range plans (`$gte` + `$lt` on one indexed field → a single 
 - Incremental graph inserts, so steady-state writes don't require a full `upgradeVectorIndex` rebuild
 - Document expected build cost by collection size so apps can schedule rebuilds during idle periods
 
-### Faster hybrid pre-filters (id-only path)
+### Faster filtered-vector pre-filters (id-only path)
 
 The [v0.9.x scan rewrite](#faster-flat-vector-search-shipped-in-v0-9-x) already skips *scoring* filtered-out vectors, but the pre-filter itself still runs `find()`, which materialises every matching document — embedding arrays included — just to collect their ids. An id-only execution path in the query executor (return ids without decoding document bodies) would cut the filter cost, especially for low-selectivity filters over large documents.
 

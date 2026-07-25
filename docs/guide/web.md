@@ -5,11 +5,16 @@ description: Use TalaDB in the browser with WebAssembly and OPFS persistent stor
 
 # Web (Browser / WASM)
 
+Run a full vector database in the browser tab. Pair TalaDB with an on-device
+embedding model (transformers.js, ONNX Runtime Web) and you have
+[semantic search](/api/vector-search), [BM25 full-text](/api/search), and
+[hybrid RAG retrieval](/api/search#hybrid-search) with no server, no API key,
+and no data leaving the user's machine.
+
 TalaDB runs in the browser as a WebAssembly module compiled from the same Rust
 core used on every other platform. Data is persisted to the
 [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)
-(OPFS) — a fast, private storage area built into modern browsers. No server, no
-cloud, no extra infrastructure.
+(OPFS) — a fast, private storage area built into modern browsers.
 
 > Building with **Next.js**? There's a dedicated [Next.js guide](/guide/nextjs) covering providers, the RSC boundary, and using your API routes as the sync backend.
 
@@ -155,10 +160,11 @@ const activeAdults = await users.find({
 })
 ```
 
-## Full-text search
+## Full-text & hybrid search
 
-Create an FTS index on any string field to enable fast `$contains` queries
-without scanning every document:
+Create an FTS index on a string field, then rank by relevance with `searchText`
+(BM25), gate booleanly with `$contains`, or combine keyword + vector ranking
+with `hybridSearch`:
 
 ```ts
 const posts = db.collection<Post>('posts')
@@ -166,9 +172,16 @@ const posts = db.collection<Post>('posts')
 // Create once at startup — idempotent
 await posts.createFtsIndex('body')
 
-// Query — uses the FTS index automatically (O(1) token lookup)
-const results = await posts.find({ body: { $contains: 'taladb' } })
+// Ranked keyword search (best matches first)
+const hits = await posts.searchText('body', 'embedded rust database', 5)
+
+// Boolean filter (every token must appear)
+const all = await posts.find({ body: { $contains: 'taladb' } })
 ```
+
+Pair an FTS index with a vector index and use
+[`hybridSearch`](/api/search#hybrid-search) for RAG retrieval that runs entirely
+in the browser. See the [Search reference](/api/search).
 
 ## Inspecting indexes
 
@@ -251,7 +264,7 @@ results.forEach(({ document, score }) => {
   console.log(`${score.toFixed(3)}  ${document.title}`)
 })
 
-// Hybrid: filter first, then rank by similarity — one call, no extra round-trips
+// Filtered vector search: filter first, then rank — one call, no extra round-trips
 const filtered = await articles.findNearest('embedding', queryVec, 5, {
   category: 'guide',
 })

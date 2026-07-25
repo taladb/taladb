@@ -1,17 +1,19 @@
 ---
 title: Introduction
-description: Learn what TalaDB is, how it works, and why it was built — the embedded database for local-first JavaScript apps, powered by a Rust core that runs in the browser, Node.js, and React Native.
+description: Learn what TalaDB is, how it works, and why it was built — the embedded vector database for on-device AI, powered by a Rust core that runs in the browser, Node.js, and React Native.
 ---
 
 # Introduction
 
 ## What is TalaDB?
 
-Most JavaScript apps require three separate tools to handle structured queries, vector similarity search, and offline-first storage — each with its own API, each requiring a server. TalaDB replaces all three with a single **embedded database built in Rust** that runs entirely on the user's device, with no network dependency and no cloud subscription.
+AI inference is moving onto the device — transformers.js and ONNX Runtime Web in the browser, Core ML and native models on mobile. The model runs locally, but the *retrieval* layer usually doesn't: embeddings get shipped to a hosted vector database, which puts back the latency, the per-query cost, and the privacy exposure that running locally was supposed to remove.
 
-Data is stored as schemaless JSON-like documents organised into named **collections**. Queries use a MongoDB-inspired filter DSL. Vector indexes sit alongside regular document fields: a single `findNearest` call can rank by embedding similarity while filtering by metadata, giving you the hybrid search pattern that cloud vector databases charge for, running entirely on-device.
+**TalaDB is the retrieval layer for on-device AI** — an embedded vector database, built in Rust, that runs entirely on the user's device across the browser, Node.js, and React Native. Store embeddings next to your data and search them with [vector similarity](/api/vector-search), [BM25 full-text](/api/search), or [hybrid search](/api/search#hybrid-search) (the two fused, RAG-style) — with no server, no API key, and no data leaving the device.
 
-As local AI inference becomes mainstream (transformers.js, ONNX Web, WebGPU), applications generate embeddings on the client and need somewhere to store and search them. TalaDB is that place.
+Underneath the search engine is a complete document database: schemaless JSON-like documents in named **collections**, a MongoDB-inspired filter DSL, secondary indexes, ACID transactions, and live queries. Vector indexes sit alongside regular fields, so a single query can rank by embedding similarity *and* filter by metadata — the filtered vector search cloud databases charge for, running on-device.
+
+The result: everything an AI-powered app needs to store, query, and retrieve data lives in one embedded engine, on the device, behind one TypeScript API.
 
 The same Rust core powers every runtime:
 
@@ -135,7 +137,7 @@ The `taladb` package lists the platform packages as `optionalDependencies`, whic
 |---|---|---|
 | What it is | Embedded **database** inside the app | Cache + **sync fabric** between backend and clients |
 | Data model | Documents with MongoDB-like queries, indexes, ACID transactions | Keys — strings, collections, JSON |
-| Superpower | On-device vector + hybrid search, rich queries | Multi-client sync: scoped auth, live fan-out, offline outbox, exactly-once delivery |
+| Superpower | On-device vector + filtered search, rich queries | Multi-client sync: scoped auth, live fan-out, offline outbox, exactly-once delivery |
 | Server | None — runs entirely on-device | The server is the product (Redis-compatible) |
 | Truth model | **Device-local truth** | **Shared truth** across users and devices |
 

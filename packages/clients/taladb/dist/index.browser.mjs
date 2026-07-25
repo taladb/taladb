@@ -659,10 +659,22 @@ function deepEqual(a, b) {
   );
 }
 function applySchema(col, options) {
-  const { schema, validateOnRead = false, migrateDocument, syncSchema, persistMigrations = false } = options;
+  const {
+    schema,
+    validateOnRead = false,
+    migrateDocument,
+    downgradeDocument,
+    syncSchema,
+    persistMigrations = false,
+    allowFieldRemoval = false,
+    retiredFields = []
+  } = options;
   const targetVersion = syncSchema?.version ?? 0;
   if (migrateDocument && targetVersion < 1) {
     throw new Error("CollectionOptions.migrateDocument requires syncSchema.version (the migration target)");
+  }
+  if (downgradeDocument && targetVersion < 1) {
+    throw new Error("CollectionOptions.downgradeDocument requires syncSchema.version (the shape this build reads)");
   }
   if (syncSchema && targetVersion < 1 && (syncSchema.renames || syncSchema.defaults)) {
     throw new Error(
@@ -670,12 +682,71 @@ function applySchema(col, options) {
     );
   }
   const stampVersion = targetVersion > 0;
-  if (!schema && !migrateDocument && !stampVersion) return col;
+  if (!schema && !migrateDocument && !downgradeDocument && !stampVersion) return col;
+  const retired = new Set(retiredFields);
+  const engineOwned = /* @__PURE__ */ new Set([
+    "_id",
+    "_v",
+    "_changed_at",
+    "_remote",
+    "_remote_rev",
+    "_replica_scope"
+  ]);
+  const downcastViews = /* @__PURE__ */ new WeakSet();
+  function preserveFields(original, next, preserveUnknown, preserveVersion = true) {
+    let out = null;
+    for (const k of Object.keys(original)) {
+      const ownedField = engineOwned.has(k) && (k !== "_v" || preserveVersion);
+      const mustRestore = ownedField || preserveUnknown && !retired.has(k) && !(k in next);
+      if (!mustRestore) continue;
+      if (!ownedField && k in next) continue;
+      out ?? (out = { ...next });
+      out[k] = original[k];
+    }
+    return out ?? next;
+  }
   function parseWrite(doc, label) {
     try {
       return schema.parse(doc);
     } catch (err) {
       throw new TalaDbValidationError(err, label);
+    }
+  }
+  function assertWritableDocument(doc, label) {
+    if (doc && typeof doc === "object" && downcastViews.has(doc)) {
+      throw new Error(`${label}: a downgradeDocument result is a read-only compatibility view`);
+    }
+    const version = doc?._v;
+    if (targetVersion > 0 && typeof version === "number" && version > targetVersion) {
+      throw new Error(
+        `${label}: this client supports schema v${targetVersion}, but the document is v${version}`
+      );
+    }
+  }
+  function writableFilter(filter) {
+    if (targetVersion < 1) return filter;
+    return {
+      $and: [
+        filter,
+        {
+          $or: [
+            { _v: { $exists: false } },
+            { _v: { $lte: targetVersion } }
+          ]
+        }
+      ]
+    };
+  }
+  function assertSafeUpdate(update) {
+    const record = update;
+    for (const op of ["$set", "$unset", "$inc", "$push", "$pull"]) {
+      const fields = record[op];
+      if (!fields) continue;
+      for (const field of Object.keys(fields)) {
+        if (engineOwned.has(field)) {
+          throw new Error(`update cannot modify engine-owned field '${field}'`);
+        }
+      }
     }
   }
   function stamp(doc) {
@@ -693,50 +764,86 @@ function applySchema(col, options) {
       if (k === "_id") continue;
       if (!deepEqual(migrated[k], original[k])) $set[k] = migrated[k];
     }
-    for (const k of Object.keys(original)) {
-      if (k !== "_id" && !(k in migrated)) $unset[k] = true;
+    if (allowFieldRemoval || retired.size > 0) {
+      for (const k of Object.keys(original)) {
+        if (k !== "_id" && !(k in migrated) && (allowFieldRemoval || retired.has(k))) $unset[k] = true;
+      }
     }
     const update = {};
     if (Object.keys($set).length) update.$set = $set;
     if (Object.keys($unset).length) update.$unset = $unset;
     return Object.keys(update).length ? update : null;
   }
-  function migrateRead(doc) {
-    if (!migrateDocument) return doc;
+  function normalizeRead(doc) {
     const fromVersion = typeof doc._v === "number" ? doc._v : 0;
-    if (fromVersion >= targetVersion) return doc;
-    return { ...migrateDocument(doc, fromVersion), _v: targetVersion };
+    if (migrateDocument && fromVersion < targetVersion) {
+      const up = { ...migrateDocument(doc, fromVersion), _v: targetVersion };
+      return {
+        // The migration owns the version transition, while every other
+        // engine-owned field continues to come from the stored document.
+        value: allowFieldRemoval ? preserveFields(doc, up, false, false) : preserveFields(doc, up, true, false),
+        persistable: true
+      };
+    }
+    if (downgradeDocument && fromVersion > targetVersion) {
+      const projected = {
+        ...downgradeDocument(doc, fromVersion),
+        ...doc._id !== void 0 ? { _id: doc._id } : {},
+        _v: fromVersion
+      };
+      downcastViews.add(projected);
+      return { value: projected, persistable: false };
+    }
+    return { value: doc, persistable: true };
   }
   function validateRead(doc) {
     if (!validateOnRead || !schema) return doc;
     try {
-      return schema.parse(doc);
+      const parsed = schema.parse(doc);
+      const fromVersion = typeof doc._v === "number" ? doc._v : 0;
+      return preserveFields(doc, parsed, targetVersion > 0 && fromVersion > targetVersion);
     } catch (err) {
       throw new TalaDbValidationError(err, "read");
     }
   }
-  async function persistAll(originals, migrated) {
+  async function persistAll(originals, normalized) {
     if (!persistMigrations) return;
     for (let i = 0; i < originals.length; i++) {
       const original = originals[i];
-      if (migrated[i] === original || typeof original._id !== "string") continue;
-      const update = diffUpdate(original, migrated[i]);
+      if (!normalized[i].persistable) continue;
+      const migrated = normalized[i].value;
+      if (migrated === original || typeof original._id !== "string") continue;
+      const update = diffUpdate(original, migrated);
       if (!update) continue;
       try {
-        await col.updateOne({ _id: original._id }, update);
+        const guards = [{ _id: original._id }];
+        if (original._v === void 0) guards.push({ _v: { $exists: false } });
+        else guards.push({ _v: original._v });
+        if (original._changed_at !== void 0) {
+          guards.push({ _changed_at: original._changed_at });
+        }
+        await col.updateOne({ $and: guards }, update);
       } catch {
       }
     }
   }
-  const wrapReads = Boolean(migrateDocument) || validateOnRead && Boolean(schema);
+  const wrapReads = Boolean(migrateDocument) || Boolean(downgradeDocument) || validateOnRead && Boolean(schema);
   const wrapWrites = Boolean(schema) || stampVersion;
+  function pipelinePreservesDocuments(pipeline) {
+    return pipeline.every((stage) => !("$group" in stage) && !("$project" in stage));
+  }
+  function normalizeViewRows(docs) {
+    return docs.map((doc) => validateRead(normalizeRead(doc).value));
+  }
   return {
     ...col,
     insert: wrapWrites ? async (doc) => {
+      assertWritableDocument(doc, "insert");
       if (schema) parseWrite(doc, "insert");
       return col.insert(stamp(doc));
     } : col.insert.bind(col),
     insertMany: wrapWrites ? async (docs) => {
+      docs.forEach((doc, i) => assertWritableDocument(doc, `insertMany[${i}]`));
       if (schema) docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
       return col.insertMany(docs.map(stamp));
     } : col.insertMany.bind(col),
@@ -745,6 +852,14 @@ function applySchema(col, options) {
     // runtime schema check have to be the same seam, or a malformed server
     // response walks straight into a typed collection.
     replaceManyWithIds: wrapWrites ? async (docs, origin) => {
+      if (origin !== "remote") {
+        docs.forEach((doc, i) => assertWritableDocument(doc, `replaceManyWithIds[${i}]`));
+        if (targetVersion > 0) {
+          throw new Error(
+            "local replaceManyWithIds is disabled on versioned collections; use updateOne/updateMany so schema-version guards are atomic"
+          );
+        }
+      }
       if (schema) docs.forEach((doc, i) => {
         const { _replica_scope, _remote_rev, ...schemaDoc } = doc;
         void _replica_scope;
@@ -753,38 +868,75 @@ function applySchema(col, options) {
       });
       return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
     } : col.replaceManyWithIds.bind(col),
+    deleteManyWithIds: stampVersion ? async (ids, origin) => {
+      if (origin !== "remote") {
+        throw new Error(
+          "local deleteManyWithIds is disabled on versioned collections; use deleteOne/deleteMany so schema-version guards are atomic"
+        );
+      }
+      return col.deleteManyWithIds(ids, origin);
+    } : col.deleteManyWithIds.bind(col),
+    updateOne: wrapWrites ? async (filter, update) => {
+      assertSafeUpdate(update);
+      return col.updateOne(writableFilter(filter), update);
+    } : col.updateOne.bind(col),
+    updateMany: wrapWrites ? async (filter, update) => {
+      assertSafeUpdate(update);
+      return col.updateMany(writableFilter(filter), update);
+    } : col.updateMany.bind(col),
+    deleteOne: stampVersion ? (filter) => col.deleteOne(writableFilter(filter)) : col.deleteOne.bind(col),
+    deleteMany: stampVersion ? (filter) => col.deleteMany(writableFilter(filter)) : col.deleteMany.bind(col),
     find: wrapReads ? async (filter) => {
       const docs = await col.find(filter);
-      const migrated = docs.map(migrateRead);
-      await persistAll(docs, migrated);
-      return migrated.map(validateRead);
+      const normalized = docs.map(normalizeRead);
+      await persistAll(docs, normalized);
+      return normalized.map((n) => validateRead(n.value));
     } : col.find.bind(col),
     findOne: wrapReads ? async (filter) => {
       const doc = await col.findOne(filter);
       if (doc === null) return null;
-      const migrated = migrateRead(doc);
-      await persistAll([doc], [migrated]);
-      return validateRead(migrated);
+      const normalized = normalizeRead(doc);
+      await persistAll([doc], [normalized]);
+      return validateRead(normalized.value);
     } : col.findOne.bind(col),
+    aggregate: wrapReads ? async (pipeline) => {
+      const docs = await col.aggregate(pipeline);
+      return pipelinePreservesDocuments(pipeline) ? normalizeViewRows(docs) : docs;
+    } : col.aggregate.bind(col),
     // Live queries feed every @taladb/react hook (useFind, useFindOne,
     // useQueries). Leaving them unwrapped meant React components received the
     // un-migrated shape while a direct find() returned the migrated one.
     subscribe: wrapReads ? (filter, callback, onError) => col.subscribe(
       filter,
       (docs) => {
-        const migrated = docs.map(migrateRead);
+        const normalized = docs.map(normalizeRead);
         let out;
         try {
-          out = migrated.map(validateRead);
+          out = normalized.map((n) => validateRead(n.value));
         } catch (err) {
           onError?.(err);
           return;
         }
         callback(out);
-        void persistAll(docs, migrated);
+        void persistAll(docs, normalized);
       },
       onError
-    ) : col.subscribe.bind(col)
+    ) : col.subscribe.bind(col),
+    subscribeAggregate: wrapReads ? (pipeline, callback, onError) => col.subscribeAggregate(
+      pipeline,
+      (docs) => {
+        if (!pipelinePreservesDocuments(pipeline)) {
+          callback(docs);
+          return;
+        }
+        try {
+          callback(normalizeViewRows(docs));
+        } catch (error) {
+          onError?.(error);
+        }
+      },
+      onError
+    ) : col.subscribeAggregate.bind(col)
   };
 }
 function detectPlatform() {
@@ -994,6 +1146,30 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         });
         return JSON.parse(json);
       },
+      searchText: async (field, query, topK, filter, options) => {
+        const json = await proxy.send("searchText", {
+          collection: name,
+          field,
+          query,
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : "null",
+          optionsJson: options ? JSON.stringify(options) : "null"
+        });
+        return JSON.parse(json);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        const json = await proxy.send("hybridSearch", {
+          collection: name,
+          textField: text.textField,
+          text: text.text,
+          vectorField: vector.vectorField,
+          vectorJson: JSON.stringify(vector.vector),
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : "null",
+          optionsJson: options ? JSON.stringify(options) : "null"
+        });
+        return JSON.parse(json);
+      },
       subscribe: (filter, callback, onError) => nudgedPoller(
         () => proxy.send("find", {
           collection: name,
@@ -1138,6 +1314,12 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
         const raw = await col.findNearest(field, vector, topK, filter ?? null);
         return raw;
       },
+      searchText: async (field, query, topK, filter, options) => {
+        return col.searchText(field, query, topK, filter ?? null, options ?? null);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        return col.hybridSearch(text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null);
+      },
       subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => wrapped.aggregate(pipeline), callback, onError)
     };
@@ -1219,6 +1401,18 @@ async function createNativeDB(_dbName, migrations) {
       findNearest: async (field, vector, topK, filter) => {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw;
+      },
+      searchText: async (field, query, topK, filter, options) => {
+        if (!native.searchText) {
+          throw new Error("searchText requires @taladb/react-native \u2265 0.10 \u2014 rebuild the native module");
+        }
+        return native.searchText(name, field, query, topK, filter ?? null, options ?? null);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        if (!native.hybridSearch) {
+          throw new Error("hybridSearch requires @taladb/react-native \u2265 0.10 \u2014 rebuild the native module");
+        }
+        return native.hybridSearch(name, text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null);
       },
       subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => native.aggregate(name, pipeline), callback, onError)

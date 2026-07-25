@@ -1,6 +1,6 @@
 {
   "name": "@taladb/cloudflare",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "TalaDB adapter for Cloudflare Workers — in-memory WASM database with Durable Objects snapshot persistence",
   "type": "module",
   "main": "src/index.js",
@@ -24,7 +24,7 @@
   "bugs": {
     "url": "https://github.com/thinkgrid-labs/taladb/issues"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "peerDependencies": {
     "taladb": "workspace:*",
     "@taladb/web": "workspace:*"

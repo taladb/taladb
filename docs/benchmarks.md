@@ -81,7 +81,7 @@ Re-run twice with the v0.9.4 release build on the same machine. The values below
 | `findNearest` + filter, 50k vectors | indexed pre-filter `locale: "en"` (10%), then rank | **123 ms** |
 | Vector ingest, 50k vectors | `insertMany` with a live vector index | **~2.4k docs/s** |
 
-The hybrid query is 24% lower-latency than the v0.9.0 result (162 ms). Vector ingest did not improve, so its baseline remains unchanged.
+The filtered vector query is 24% lower-latency than the v0.9.0 result (162 ms). Vector ingest did not improve, so its baseline remains unchanged.
 
 Semantic search over a typical on-device corpus (1k–10k chunks) answers in **~17 ms or less** — faster than a network round-trip to any cloud vector database, with zero data leaving the device.
 
@@ -134,7 +134,7 @@ The default (flat) index is exact k-NN over all vectors. The v0.9.0 scan rewrite
 | 50,000 vectors | **93 ms** | 188 ms |
 | 100,000 vectors | **198 ms** | 369 ms |
 
-Hybrid search — metadata pre-filter, then rank — is cheaper still, because filtered-out vectors are skipped before scoring when the filter field is indexed:
+Filtered vector search — metadata pre-filter, then rank — is cheaper still, because filtered-out vectors are skipped before scoring when the filter field is indexed:
 
 | Operation | Detail | Result |
 |---|---|---|
@@ -142,7 +142,7 @@ Hybrid search — metadata pre-filter, then rank — is cheaper still, because f
 | Vector ingest, 100k vectors | `insertMany` with a live vector index | **~4.5k docs/s** |
 
 ::: tip Index your filter fields
-The hybrid pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does — index the field you filter on.
+The pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does — index the field you filter on.
 :::
 
 ### Optional HNSW index (Node.js, since 0.8.3)

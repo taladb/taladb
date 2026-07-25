@@ -1,6 +1,6 @@
 ---
 title: Collection API
-description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, createCompoundIndex, aggregate, createVectorIndex, findNearest, and watch.
+description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, createCompoundIndex, aggregate, and watch. Vector and full-text/hybrid search have their own references.
 ---
 
 # Collection API
@@ -262,10 +262,13 @@ Index creation backfills all existing documents. For large collections this may 
 
 ### Full-text search index
 
-Prefix the field name with `_fts:` to build an inverted token index:
+Use [`createFtsIndex`](/api/search#createftsindex-field-dropftsindex-field) to
+build an inverted token index. It powers the `$contains` filter shown here, plus
+BM25-ranked [`searchText`](/api/search#searchtext-field-query-topk-filter-options)
+and [`hybridSearch`](/api/search#hybrid-search):
 
 ```ts
-await posts.createIndex('_fts:body')
+await posts.createFtsIndex('body')
 const results = await posts.find({ body: { $contains: 'rust embedded' } })
 ```
 
@@ -335,160 +338,21 @@ await people.dropCompoundIndex(['lastName', 'firstName'])
 
 Throws `IndexNotFound` if no compound index exists for the given field tuple.
 
-## `createVectorIndex(field, options)`
+## Vector search
 
-Creates a vector index on a numeric-array field. Call once at startup — the operation is idempotent.
+Vector indexing and similarity search — `createVectorIndex`, `findNearest`,
+metadata-filtered k-NN, and optional HNSW — have a dedicated reference:
 
-```ts
-createVectorIndex(
-  field: keyof Omit<T, '_id'> & string,
-  options: VectorIndexOptions,
-): Promise<void>
-```
+**→ [Vector Search](/api/vector-search)**
 
-`VectorIndexOptions`:
+## Full-text & hybrid search
 
-| Property | Type | Default | Description |
-|---|---|---|---|
-| `dimensions` | `number` | required | Expected length of every stored vector. Enforced on insert and search. |
-| `metric` | `'cosine' \| 'dot' \| 'euclidean'` | `'cosine'` | Similarity metric used by `findNearest`. |
-| `indexType` | `'flat' \| 'hnsw'` | `'flat'` | Search algorithm. `'hnsw'` requires the `vector-hnsw` feature. |
-| `hnswM` | `number` | `16` | HNSW links per node. Higher = better recall, more memory. Only used when `indexType: 'hnsw'`. |
-| `hnswEfConstruction` | `number` | `200` | HNSW build-time quality. Higher = better graph, slower build. Must be ≥ `hnswM`. |
+BM25 keyword ranking (`searchText`), the `$contains` filter, and RAG-ready
+`hybridSearch` (BM25 + vector, fused with reciprocal rank fusion) have their own
+reference:
 
-```ts
-// Flat (brute-force) — default, exact, best for < ~10K documents
-await articles.createVectorIndex('embedding', { dimensions: 384 })
+**→ [Search (Full-Text & Hybrid)](/api/search)**
 
-// HNSW — approximate, sub-linear search, best for large collections
-await articles.createVectorIndex('embedding', {
-  dimensions: 384,
-  metric: 'cosine',
-  indexType: 'hnsw',
-  hnswM: 16,              // connectivity — higher = better recall, more memory
-  hnswEfConstruction: 200 // build quality — higher = better graph, slower build
-})
-
-// Dot product with HNSW
-await articles.createVectorIndex('embedding', { dimensions: 1536, metric: 'dot', indexType: 'hnsw' })
-
-// Euclidean distance (converted to similarity score)
-await articles.createVectorIndex('coords', { dimensions: 2, metric: 'euclidean' })
-```
-
-**Flat vs HNSW:**
-
-| | `flat` | `hnsw` |
-|---|---|---|
-| Search | Exact, O(n·d) | Approximate (~95–99% recall), O(log n · d) |
-| Build | Instant | O(n log n) |
-| Memory | Vectors only | Vectors + graph (~`m × 2 × n` edges) |
-| Best for | < ~10K docs, or when exact results are required | > ~10K docs where query latency matters |
-
-When `indexType: 'hnsw'` is set, the HNSW graph is built in-memory at index creation time. The flat vector table is always kept as the source of truth — use [`upgradeVectorIndex`](#upgradevectorindexfield) to rebuild the graph after bulk inserts.
-
-Existing documents that already have a valid numeric array in `field` are backfilled automatically. Documents where `field` is absent or not a numeric array are skipped silently.
-
-Vectors are stored in a dedicated `vec::<collection>::<field>` redb table and updated atomically on every `insert`, `updateOne`, `updateMany`, `deleteOne`, and `deleteMany`.
-
-Throws `IndexExists` if a vector index already exists on this field.
-
-## `dropVectorIndex(field)`
-
-Removes a vector index and all its stored vectors. `findNearest` calls on this field will fail after dropping.
-
-```ts
-dropVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>
-```
-
-```ts
-await articles.dropVectorIndex('embedding')
-```
-
-Throws `VectorIndexNotFound` if no vector index exists on this field.
-
-## `upgradeVectorIndex(field)`
-
-Rebuilds the HNSW graph for a vector index from the current flat vector table. Use this after bulk inserts or when approximate-nearest-neighbor recall has degraded.
-
-```ts
-upgradeVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>
-```
-
-```ts
-// After a bulk import, rebuild the HNSW graph so findNearest uses the latest data
-await articles.upgradeVectorIndex('embedding')
-```
-
-The graph is rebuilt entirely in memory — no disk I/O beyond reading the flat vector table. The flat table is never modified.
-
-This is a no-op when:
-- The index was created with `indexType: 'flat'` (no HNSW options stored)
-- The `vector-hnsw` feature is disabled at compile time
-
-You can also trigger this from the CLI: see [`upgrade-vector-index`](/guide/cli#upgrade-vector-index-rebuild-hnsw-graph) in the CLI docs.
-
-Throws `VectorIndexNotFound` if no vector index exists on `field`.
-
-## `findNearest(field, vector, topK, filter?)`
-
-Returns the `topK` most similar documents to `vector` using the named vector index. Results are ordered by descending similarity score (highest first).
-
-When the index was created with `indexType: 'hnsw'` and the HNSW graph is in memory, the search uses the approximate graph automatically. Falls back to flat (brute-force) scan when no graph is available (e.g. after `upgradeVectorIndex` has not yet been called, or when a `filter` is provided — pre-filtering always forces the flat path).
-
-```ts
-findNearest(
-  field: keyof Omit<T, '_id'> & string,
-  vector: number[],
-  topK: number,
-  filter?: Filter<T>,
-): Promise<VectorSearchResult<T>[]>
-```
-
-`VectorSearchResult<T>`:
-
-| Property | Type | Description |
-|---|---|---|
-| `document` | `T` | The matched document, including all fields and `_id`. |
-| `score` | `number` | Similarity score — higher is more similar. Range depends on the metric. |
-
-**Score ranges by metric:**
-
-| Metric | Range | Notes |
-|---|---|---|
-| `cosine` | [-1, 1] | 1.0 = identical direction, 0 = orthogonal, -1 = opposite |
-| `dot` | Unbounded | Depends on vector magnitude — use with unit-normalised vectors |
-| `euclidean` | (0, 1] | 1.0 = identical, approaches 0 as distance increases |
-
-**Basic usage:**
-
-```ts
-const query = await embed('how do I reset my password?')
-const results = await articles.findNearest('embedding', query, 5)
-
-results.forEach(({ document, score }) => {
-  console.log(`${score.toFixed(3)}  ${document.title}`)
-})
-```
-
-**Hybrid search — metadata filter + vector ranking:**
-
-Pass a standard `Filter<T>` as the fourth argument. Only documents matching the filter are considered as candidates before scoring.
-
-```ts
-// Find the 5 most relevant english support articles
-const results = await articles.findNearest('embedding', query, 5, {
-  category: 'support',
-  locale: 'en',
-})
-```
-
-The filter accepts any operator supported by `find` — `$and`, `$or`, `$in`, `$gt`, `$exists`, etc.
-
-**Errors:**
-
-- `VectorIndexNotFound` — no vector index exists on `field`
-- `VectorDimensionMismatch` — `vector.length` does not match the index's configured `dimensions`
 
 ## `aggregate(pipeline)`
 

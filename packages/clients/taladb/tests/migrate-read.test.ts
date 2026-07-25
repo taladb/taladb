@@ -23,6 +23,8 @@ function stub(docs: UserDoc[]): Collection<UserDoc> {
     updateMany: async () => 0,
     deleteOne: async () => true,
     deleteMany: async () => 0,
+    replaceManyWithIds: async (rows) => rows.map((row) => row._id),
+    deleteManyWithIds: async () => 0,
     count: async () => docs.length,
     aggregate: async () => [],
     createIndex: async () => {},
@@ -37,6 +39,7 @@ function stub(docs: UserDoc[]): Collection<UserDoc> {
     upgradeVectorIndex: async () => {},
     findNearest: async () => [],
     subscribe: () => () => {},
+    subscribeAggregate: () => () => {},
   };
 }
 
@@ -127,25 +130,77 @@ describe('persistMigrations (persist-on-read)', () => {
     expect(doc.fullName).toBe('Ada Lovelace');
     expect(updateOne).toHaveBeenCalledTimes(1);
     const [filter, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
-    expect(filter).toEqual({ _id: 'u1' });
+    expect(filter).toEqual({
+      $and: [{ _id: 'u1' }, { _v: { $exists: false } }],
+    });
     expect(update.$set).toMatchObject({ fullName: 'Ada Lovelace', _v: 2 });
   });
 
-  it('$unset removes fields dropped by the migration', async () => {
-    // migrate v2→v3 renames `fullName` to `name` (drops fullName).
+  it('guards write-back with the stored version and change timestamp', async () => {
+    const { col, updateOne } = persistStub([
+      { _id: 'u1', _v: 1, _changed_at: 42, first: 'Ada', last: 'Lovelace' },
+    ]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 2 },
+      migrateDocument: migrate,
+      persistMigrations: true,
+    });
+    await wrapped.find();
+    expect(updateOne.mock.calls[0]?.[0]).toEqual({
+      $and: [{ _id: 'u1' }, { _v: 1 }, { _changed_at: 42 }],
+    });
+  });
+
+  // A migration that drops a field is, by default, treated as *not knowing about*
+  // that field rather than as intending to delete it — because on a synced
+  // collection those two are indistinguishable from the migration's output, and
+  // guessing "delete" propagates a newer peer's field into oblivion under LWW.
+  const renameV2toV3 = (d: UserDoc): UserDoc => {
+    const { fullName, ...rest } = d as UserDoc & { fullName?: string };
+    return { ...rest, name: fullName } as UserDoc;
+  };
+
+  it('write-back is additive-only: a dropped field is not $unset by default', async () => {
     const { col, updateOne } = persistStub([{ _id: 'u1', _v: 2, fullName: 'Ada L' } as UserDoc]);
     const wrapped = applySchema(col, {
       syncSchema: { version: 3 },
-      migrateDocument: (d) => {
-        const { fullName, ...rest } = d as UserDoc & { fullName?: string };
-        return { ...rest, name: fullName } as UserDoc;
-      },
+      migrateDocument: renameV2toV3,
       persistMigrations: true,
     });
     await wrapped.find();
     const [, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
     expect(update.$set).toMatchObject({ name: 'Ada L', _v: 3 });
+    expect(update.$unset).toBeUndefined(); // fullName survives in storage
+  });
+
+  it('$unset removes fields dropped by the migration under allowFieldRemoval', async () => {
+    const { col, updateOne } = persistStub([{ _id: 'u1', _v: 2, fullName: 'Ada L' } as UserDoc]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 3 },
+      migrateDocument: renameV2toV3,
+      persistMigrations: true,
+      allowFieldRemoval: true,
+    });
+    await wrapped.find();
+    const [, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(update.$set).toMatchObject({ name: 'Ada L', _v: 3 });
     expect(update.$unset).toEqual({ fullName: true });
+  });
+
+  it('removes only explicitly retired fields', async () => {
+    const { col, updateOne } = persistStub([
+      { _id: 'u1', _v: 2, fullName: 'Ada L', futureField: 'keep' } as UserDoc,
+    ]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 3 },
+      migrateDocument: renameV2toV3,
+      persistMigrations: true,
+      retiredFields: ['fullName'],
+    });
+    await wrapped.find();
+    const [, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(update.$unset).toEqual({ fullName: true });
+    expect((update.$unset as Record<string, unknown>).futureField).toBeUndefined();
   });
 
   it('does not write when persistMigrations is off', async () => {
@@ -364,5 +419,218 @@ describe('syncSchema validation', () => {
     expect(() =>
       applySchema(stub([]), { syncSchema: { version: 2, renames: { name: 'fullName' } } }),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Version drift across a heterogeneous fleet.
+//
+// The scenario these guard: client A is offline for three weeks on v1 while
+// client B ships v2 and adds a field. When A reconnects it must (a) still be
+// able to *read* B's newer documents, and (b) not destroy B's field just
+// because A's build has never heard of it. Under whole-document LWW, a replica
+// that silently narrows a document it does not understand does not merely fail
+// to see a field — it deletes that field for everyone.
+// ---------------------------------------------------------------------------
+
+interface DriftDoc extends Document {
+  name?: string;
+  /** Introduced by v2. A v1 build has no idea this exists. */
+  fullName?: string;
+}
+
+/** The v1 build's schema — Zod-like: validates known keys, strips unknown ones. */
+const SchemaV1 = {
+  parse(doc: unknown): DriftDoc {
+    const d = doc as Record<string, unknown>;
+    if (typeof d.name !== 'string') throw new Error('name required');
+    const out: Record<string, unknown> = { name: d.name };
+    if (d._id !== undefined) out._id = d._id;
+    if (d._v !== undefined) out._v = d._v;
+    return out as DriftDoc;
+  },
+};
+
+describe('version drift: an old client must not narrow a newer document', () => {
+  it('validateOnRead preserves a field the local schema does not model', async () => {
+    const col = applySchema(stub([{ _id: 'u1', _v: 2, name: 'Ada', fullName: 'Ada Lovelace' }]), {
+      schema: SchemaV1 as never,
+      syncSchema: { version: 1 },
+      validateOnRead: true,
+    });
+    const [doc] = await col.find();
+    // Zod's parse() would have stripped fullName; the read must restore it, or a
+    // read-modify-write in app code writes the truncated doc back.
+    expect(doc.fullName).toBe('Ada Lovelace');
+    expect(doc.name).toBe('Ada');
+  });
+
+  it('still allows a local strict schema to intentionally strip unknown fields', async () => {
+    const col = applySchema(stub([{ _id: 'u1', name: 'Ada', injected: 'drop me' } as DriftDoc]), {
+      schema: SchemaV1 as never,
+      validateOnRead: true,
+    });
+    const [doc] = await col.find();
+    expect(doc).not.toHaveProperty('injected');
+  });
+
+  it('persist-on-read write-back does not $unset a newer peer field', async () => {
+    const updateOne = vi.fn(async () => true);
+    const base = stub([{ _id: 'u1', name: 'Ada', fullName: 'Ada Lovelace' } as DriftDoc]);
+    const col = applySchema({ ...base, updateOne } as unknown as Collection<DriftDoc>, {
+      syncSchema: { version: 1 },
+      // A v1 author's migration. They cannot possibly mention fullName — v2
+      // has not been written yet.
+      migrateDocument: (d) => ({ _id: d._id, name: d.name ?? '' }) as DriftDoc,
+      persistMigrations: true,
+    });
+    const [doc] = await col.find();
+    const [, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(update.$unset).toBeUndefined(); // the deletion that would replicate
+    expect(doc.fullName).toBe('Ada Lovelace'); // and it survives the read, too
+  });
+
+  it('downgradeDocument projects a newer document into the shape this build reads', async () => {
+    const col = applySchema(stub([{ _id: 'u1', _v: 2, fullName: 'Ada Lovelace' } as DriftDoc]), {
+      syncSchema: { version: 1 },
+      downgradeDocument: (d) => ({ ...d, name: d.fullName }),
+    });
+    const [doc] = await col.find();
+    expect(doc.name).toBe('Ada Lovelace'); // v1 code can read it
+    expect(doc._v).toBe(2); // still advertises the shape it really is
+  });
+
+  it('forces a downcast to retain the stored identity and higher version', async () => {
+    const col = applySchema(stub([{ _id: 'u1', _v: 2, fullName: 'Ada Lovelace' } as DriftDoc]), {
+      syncSchema: { version: 1 },
+      downgradeDocument: () => ({ _id: 'wrong', _v: 1, name: 'Ada' } as DriftDoc),
+    });
+    const [doc] = await col.find();
+    expect(doc._id).toBe('u1');
+    expect(doc._v).toBe(2);
+  });
+
+  it('rejects replacing the same downcast compatibility view', async () => {
+    const replaceManyWithIds = vi.fn(async () => ['u1']);
+    const base = { ...stub([{ _id: 'u1', _v: 2, fullName: 'Ada' } as DriftDoc]), replaceManyWithIds } as Collection<DriftDoc>;
+    const col = applySchema(base, {
+      syncSchema: { version: 1 },
+      downgradeDocument: (d) => ({ name: d.fullName } as DriftDoc),
+    });
+    const [view] = await col.find();
+    await expect(col.replaceManyWithIds([view], 'local')).rejects.toThrow(/read-only compatibility view/);
+    expect(replaceManyWithIds).not.toHaveBeenCalled();
+  });
+
+  it('guards updates and deletes so an old client cannot mutate a future document', async () => {
+    const updateOne = vi.fn(async () => false);
+    const deleteOne = vi.fn(async () => false);
+    const base = { ...stub([]), updateOne, deleteOne } as Collection<DriftDoc>;
+    const col = applySchema(base, { syncSchema: { version: 1 } });
+    await col.updateOne({ _id: 'u1' }, { $set: { name: 'old edit' } });
+    await col.deleteOne({ _id: 'u1' });
+    expect(updateOne.mock.calls[0]?.[0]).toMatchObject({ $and: expect.any(Array) });
+    expect(deleteOne.mock.calls[0]?.[0]).toMatchObject({ $and: expect.any(Array) });
+    expect(JSON.stringify(updateOne.mock.calls[0]?.[0])).toContain('$lte');
+  });
+
+  it('rejects local bulk replacement/deletion on versioned collections', async () => {
+    const replaceManyWithIds = vi.fn(async () => ['u1']);
+    const deleteManyWithIds = vi.fn(async () => 1);
+    const base = { ...stub([]), replaceManyWithIds, deleteManyWithIds } as Collection<DriftDoc>;
+    const col = applySchema(base, { syncSchema: { version: 1 } });
+    await expect(
+      col.replaceManyWithIds([{ _id: 'u1', name: 'Ada' } as DriftDoc], 'local'),
+    ).rejects.toThrow(/disabled on versioned collections/);
+    await expect(col.deleteManyWithIds(['u1'], 'local')).rejects.toThrow(
+      /disabled on versioned collections/,
+    );
+    expect(replaceManyWithIds).not.toHaveBeenCalled();
+    expect(deleteManyWithIds).not.toHaveBeenCalled();
+  });
+
+  it('allows remote replication bulk writes on versioned collections', async () => {
+    const replaceManyWithIds = vi.fn(async () => ['u1']);
+    const deleteManyWithIds = vi.fn(async () => 1);
+    const base = { ...stub([]), replaceManyWithIds, deleteManyWithIds } as Collection<DriftDoc>;
+    const col = applySchema(base, { syncSchema: { version: 1 } });
+    await col.replaceManyWithIds([{ _id: 'u1', _v: 2, name: 'Ada' } as DriftDoc], 'remote');
+    await col.deleteManyWithIds(['u1'], 'remote');
+    expect(replaceManyWithIds).toHaveBeenCalledOnce();
+    expect(deleteManyWithIds).toHaveBeenCalledOnce();
+  });
+
+  it('rejects direct updates to engine-owned metadata', async () => {
+    const updateOne = vi.fn(async () => true);
+    const col = applySchema({ ...stub([]), updateOne } as Collection<DriftDoc>, {
+      syncSchema: { version: 1 },
+    });
+    await expect(
+      col.updateOne({ _id: 'u1' }, { $set: { _v: 2 } }),
+    ).rejects.toThrow(/engine-owned field '_v'/);
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('normalizes shape-preserving aggregate and live-aggregate results', async () => {
+    const future = { _id: 'u1', _v: 2, fullName: 'Ada Lovelace' } as DriftDoc;
+    const aggregate = vi.fn(async () => [future]);
+    const subscribeAggregate = vi.fn((_p, cb: (docs: DriftDoc[]) => void) => {
+      cb([future]);
+      return () => {};
+    });
+    const base = { ...stub([]), aggregate, subscribeAggregate } as Collection<DriftDoc>;
+    const col = applySchema(base, {
+      syncSchema: { version: 1 },
+      downgradeDocument: (d) => ({ name: d.fullName } as DriftDoc),
+    });
+    const [row] = await col.aggregate([{ $match: {} }]);
+    expect(row).toMatchObject({ _id: 'u1', _v: 2, name: 'Ada Lovelace' });
+    let live: DriftDoc[] = [];
+    col.subscribeAggregate([{ $limit: 1 }], (docs) => { live = docs; });
+    expect(live[0]).toMatchObject({ _v: 2, name: 'Ada Lovelace' });
+  });
+
+  it('does not normalize synthetic group/project aggregate rows', async () => {
+    const aggregate = vi.fn(async () => [{ _id: 'group', count: 2 } as DriftDoc]);
+    const base = { ...stub([]), aggregate } as Collection<DriftDoc>;
+    const down = vi.fn((d: Readonly<DriftDoc>) => ({ ...d, name: 'wrong' }));
+    const col = applySchema(base, { syncSchema: { version: 1 }, downgradeDocument: down });
+    const rows = await col.aggregate([{ $group: { _id: null, count: { $sum: 1 } } } as never]);
+    expect(down).not.toHaveBeenCalled();
+    expect(rows[0]).not.toHaveProperty('name');
+  });
+
+  it('a downcast projection is never written back, even with persistMigrations', async () => {
+    const updateOne = vi.fn(async () => true);
+    const base = stub([{ _id: 'u1', _v: 2, fullName: 'Ada Lovelace' } as DriftDoc]);
+    const col = applySchema({ ...base, updateOne } as unknown as Collection<DriftDoc>, {
+      syncSchema: { version: 1 },
+      downgradeDocument: (d) => ({ _id: d._id, _v: d._v, name: d.fullName }) as DriftDoc,
+      persistMigrations: true,
+      allowFieldRemoval: true, // even at its most destructive setting
+    });
+    await col.find();
+    // Persisting the projection would overwrite a v2 document with v1's lossy
+    // view of it and push that outward under LWW.
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('downgradeDocument requires syncSchema.version', () => {
+    expect(() => applySchema(stub([]), { downgradeDocument: (d) => d })).toThrow(
+      'requires syncSchema.version',
+    );
+  });
+
+  it('leaves an at-version document untouched (neither hook fires)', async () => {
+    const up = vi.fn((d: DriftDoc) => d);
+    const down = vi.fn((d: DriftDoc) => d);
+    const col = applySchema(stub([{ _id: 'u1', _v: 1, name: 'Ada' }]), {
+      syncSchema: { version: 1 },
+      migrateDocument: up,
+      downgradeDocument: down,
+    });
+    await col.find();
+    expect(up).not.toHaveBeenCalled();
+    expect(down).not.toHaveBeenCalled();
   });
 });

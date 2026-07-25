@@ -5,7 +5,7 @@
     "thinkgrid-labs"
   ],
   "description": "TalaDB browser WASM bindings (wasm-bindgen + OPFS) and Cloudflare Workers",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "license": "MIT",
   "files": [
     "taladb_web_bg.wasm",

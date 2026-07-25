@@ -3,7 +3,7 @@
     <div class="cta-container">
       <h2 class="cta-headline">Start building local-first today.</h2>
       <p class="cta-sub">
-        Free, open-source, MIT licensed. One API across browser, Node.js,
+        Free, open-source, Apache 2.0 licensed. One API across browser, Node.js,
         and React Native — no cloud required.
       </p>
       <div class="cta-actions">

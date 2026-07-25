@@ -3,7 +3,7 @@
 Local-first document database for React, React Native, and Node.js — powered by a Rust/WASM core with zero GC pauses.
 
 [![npm](https://img.shields.io/npm/v/taladb)](https://www.npmjs.com/package/taladb)
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](LICENSE)
 
 ## What is TalaDB?
 
@@ -147,4 +147,4 @@ await runMigrations(db, [
 
 ## License
 
-MIT © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)

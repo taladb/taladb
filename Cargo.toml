@@ -9,10 +9,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.4"
+version = "0.10.0"
 edition = "2024"
 authors = ["thinkgrid-labs"]
-license = "MIT"
+license = "Apache-2.0"
 
 [profile.release]
 opt-level = 3

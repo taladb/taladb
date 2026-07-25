@@ -1,6 +1,6 @@
 {
   "name": "@taladb/next",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "First-party Next.js integration for TalaDB — sync route handlers for the server, a SyncProvider for the client",
   "sideEffects": false,
   "exports": {
@@ -33,7 +33,7 @@
     "offline",
     "taladb"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/thinkgrid-labs/taladb.git",
@@ -47,9 +47,9 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@taladb/react": "^0.9.4",
+    "@taladb/react": "^0.10.0",
     "react": ">=18.0.0",
-    "taladb": "^0.9.4"
+    "taladb": "^0.10.0"
   },
   "peerDependenciesMeta": {
     "@taladb/react": {

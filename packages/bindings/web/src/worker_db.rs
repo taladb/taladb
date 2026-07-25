@@ -792,6 +792,97 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Rank documents against a free-text query using BM25 (OR semantics).
+    ///
+    /// Returns a JSON array of `{ document, score }`.
+    #[wasm_bindgen(js_name = searchText)]
+    pub fn search_text(
+        &self,
+        collection: &str,
+        field: &str,
+        query: &str,
+        top_k: u32,
+        filter_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        let pre_filter = parse_optional_filter(filter_json)?;
+        let options = parse_options(options_json)?;
+        let bm25 = bm25_from_options(options.as_ref());
+
+        let results = self
+            .db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .search_text_with(field, query, top_k as usize, &bm25, pre_filter)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect();
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+    /// rank fusion.
+    ///
+    /// `options_json` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+    /// Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = hybridSearch)]
+    pub fn hybrid_search(
+        &self,
+        collection: &str,
+        text_field: &str,
+        text: &str,
+        vector_field: &str,
+        vector_json: &str,
+        top_k: u32,
+        filter_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        let vector: Vec<f32> =
+            serde_json::from_str(vector_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pre_filter = parse_optional_filter(filter_json)?;
+        let options = parse_options(options_json)?;
+
+        let mut query = taladb_core::fts::HybridQuery::new(
+            text_field,
+            text,
+            vector_field,
+            &vector,
+            top_k as usize,
+        );
+        query.filter = pre_filter;
+        query.bm25 = bm25_from_options(options.as_ref());
+        query.rrf = rrf_from_options(options.as_ref());
+        query.candidates = options
+            .as_ref()
+            .and_then(|o| o.get("candidates"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let results = self
+            .db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .hybrid_search(query)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "score": r.score,
+                    "textRank": r.text_rank,
+                    "vectorRank": r.vector_rank,
+                })
+            })
+            .collect();
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Create a vector index.
     ///
     /// - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
@@ -1159,6 +1250,63 @@ fn json_obj_to_doc(v: &serde_json::Value) -> Result<Document, JsValue> {
         .map(|(k, v)| (k.clone(), json_to_core_value(v)))
         .collect();
     Ok(Document::with_id(id, fields))
+}
+
+/// Parse a filter argument that may legitimately be absent.
+///
+/// The worker protocol sends `"null"` (and, defensively, an empty string) for
+/// "no filter" rather than omitting the argument.
+fn parse_optional_filter(json: &str) -> Result<Option<Filter>, JsValue> {
+    if json.is_empty() || json == "null" {
+        return Ok(None);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        json_to_filter_val(&v).ok_or_else(|| JsValue::from_str("invalid filter"))?,
+    ))
+}
+
+/// Parse the shared options bag, treating absent/blank/`null` as "defaults".
+fn parse_options(json: &str) -> Result<Option<serde_json::Value>, JsValue> {
+    if json.is_empty() || json == "null" {
+        return Ok(None);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(if v.is_null() { None } else { Some(v) })
+}
+
+fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
+    let mut params = taladb_core::bm25::Bm25Params::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+            params.k1 = v as f32;
+        }
+        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+            params.b = v as f32;
+        }
+    }
+    params
+}
+
+fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
+    let mut params = taladb_core::bm25::RrfParams::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+            params.k = v as f32;
+        }
+        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+            params.text_weight = v as f32;
+        }
+        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+            params.vector_weight = v as f32;
+        }
+    }
+    params
 }
 
 fn parse_filter(json: &str) -> Result<Filter, JsValue> {

@@ -36,6 +36,67 @@ interface VectorSearchResult<T extends Document = Document> {
      */
     score: number;
 }
+interface TextSearchResult<T extends Document = Document> {
+    /** The matched document. */
+    document: T;
+    /**
+     * BM25 relevance score — higher means more relevant. Unbounded above, and
+     * only meaningful for ordering within a single query's result set.
+     */
+    score: number;
+}
+/** Tuning for `searchText`'s BM25 ranking. */
+interface TextSearchOptions {
+    /**
+     * Term-frequency saturation (BM25 `k1`, default `1.2`). Higher values let a
+     * repeated term keep adding relevance for longer.
+     */
+    k1?: number;
+    /**
+     * Length normalisation (BM25 `b`, default `0.75`). `0` ignores document
+     * length; `1` normalises fully by length relative to the corpus average.
+     */
+    b?: number;
+}
+interface HybridSearchResult<T extends Document = Document> {
+    /** The matched document. */
+    document: T;
+    /**
+     * Fused reciprocal-rank-fusion score. Small by construction and meaningful
+     * only as an ordering within one result set — never a similarity or a
+     * confidence.
+     */
+    score: number;
+    /**
+     * Zero-based position in the text ranking, or `null` if the text retriever
+     * did not return this document.
+     */
+    textRank: number | null;
+    /**
+     * Zero-based position in the vector ranking, or `null` if the vector
+     * retriever did not return this document.
+     */
+    vectorRank: number | null;
+}
+/** Tuning for `hybridSearch`'s fusion and per-retriever scoring. */
+interface HybridSearchOptions extends TextSearchOptions {
+    /**
+     * Reciprocal rank fusion smoothing constant (default `60`). Larger values
+     * flatten the advantage of the very top ranks.
+     */
+    rrfK?: number;
+    /** Relative weight of the text ranking (default `1`). Set `0` to disable it. */
+    textWeight?: number;
+    /** Relative weight of the vector ranking (default `1`). Set `0` to disable it. */
+    vectorWeight?: number;
+    /**
+     * How many candidates to pull from each retriever before fusing
+     * (default `max(topK * 4, 20)`). Raise it for better recall at more cost;
+     * fusing only `topK` from each side drops documents that rank just outside
+     * one retriever but high in the other.
+     */
+    candidates?: number;
+}
 type Value = null | boolean | number | string | Uint8Array | Value[] | {
     [key: string]: Value;
 };
@@ -222,11 +283,41 @@ interface CollectionOptions<T extends Document = Document> {
      */
     migrateDocument?: (doc: T, fromVersion: number) => T;
     /**
+     * Lazy, read-time **downcast** — the mirror of {@link migrateDocument}, for a
+     * document written by a *newer* peer. When set, every document returned by
+     * `find` / `findOne` whose `_v` is **above** `syncSchema.version` is passed
+     * through `downgradeDocument(doc, fromVersion)` and projected into the shape
+     * this build understands, so application code on an old client sees a shape
+     * it can actually read instead of an unexpected future one.
+     *
+     * Requires `syncSchema.version`. Must be pure and deterministic.
+     *
+     * **The projection is view-only and is never persisted**, regardless of
+     * {@link persistMigrations}. The stored document keeps its original `_v` and
+     * its newer fields intact, because this replica must continue to replicate
+     * that document faithfully to other peers — an old client is a *reader* of a
+     * newer shape, never its editor. For the same reason the returned document
+     * keeps its original (higher) `_v`: it is a projection of a v-N document, not
+     * a v-M one, and writing it back wholesale would tell the fleet otherwise.
+     *
+     * @example
+     * // This build understands v1. A v2 peer split `name` into first/last.
+     * const users = db.collection<User>('users', {
+     *   syncSchema: { version: 1 },
+     *   downgradeDocument: (doc) => ({ ...doc, name: `${doc.first} ${doc.last}` }),
+     * });
+     */
+    downgradeDocument?: (doc: Readonly<T>, fromVersion: number) => T;
+    /**
      * When `true`, a document upgraded by {@link migrateDocument} on read is
-     * **written back** to storage (a best-effort `updateOne` computing the
-     * `$set`/`$unset` diff) so the migration becomes permanent — after which
-     * filters and indexes on the new shape match it. Default `false` (the
-     * migrated shape is returned but not persisted).
+     * **written back** to storage (a best-effort `updateOne` computing a `$set`
+     * diff) so the migration becomes permanent — after which filters and indexes
+     * on the new shape match it. Default `false` (the migrated shape is returned
+     * but not persisted).
+     *
+     * The write-back is **additive-only** except for fields explicitly listed in
+     * {@link retiredFields}. A field present in storage but absent from the
+     * migrated document is otherwise left alone rather than `$unset`.
      *
      * Trade-offs: reads that encounter un-migrated documents now issue writes
      * (which fire live-query and sync-hook notifications like any other write);
@@ -234,6 +325,35 @@ interface CollectionOptions<T extends Document = Document> {
      * one-shot eager rewrite instead, prefer `openDB({ migrations })`.
      */
     persistMigrations?: boolean;
+    /**
+     * Fields an upcast is explicitly allowed to remove during persist-on-read.
+     * Prefer this precise list to {@link allowFieldRemoval}: omissions of any
+     * other field remain additive and are preserved.
+     */
+    retiredFields?: (keyof T & string)[];
+    /**
+     * How to read a field that {@link migrateDocument} left out of its output:
+     * as an intentional removal (`true`), or as a field the migration simply
+     * never heard of (`false`, the default).
+     *
+     * Default `false` — omitted fields are **preserved**: kept on the document
+     * returned to your code, and left in storage by the {@link persistMigrations}
+     * write-back rather than `$unset`.
+     *
+     * This default exists because on a synced collection the two cases are
+     * indistinguishable from the migration's output, and guessing "removal" is
+     * the destructive guess. A migration written today cannot mention a field a
+     * *newer* peer will add tomorrow, so an innocent `(doc) => ({ id, name })`
+     * becomes a deletion of a field its author never heard of — and under
+     * whole-document LWW that deletion replicates to the whole fleet. An old
+     * replica has to stay a faithful carrier of shapes it does not understand.
+     *
+     * Set `true` only on a collection that never syncs, or during a deliberate
+     * add → backfill → dual-read → **retire** rollout, where you already know the
+     * whole fleet has stopped writing the field.
+     */
+    /** @deprecated Prefer {@link retiredFields}; this treats every omission as removal. */
+    allowFieldRemoval?: boolean;
 }
 /** A single MongoDB-style aggregation stage. */
 type AggregateStage<T extends Document = Document> = {
@@ -351,6 +471,44 @@ interface Collection<T extends Document = Document> {
     createFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
     /** Drop a full-text search index. */
     dropFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+    /**
+     * Rank documents against a free-text `query` using BM25, most relevant first.
+     *
+     * Unlike the `$contains` filter, which requires **every** token to be
+     * present, this uses OR semantics — a document that matches more of the
+     * query simply scores higher. Requires an FTS index on `field`.
+     *
+     * @example
+     * const hits = await articles.searchText('body', 'reset my password', 5);
+     * // hits: Array<{ document: Article, score: number }>
+     */
+    searchText(field: keyof Omit<T, '_id'> & string, query: string, topK: number, filter?: Filter<T>, options?: TextSearchOptions): Promise<TextSearchResult<T>[]>;
+    /**
+     * Hybrid retrieval: rank by keyword relevance (BM25) **and** vector
+     * similarity, then fuse the two rankings with reciprocal rank fusion.
+     *
+     * The two retrievers fail differently — keyword search misses paraphrases,
+     * vector search misses exact identifiers and rare proper nouns — so fusing
+     * them recovers both. A document both retrievers rank well outranks one that
+     * only a single retriever found. Requires an FTS index on `textField` and a
+     * vector index on `vectorField`.
+     *
+     * The optional `filter` is applied to both retrievers before ranking.
+     *
+     * @example
+     * const hits = await articles.hybridSearch(
+     *   { textField: 'body', text: 'reset my password' },
+     *   { vectorField: 'embedding', vector: queryVec },
+     *   5,
+     * );
+     */
+    hybridSearch(text: {
+        textField: keyof Omit<T, '_id'> & string;
+        text: string;
+    }, vector: {
+        vectorField: keyof Omit<T, '_id'> & string;
+        vector: number[];
+    }, topK: number, filter?: Filter<T>, options?: HybridSearchOptions): Promise<HybridSearchResult<T>[]>;
     /**
      * Return the indexes that currently exist on this collection.
      *
@@ -1321,4 +1479,4 @@ interface OpenDBOptions {
  */
 declare function openDB(dbName?: string, options?: OpenDBOptions): Promise<TalaDB>;
 
-export { type AggregatePipeline, type AggregateStage, type BootstrapPage, type BootstrapRequest, type BridgeQuery, type BridgeResult, COVERAGE_COLLECTION, type Collection, type CollectionIndexInfo, type CollectionOptions, type CoordinatorOptions, type CoverageKey, type CoverageState, CoverageStore, type CursorSyncAdapter, type DeltaPage, type Document, type DurabilityConfig, type Filter, HttpSyncAdapter, type Migration, type OpenDBOptions, type PullResult, REPLICA_REVISION_FIELD, REPLICA_SCOPE_FIELD, type RemoteKey, ReplicationCoordinator, type ReplicationSource, type RestSourceOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, type WriteOrigin, applySchema, coverageKey, createRestSource, deriveDocId, isAuthoritative, openDB, progress, rowsApplied, runMigrations };
+export { type AggregatePipeline, type AggregateStage, type BootstrapPage, type BootstrapRequest, type BridgeQuery, type BridgeResult, COVERAGE_COLLECTION, type Collection, type CollectionIndexInfo, type CollectionOptions, type CoordinatorOptions, type CoverageKey, type CoverageState, CoverageStore, type CursorSyncAdapter, type DeltaPage, type Document, type DurabilityConfig, type Filter, HttpSyncAdapter, type HybridSearchOptions, type HybridSearchResult, type Migration, type OpenDBOptions, type PullResult, REPLICA_REVISION_FIELD, REPLICA_SCOPE_FIELD, type RemoteKey, ReplicationCoordinator, type ReplicationSource, type RestSourceOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type TextSearchOptions, type TextSearchResult, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, type WriteOrigin, applySchema, coverageKey, createRestSource, deriveDocId, isAuthoritative, openDB, progress, rowsApplied, runMigrations };

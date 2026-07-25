@@ -843,6 +843,119 @@ impl CollectionNode {
         self.inner.upgrade_vector_index(&field).map_err(err_to_napi)
     }
 
+    /// Return the indexes on this collection as a JSON string
+    /// `{ btree: string[], fts: string[], vector: string[] }`.
+    #[napi(js_name = "listIndexes")]
+    pub fn list_indexes(&self) -> napi::Result<String> {
+        let info = self.inner.list_indexes().map_err(err_to_napi)?;
+        serde_json::to_string(&serde_json::json!({
+            "btree": info.btree,
+            "fts": info.fts,
+            "vector": info.vector,
+        }))
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Create a full-text search index on a string field.
+    #[napi(js_name = "createFtsIndex")]
+    pub fn create_fts_index(&self, field: String) -> napi::Result<()> {
+        self.inner.create_fts_index(&field).map_err(err_to_napi)
+    }
+
+    /// Drop a full-text search index and everything it stores.
+    #[napi(js_name = "dropFtsIndex")]
+    pub fn drop_fts_index(&self, field: String) -> napi::Result<()> {
+        self.inner.drop_fts_index(&field).map_err(err_to_napi)
+    }
+
+    /// Rank documents against a free-text query using BM25.
+    ///
+    /// Unlike the `$contains` filter, which requires every token, this uses
+    /// OR semantics — matching more query terms simply scores higher.
+    ///
+    /// Returns an array of `{ document: {...}, score: number }` objects.
+    #[napi(js_name = "searchText")]
+    pub fn search_text(
+        &self,
+        field: String,
+        query: String,
+        top_k: u32,
+        filter: Option<JsonValue>,
+        options: Option<JsonValue>,
+    ) -> napi::Result<Vec<JsonValue>> {
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+        let bm25 = parse_bm25_options(options.as_ref());
+
+        let results = self
+            .inner
+            .search_text_with(&field, &query, top_k as usize, &bm25, pre_filter)
+            .map_err(err_to_napi)?;
+
+        Ok(results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect())
+    }
+
+    /// Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+    /// rank fusion.
+    ///
+    /// `options` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+    /// Returns `{ document, score, textRank, vectorRank }`, where the ranks are
+    /// zero-based positions in each retriever's list or `null` if that
+    /// retriever did not return the document.
+    #[napi(js_name = "hybridSearch")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn hybrid_search(
+        &self,
+        text_field: String,
+        text: String,
+        vector_field: String,
+        vector: Vec<f64>,
+        top_k: u32,
+        filter: Option<JsonValue>,
+        options: Option<JsonValue>,
+    ) -> napi::Result<Vec<JsonValue>> {
+        let vector_f32: Vec<f32> = vector.iter().map(|&f| f as f32).collect();
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+
+        let mut query = taladb_core::fts::HybridQuery::new(
+            &text_field,
+            &text,
+            &vector_field,
+            &vector_f32,
+            top_k as usize,
+        );
+        query.filter = pre_filter;
+        query.bm25 = parse_bm25_options(options.as_ref());
+        query.rrf = parse_rrf_options(options.as_ref());
+        query.candidates = options
+            .as_ref()
+            .and_then(|o| o.get("candidates"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let results = self.inner.hybrid_search(query).map_err(err_to_napi)?;
+
+        Ok(results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "score": r.score,
+                    "textRank": r.text_rank,
+                    "vectorRank": r.vector_rank,
+                })
+            })
+            .collect())
+    }
+
     /// Find the `top_k` nearest documents to `query`.
     ///
     /// `filter` — optional pre-filter in the same JSON object format as `find`.
@@ -1032,6 +1145,38 @@ impl CollectionNode {
             filter: json_to_filter(&filter)?,
         }))
     }
+}
+
+/// Read BM25 tuning out of the shared options bag, falling back to defaults
+/// for anything absent or malformed.
+fn parse_bm25_options(options: Option<&JsonValue>) -> taladb_core::bm25::Bm25Params {
+    let mut params = taladb_core::bm25::Bm25Params::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+            params.k1 = v as f32;
+        }
+        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+            params.b = v as f32;
+        }
+    }
+    params
+}
+
+/// Read fusion tuning out of the shared options bag.
+fn parse_rrf_options(options: Option<&JsonValue>) -> taladb_core::bm25::RrfParams {
+    let mut params = taladb_core::bm25::RrfParams::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+            params.k = v as f32;
+        }
+        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+            params.text_weight = v as f32;
+        }
+        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+            params.vector_weight = v as f32;
+        }
+    }
+    params
 }
 
 fn format_nearest(results: &[VectorSearchResult]) -> Vec<JsonValue> {

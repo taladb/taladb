@@ -19,6 +19,10 @@ export class CollectionWasm {
      */
     createCompoundIndex(fields_json: string): void;
     /**
+     * Create a full-text search index on a string field.
+     */
+    createFtsIndex(field: string): void;
+    /**
      * Create a secondary index on a field.
      */
     createIndex(field: string): void;
@@ -49,6 +53,10 @@ export class CollectionWasm {
      */
     dropCompoundIndex(fields_json: string): void;
     /**
+     * Drop a full-text search index and everything it stores.
+     */
+    dropFtsIndex(field: string): void;
+    /**
      * Drop a secondary index.
      */
     dropIndex(field: string): void;
@@ -74,6 +82,14 @@ export class CollectionWasm {
      */
     findOne(filter: any): any;
     /**
+     * Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+     * rank fusion.
+     *
+     * `options` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+     * Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+     */
+    hybridSearch(text_field: string, text: string, vector_field: string, vector: Float32Array, top_k: number, filter: any, options: any): any;
+    /**
      * Insert a document. Accepts a plain JS object, returns the ULID string id.
      */
     insert(doc: any): string;
@@ -93,6 +109,12 @@ export class CollectionWasm {
      * or `"local"` for ordinary user writes.
      */
     replaceManyWithIds(docs: any, origin: string): any;
+    /**
+     * Rank documents against a free-text query using BM25 (OR semantics).
+     *
+     * Returns a JSON array of `{ document, score }`.
+     */
+    searchText(field: string, query: string, top_k: number, filter: any, options: any): any;
     /**
      * Update all matching documents. Returns the count updated.
      */
@@ -282,6 +304,14 @@ export class WorkerDB {
      */
     flush(): void;
     /**
+     * Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+     * rank fusion.
+     *
+     * `options_json` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+     * Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+     */
+    hybridSearch(collection: string, text_field: string, text: string, vector_field: string, vector_json: string, top_k: number, filter_json: string, options_json: string): string;
+    /**
      * Import a remote changeset and merge it into the local database using
      * Last-Write-Wins conflict resolution.
      *
@@ -388,6 +418,12 @@ export class WorkerDB {
      * never replicate back out — see `Collection::replace_many_with_ids`.
      */
     replaceManyWithIds(collection: string, docs_json: string, origin: string): string;
+    /**
+     * Rank documents against a free-text query using BM25 (OR semantics).
+     *
+     * Returns a JSON array of `{ document, score }`.
+     */
+    searchText(collection: string, field: string, query: string, top_k: number, filter_json: string, options_json: string): string;
     /**
      * Set write durability: `eventual = true` batches OPFS fsyncs for
      * throughput (call `flush()` to force), `false` (default) fsyncs each
@@ -498,6 +534,7 @@ export interface InitOutput {
     readonly workerdb_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly workerdb_findOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_flush: (a: number) => [number, number];
+    readonly workerdb_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number, number];
     readonly workerdb_importChangeset: (a: number, b: number, c: number) => [number, number, number];
     readonly workerdb_importChangesetValidated: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_insert: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
@@ -511,6 +548,7 @@ export interface InitOutput {
     readonly workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
     readonly workerdb_quarantined: (a: number, b: number, c: number) => [number, number, number, number];
     readonly workerdb_replaceManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly workerdb_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
     readonly workerdb_setDurability: (a: number, b: number) => void;
     readonly workerdb_setUserVersion: (a: number, b: number) => [number, number];
     readonly workerdb_syncPending: (a: number) => bigint;
@@ -524,20 +562,24 @@ export interface InitOutput {
     readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_createCompoundIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_createFtsIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_dropFtsIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropVectorIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_find: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
     readonly collectionwasm_findOne: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any, l: any) => [number, number, number];
     readonly collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
     readonly collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
+    readonly collectionwasm_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: any) => [number, number, number];
     readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
@@ -551,19 +593,19 @@ export interface InitOutput {
     readonly taladbwasm_setUserVersion: (a: number, b: number) => [number, number];
     readonly taladbwasm_userVersion: (a: number) => [number, number, number];
     readonly init: () => void;
-    readonly opfs_open_backend: (a: number, b: number) => any;
     readonly idb_load_snapshot: (a: number, b: number) => any;
     readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly is_opfs_available: () => any;
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
+    readonly opfs_open_backend: (a: number, b: number) => any;
     readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h19c12871948719de: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__hf48dca00410c72ae: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hf94044be7a5c5efa: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

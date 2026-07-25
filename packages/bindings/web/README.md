@@ -3,7 +3,7 @@
 Browser WASM bindings for TalaDB — persistent local-first storage via WASM + OPFS.
 
 [![npm](https://img.shields.io/npm/v/@taladb/web)](https://www.npmjs.com/package/@taladb/web)
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](LICENSE)
 
 > **Note:** Most users should install [`taladb`](https://www.npmjs.com/package/taladb) instead, which auto-selects this package when running in the browser.
 
@@ -90,4 +90,4 @@ pnpm --filter @taladb/web build
 
 ## License
 
-MIT © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)

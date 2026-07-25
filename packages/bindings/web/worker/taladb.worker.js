@@ -49,6 +49,8 @@
  * dropVectorIndex   { collection, field }
  * upgradeVectorIndex { collection, field }
  * findNearest       { collection, field, queryJson, topK, filterJson? }
+ * searchText        { collection, field, query, topK, filterJson?, optionsJson? }
+ * hybridSearch      { collection, textField, text, vectorField, vectorJson, topK, filterJson?, optionsJson? }
  * listCollections   {}                             → JSON string[]
  * compact           {}                             → null
  * compactTombstones { collection, beforeMs }       → number pruned
@@ -534,6 +536,28 @@ async function dispatch(op, args) {
         args.queryJson,
         args.topK,
         args.filterJson ?? 'null',
+      );
+
+    case 'searchText':
+      return db.searchText(
+        args.collection,
+        args.field,
+        args.query,
+        args.topK,
+        args.filterJson ?? 'null',
+        args.optionsJson ?? 'null',
+      );
+
+    case 'hybridSearch':
+      return db.hybridSearch(
+        args.collection,
+        args.textField,
+        args.text,
+        args.vectorField,
+        args.vectorJson,
+        args.topK,
+        args.filterJson ?? 'null',
+        args.optionsJson ?? 'null',
       );
 
     case 'listCollections':
