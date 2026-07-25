@@ -7,7 +7,7 @@
  * bench-results.json in the working directory.
  *
  *   pnpm --filter @taladb/node build   # build the native module first
- *   node scripts/bench.mjs [--json]
+ *   node scripts/bench.mjs [--json] [--skip-hnsw]
  *
  * The suite uses a file-backed database (the production configuration) and
  * the raw N-API binding. The `taladb` wrapper adds only a thin async
@@ -23,6 +23,7 @@ const __dir = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 const { TalaDbNode } = require(join(__dir, '../packages/bindings/node/index.js'))
 const pkg = require(join(__dir, '../packages/bindings/node/package.json'))
+const skipHnsw = process.argv.includes('--skip-hnsw')
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -264,7 +265,7 @@ try {
         row(`vector ingest, ${N.toLocaleString('en-US')} vectors`, 'insertMany with vector index live', `${fmtOps(N / (ingestMs / 1000))} docs/s`, { median: ingestMs })
       }
 
-      if (N === 50_000) {
+      if (N === 50_000 && !skipHnsw) {
         // HNSW — approximate index (needs a binary built with vector-hnsw,
         // shipped in @taladb/node since 0.8.3). Recall is measured against
         // the exact flat results for the same query vectors. Measured at 50k,

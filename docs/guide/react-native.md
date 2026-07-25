@@ -1,11 +1,13 @@
 ---
 title: React Native Guide
-description: Use TalaDB in React Native apps for local-first document and vector storage with no server required.
+description: Use TalaDB in React Native apps for on-device vector search, BM25 and hybrid retrieval, and document storage — no server required.
 ---
 
 # React Native
 
-TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path.
+Ship on-device AI on mobile: store embeddings from a local model and run [vector search](/api/vector-search), [BM25 full-text](/api/search), and [hybrid RAG retrieval](/api/search#hybrid-search) directly on the phone — private by default, and available offline.
+
+TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Search calls are synchronous via JSI.
 
 
 ## Requirements
@@ -192,7 +194,7 @@ results.forEach(({ document, score }) => {
   console.log(score.toFixed(3), document.title)
 })
 
-// Hybrid: combine vector ranking with a metadata filter
+// Filtered vector search: metadata filter applied before ranking
 const filtered = await articles.findNearest('embedding', queryVec, 5, {
   category: 'faq',
 })

@@ -206,6 +206,8 @@ const results = await posts.find({ body: { $contains: 'rust embedded database' }
 
 Search terms are normalised (lowercased, punctuation stripped). Terms shorter than 3 characters are ignored. The result set is post-filtered to ensure all terms appear.
 
+`$contains` is a boolean gate — *every* token must be present. For relevance-**ranked** keyword search (BM25) or hybrid keyword-plus-vector retrieval, see [`searchText` and `hybridSearch`](/api/search).
+
 ## Match all documents
 
 Pass an empty filter or no filter at all:

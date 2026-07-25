@@ -21,11 +21,11 @@ pnpm bench
 
 | | |
 |---|---|
-| TalaDB | v0.9.0, release builds |
+| TalaDB | v0.9.4 browser release build; v0.9.0 Node baseline |
 | Machine | 2018 MacBook Pro — Intel i5-8259U @ 2.30 GHz, 8 GB RAM |
 | Browser runtime | Chrome 150 headless · `@taladb/web` (WASM) · OPFS-backed |
 | Node.js runtime | Node v22 · `@taladb/node` (napi) · file-backed database |
-| Date | 2026-07-11 |
+| Date | Browser re-run 2026-07-13; Node baseline 2026-07-11 |
 
 Latencies are the **median** of repeated timed iterations after warmup, with deterministic seeded data. Documents are realistic small records (~7 fields); vectors are 384-dimensional unit vectors — the output shape of `all-MiniLM-L6-v2`, the most common on-device embedding model. The browser suite drives the `@taladb/web` worker over its message protocol; the Node suite uses the raw N-API binding. In both cases that is the same path the `taladb` wrapper uses, so timings include everything an application pays.
 
@@ -68,26 +68,32 @@ Sub-millisecond operations pay the worker `postMessage` round-trip (~50–100 µ
 
 Exact k-nearest-neighbour over all vectors — no approximation, no recall trade-off.
 
+Re-run twice with the v0.9.4 release build on the same machine. The values below use the second run; the first measured 3.3 ms, 17.2 ms, and 87.1 ms respectively, confirming the improvement is repeatable. Against the v0.9.0 baseline, latency is 36% lower at 1k vectors, 52% lower at 10k, and 50% lower at 50k.
+
 | Collection size | `findNearest` (median) |
 |---|---|
-| 1,000 vectors | **5.3 ms** |
-| 10,000 vectors | **35 ms** |
-| 50,000 vectors | **170 ms** |
+| 1,000 vectors | **3.4 ms** |
+| 10,000 vectors | **16.7 ms** |
+| 50,000 vectors | **84.6 ms** |
 
 | Operation | Detail | Result |
 |---|---|---|
-| `findNearest` + filter, 50k vectors | indexed pre-filter `locale: "en"` (10%), then rank | **162 ms** |
+| `findNearest` + filter, 50k vectors | indexed pre-filter `locale: "en"` (10%), then rank | **123 ms** |
 | Vector ingest, 50k vectors | `insertMany` with a live vector index | **~2.4k docs/s** |
 
-Semantic search over a typical on-device corpus (1k–10k chunks) answers in **~35 ms or less** — faster than a network round-trip to any cloud vector database, with zero data leaving the device.
+The filtered vector query is 24% lower-latency than the v0.9.0 result (162 ms). Vector ingest did not improve, so its baseline remains unchanged.
 
-::: tip A SIMD build ~halves this
-Browser vector search currently trails native by ~2× (Node does 50k in 93 ms; the browser 170 ms) — not the algorithm, the instruction set. The WASM build doesn't yet enable `simd128`, so the 384-wide dot product runs one lane at a time. An A/B `+simd128` build measured **50k at 81 ms and 10k at 17 ms** — near-native parity. Shipping it safely (dual builds with runtime feature detection, to keep Safari 15.2–16.3 working) is the top browser-performance item on the [roadmap](/roadmap#simd-dot-products-wasm-validated-native-next).
+Semantic search over a typical on-device corpus (1k–10k chunks) answers in **~17 ms or less** — faster than a network round-trip to any cloud vector database, with zero data leaving the device.
+
+::: tip Near-native flat-search parity
+The v0.9.4 browser release build measures **84.6 ms at 50k vectors**, close to Node's 93 ms baseline on the same hardware. This is a measured release-build result, not an approximate-index result: both rows use the exact flat index with identical 384-dimensional queries.
 :::
 
 # Node.js — native
 
 The `@taladb/node` native module (napi), against a file-backed database — every committed write is `fsync`-durable when the call returns.
+
+A v0.9.4 re-run on 2026-07-13 showed no material native improvement (26 µs point reads and 200 ms exact search at 100k, versus 25 µs and 198 ms below), so the established v0.9.0 Node baseline is retained rather than replacing it with run-to-run noise.
 
 ## Node.js — document writes
 
@@ -128,7 +134,7 @@ The default (flat) index is exact k-NN over all vectors. The v0.9.0 scan rewrite
 | 50,000 vectors | **93 ms** | 188 ms |
 | 100,000 vectors | **198 ms** | 369 ms |
 
-Hybrid search — metadata pre-filter, then rank — is cheaper still, because filtered-out vectors are skipped before scoring when the filter field is indexed:
+Filtered vector search — metadata pre-filter, then rank — is cheaper still, because filtered-out vectors are skipped before scoring when the filter field is indexed:
 
 | Operation | Detail | Result |
 |---|---|---|
@@ -136,7 +142,7 @@ Hybrid search — metadata pre-filter, then rank — is cheaper still, because f
 | Vector ingest, 100k vectors | `insertMany` with a live vector index | **~4.5k docs/s** |
 
 ::: tip Index your filter fields
-The hybrid pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does — index the field you filter on.
+The pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does — index the field you filter on.
 :::
 
 ### Optional HNSW index (Node.js, since 0.8.3)
@@ -157,6 +163,6 @@ Read the recall rows carefully: uniform random vectors have no neighbourhood str
 - **Scaling** — exact vector search is linear in collection size; document point lookups are logarithmic. Both behave predictably as your data grows.
 - **Latency floor, not ceiling** — the test machine is a 2018 dual-fan ultrabook. Treat these as conservative.
 - **Durability is per-commit on both platforms by default** — Node.js and the browser OPFS engine both `fsync` every commit (see the note above); opt into batched commits with `durability: { flush_every_write: false }` + `db.flush()` for throughput. The 500 ms debounce is only the browser's auxiliary IndexedDB snapshot, not the OPFS store.
-- **Browser vs native** — flat vector search is ~2× slower in WASM today purely for lack of `simd128`; a measured SIMD build closes the gap. Everything else is at parity or (for scans) faster in the browser.
+- **Browser vs native** — the v0.9.4 browser release build and native baseline are now near parity for flat vector search on this machine (84.6 ms vs 93 ms at 50k). Browser scans are also faster here; point operations are broadly comparable after the worker round-trip.
 - **React Native — not yet benchmarked.** RN runs the same Rust core via JSI with a file-backed database (like Node.js), so expect broadly Node-like numbers scaled to the device CPU — but these are an *expectation, not a measurement*. A device-driven suite (running inside an app on a simulator/emulator) is planned; until it lands, there are deliberately no RN figures here.
 - **Methodology** — deterministic seeded data, warmup before measurement, medians reported, one process at a time on an otherwise idle machine. Read [`scripts/bench-web.mjs`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench-web.mjs) + [`scripts/bench-web/bench.browser.js`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench-web/bench.browser.js) (browser) and [`scripts/bench.mjs`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench.mjs) (Node) for the exact workloads.

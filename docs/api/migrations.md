@@ -139,7 +139,7 @@ const migrations = [
     description: 'Add posts collection',
     up: async (db) => {
       await db.collection('posts').createIndex('authorId')
-      await db.collection('posts').createIndex('_fts:body')
+      await db.collection('posts').createFtsIndex('body')
     },
   },
   {

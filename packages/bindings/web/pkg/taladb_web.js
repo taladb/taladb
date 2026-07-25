@@ -56,6 +56,18 @@ export class CollectionWasm {
         }
     }
     /**
+     * Create a full-text search index on a string field.
+     * @param {string} field
+     */
+    createFtsIndex(field) {
+        const ptr0 = passStringToWasm0(field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_createFtsIndex(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Create a secondary index on a field.
      * @param {string} field
      */
@@ -107,6 +119,21 @@ export class CollectionWasm {
         return ret[0] >>> 0;
     }
     /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     * @param {any} ids
+     * @param {string} origin
+     * @returns {number}
+     */
+    deleteManyWithIds(ids, origin) {
+        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_deleteManyWithIds(this.__wbg_ptr, ids, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Delete the first matching document. Returns true if deleted.
      * @param {any} filter
      * @returns {boolean}
@@ -126,6 +153,18 @@ export class CollectionWasm {
         const ptr0 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.collectionwasm_dropCompoundIndex(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Drop a full-text search index and everything it stores.
+     * @param {string} field
+     */
+    dropFtsIndex(field) {
+        const ptr0 = passStringToWasm0(field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_dropFtsIndex(this.__wbg_ptr, ptr0, len0);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -203,6 +242,36 @@ export class CollectionWasm {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+     * rank fusion.
+     *
+     * `options` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+     * Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+     * @param {string} text_field
+     * @param {string} text
+     * @param {string} vector_field
+     * @param {Float32Array} vector
+     * @param {number} top_k
+     * @param {any} filter
+     * @param {any} options
+     * @returns {any}
+     */
+    hybridSearch(text_field, text, vector_field, vector, top_k, filter, options) {
+        const ptr0 = passStringToWasm0(text_field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(vector_field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF32ToWasm0(vector, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_hybridSearch(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, top_k, filter, options);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Insert a document. Accepts a plain JS object, returns the ULID string id.
      * @param {any} doc
      * @returns {string}
@@ -232,6 +301,51 @@ export class CollectionWasm {
      */
     insertMany(docs) {
         const ret = wasm.collectionwasm_insertMany(this.__wbg_ptr, docs);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
+     * this honours the id on each document, which is what lets replication address
+     * a remote row by a *derived* id so repeated fetches converge on one document
+     * instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes.
+     * @param {any} docs
+     * @param {string} origin
+     * @returns {any}
+     */
+    replaceManyWithIds(docs, origin) {
+        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_replaceManyWithIds(this.__wbg_ptr, docs, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Rank documents against a free-text query using BM25 (OR semantics).
+     *
+     * Returns a JSON array of `{ document, score }`.
+     * @param {string} field
+     * @param {string} query
+     * @param {number} top_k
+     * @param {any} filter
+     * @param {any} options
+     * @returns {any}
+     */
+    searchText(field, query, top_k, filter, options) {
+        const ptr0 = passStringToWasm0(field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_searchText(this.__wbg_ptr, ptr0, len0, ptr1, len1, top_k, filter, options);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -641,6 +755,26 @@ export class WorkerDB {
         return ret[0] >>> 0;
     }
     /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     * @param {string} collection
+     * @param {string} ids_json
+     * @param {string} origin
+     * @returns {number}
+     */
+    deleteManyWithIds(collection, ids_json, origin) {
+        const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.workerdb_deleteManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Delete the first matching document. Returns `true` / `false`.
      * @param {string} collection
      * @param {string} filter_json
@@ -864,6 +998,54 @@ export class WorkerDB {
         const ret = wasm.workerdb_flush(this.__wbg_ptr);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+     * rank fusion.
+     *
+     * `options_json` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+     * Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+     * @param {string} collection
+     * @param {string} text_field
+     * @param {string} text
+     * @param {string} vector_field
+     * @param {string} vector_json
+     * @param {number} top_k
+     * @param {string} filter_json
+     * @param {string} options_json
+     * @returns {string}
+     */
+    hybridSearch(collection, text_field, text, vector_field, vector_json, top_k, filter_json, options_json) {
+        let deferred9_0;
+        let deferred9_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(text_field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(vector_field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(vector_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ptr5 = passStringToWasm0(filter_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len5 = WASM_VECTOR_LEN;
+            const ptr6 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len6 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_hybridSearch(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, top_k, ptr5, len5, ptr6, len6);
+            var ptr8 = ret[0];
+            var len8 = ret[1];
+            if (ret[3]) {
+                ptr8 = 0; len8 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred9_0 = ptr8;
+            deferred9_1 = len8;
+            return getStringFromWasm0(ptr8, len8);
+        } finally {
+            wasm.__wbindgen_free(deferred9_0, deferred9_1, 1);
         }
     }
     /**
@@ -1155,6 +1337,86 @@ export class WorkerDB {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
+     * honours the id in each document. That is what lets the replication
+     * coordinator address a remote row by a *derived* id (see `deriveDocId`) and
+     * have repeated fetches converge on one document instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes. Remote rows are marked so they can
+     * never replicate back out — see `Collection::replace_many_with_ids`.
+     * @param {string} collection
+     * @param {string} docs_json
+     * @param {string} origin
+     * @returns {string}
+     */
+    replaceManyWithIds(collection, docs_json, origin) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(docs_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_replaceManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * Rank documents against a free-text query using BM25 (OR semantics).
+     *
+     * Returns a JSON array of `{ document, score }`.
+     * @param {string} collection
+     * @param {string} field
+     * @param {string} query
+     * @param {number} top_k
+     * @param {string} filter_json
+     * @param {string} options_json
+     * @returns {string}
+     */
+    searchText(collection, field, query, top_k, filter_json, options_json) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(filter_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_searchText(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, top_k, ptr3, len3, ptr4, len4);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
         }
     }
     /**
@@ -1972,18 +2234,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 150, function: Function { arguments: [Externref], shim_idx: 151, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hbdc531cbd92d8795, wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39);
-            return ret;
-        },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { dtor_idx: 228, function: Function { arguments: [], shim_idx: 229, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__he22c2c171c027d5f, wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87);
             return ret;
         },
-        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 693, function: Function { arguments: [Externref], shim_idx: 694, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 703, function: Function { arguments: [Externref], shim_idx: 704, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcc9749e9df054fa1, wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d);
+            return ret;
+        },
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 79, function: Function { arguments: [Externref], shim_idx: 80, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hf48dca00410c72ae, wasm_bindgen__convert__closures_____invoke__hf94044be7a5c5efa);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -2038,8 +2300,8 @@ function wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hf94044be7a5c5efa(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hf94044be7a5c5efa(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d(arg0, arg1, arg2) {

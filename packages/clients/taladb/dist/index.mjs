@@ -1203,6 +1203,30 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         });
         return JSON.parse(json);
       },
+      searchText: async (field, query, topK, filter, options) => {
+        const json = await proxy.send("searchText", {
+          collection: name,
+          field,
+          query,
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : "null",
+          optionsJson: options ? JSON.stringify(options) : "null"
+        });
+        return JSON.parse(json);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        const json = await proxy.send("hybridSearch", {
+          collection: name,
+          textField: text.textField,
+          text: text.text,
+          vectorField: vector.vectorField,
+          vectorJson: JSON.stringify(vector.vector),
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : "null",
+          optionsJson: options ? JSON.stringify(options) : "null"
+        });
+        return JSON.parse(json);
+      },
       subscribe: (filter, callback, onError) => nudgedPoller(
         () => proxy.send("find", {
           collection: name,
@@ -1347,6 +1371,12 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
         const raw = await col.findNearest(field, vector, topK, filter ?? null);
         return raw;
       },
+      searchText: async (field, query, topK, filter, options) => {
+        return col.searchText(field, query, topK, filter ?? null, options ?? null);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        return col.hybridSearch(text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null);
+      },
       subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => wrapped.aggregate(pipeline), callback, onError)
     };
@@ -1428,6 +1458,18 @@ async function createNativeDB(_dbName, migrations) {
       findNearest: async (field, vector, topK, filter) => {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw;
+      },
+      searchText: async (field, query, topK, filter, options) => {
+        if (!native.searchText) {
+          throw new Error("searchText requires @taladb/react-native \u2265 0.10 \u2014 rebuild the native module");
+        }
+        return native.searchText(name, field, query, topK, filter ?? null, options ?? null);
+      },
+      hybridSearch: async (text, vector, topK, filter, options) => {
+        if (!native.hybridSearch) {
+          throw new Error("hybridSearch requires @taladb/react-native \u2265 0.10 \u2014 rebuild the native module");
+        }
+        return native.hybridSearch(name, text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null);
       },
       subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => native.aggregate(name, pipeline), callback, onError)

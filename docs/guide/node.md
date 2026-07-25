@@ -88,9 +88,9 @@ await tasks.updateOne({ _id: id }, { $set: { done: true } })
 const removed = await tasks.deleteMany({ done: true })
 ```
 
-## Full-text search
+## Full-text search — BM25 ranking
 
-Create an FTS index on any string field to enable fast `$contains` queries:
+Create an FTS index on any string field, then rank by relevance with `searchText` (BM25) or filter booleanly with `$contains`:
 
 ```ts
 const posts = db.collection<Post>('posts')
@@ -98,9 +98,28 @@ const posts = db.collection<Post>('posts')
 // Create once at startup — idempotent
 await posts.createFtsIndex('body')
 
-// Uses FTS index automatically — O(1) token lookup instead of a full scan
-const results = await posts.find({ body: { $contains: 'taladb' } })
+// Ranked search — best matches first (OR semantics)
+const hits = await posts.searchText('body', 'embedded rust database', 5)
+// [{ document: Post, score: 3.14 }, ...]
+
+// Boolean filter — every token must be present
+const all = await posts.find({ body: { $contains: 'taladb' } })
 ```
+
+## Hybrid search — keyword + vector
+
+Fuse BM25 and vector rankings with reciprocal rank fusion — the on-device RAG retrieval recipe. Requires an FTS index and a vector index on the collection:
+
+```ts
+const results = await posts.hybridSearch(
+  { textField: 'body',      text: 'how do I get a refund' },
+  { vectorField: 'embedding', vector: await embed('how do I get a refund') },
+  5,
+)
+// [{ document, score, textRank, vectorRank }, ...]
+```
+
+See the [Search reference](/api/search) for filters and tuning.
 
 ## Inspecting indexes
 
@@ -166,7 +185,7 @@ for (const { document, score } of results) {
   console.log(score.toFixed(3), document.content)
 }
 
-// Hybrid: filter + vector ranking in one call
+// Filtered vector search: filter + rank in one call
 const filtered = await docs.findNearest('embedding', await embed('local database'), 5, {
   source: 'readme',
 })

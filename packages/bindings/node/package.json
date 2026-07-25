@@ -1,6 +1,6 @@
 {
   "name": "@taladb/node",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "TalaDB Node.js native module — document queries and vector search via napi-rs",
   "main": "index.js",
   "types": "index.d.ts",
@@ -40,7 +40,7 @@
     "node": ">=18",
     "bun": ">=1.0"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0",
     "jest": "^29.0.0",

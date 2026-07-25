@@ -46,6 +46,71 @@ export interface VectorSearchResult<T extends Document = Document> {
   score: number;
 }
 
+export interface TextSearchResult<T extends Document = Document> {
+  /** The matched document. */
+  document: T;
+  /**
+   * BM25 relevance score — higher means more relevant. Unbounded above, and
+   * only meaningful for ordering within a single query's result set.
+   */
+  score: number;
+}
+
+/** Tuning for `searchText`'s BM25 ranking. */
+export interface TextSearchOptions {
+  /**
+   * Term-frequency saturation (BM25 `k1`, default `1.2`). Higher values let a
+   * repeated term keep adding relevance for longer.
+   */
+  k1?: number;
+  /**
+   * Length normalisation (BM25 `b`, default `0.75`). `0` ignores document
+   * length; `1` normalises fully by length relative to the corpus average.
+   */
+  b?: number;
+}
+
+export interface HybridSearchResult<T extends Document = Document> {
+  /** The matched document. */
+  document: T;
+  /**
+   * Fused reciprocal-rank-fusion score. Small by construction and meaningful
+   * only as an ordering within one result set — never a similarity or a
+   * confidence.
+   */
+  score: number;
+  /**
+   * Zero-based position in the text ranking, or `null` if the text retriever
+   * did not return this document.
+   */
+  textRank: number | null;
+  /**
+   * Zero-based position in the vector ranking, or `null` if the vector
+   * retriever did not return this document.
+   */
+  vectorRank: number | null;
+}
+
+/** Tuning for `hybridSearch`'s fusion and per-retriever scoring. */
+export interface HybridSearchOptions extends TextSearchOptions {
+  /**
+   * Reciprocal rank fusion smoothing constant (default `60`). Larger values
+   * flatten the advantage of the very top ranks.
+   */
+  rrfK?: number;
+  /** Relative weight of the text ranking (default `1`). Set `0` to disable it. */
+  textWeight?: number;
+  /** Relative weight of the vector ranking (default `1`). Set `0` to disable it. */
+  vectorWeight?: number;
+  /**
+   * How many candidates to pull from each retriever before fusing
+   * (default `max(topK * 4, 20)`). Raise it for better recall at more cost;
+   * fusing only `topK` from each side drops documents that rank just outside
+   * one retriever but high in the other.
+   */
+  candidates?: number;
+}
+
 export type Value =
   | null
   | boolean
@@ -429,6 +494,50 @@ export interface Collection<T extends Document = Document> {
   createFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /** Drop a full-text search index. */
   dropFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Rank documents against a free-text `query` using BM25, most relevant first.
+   *
+   * Unlike the `$contains` filter, which requires **every** token to be
+   * present, this uses OR semantics — a document that matches more of the
+   * query simply scores higher. Requires an FTS index on `field`.
+   *
+   * @example
+   * const hits = await articles.searchText('body', 'reset my password', 5);
+   * // hits: Array<{ document: Article, score: number }>
+   */
+  searchText(
+    field: keyof Omit<T, '_id'> & string,
+    query: string,
+    topK: number,
+    filter?: Filter<T>,
+    options?: TextSearchOptions,
+  ): Promise<TextSearchResult<T>[]>;
+  /**
+   * Hybrid retrieval: rank by keyword relevance (BM25) **and** vector
+   * similarity, then fuse the two rankings with reciprocal rank fusion.
+   *
+   * The two retrievers fail differently — keyword search misses paraphrases,
+   * vector search misses exact identifiers and rare proper nouns — so fusing
+   * them recovers both. A document both retrievers rank well outranks one that
+   * only a single retriever found. Requires an FTS index on `textField` and a
+   * vector index on `vectorField`.
+   *
+   * The optional `filter` is applied to both retrievers before ranking.
+   *
+   * @example
+   * const hits = await articles.hybridSearch(
+   *   { textField: 'body', text: 'reset my password' },
+   *   { vectorField: 'embedding', vector: queryVec },
+   *   5,
+   * );
+   */
+  hybridSearch(
+    text: { textField: keyof Omit<T, '_id'> & string; text: string },
+    vector: { vectorField: keyof Omit<T, '_id'> & string; vector: number[] },
+    topK: number,
+    filter?: Filter<T>,
+    options?: HybridSearchOptions,
+  ): Promise<HybridSearchResult<T>[]>;
   /**
    * Return the indexes that currently exist on this collection.
    *

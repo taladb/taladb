@@ -2,7 +2,7 @@
   <section class="home-usecases">
     <div class="section-container">
       <div class="section-header">
-        <h2 class="section-title">Built for local-first JavaScript apps</h2>
+        <h2 class="section-title">Built for AI that runs on the device</h2>
         <p class="section-sub">
           From AI-powered web apps to offline-first mobile — TalaDB fits where your data lives.
         </p>
@@ -39,7 +39,7 @@ const useCases = [
     desc: 'Pair TalaDB with on-device models (transformers.js, ONNX Web) to build semantic search, RAG pipelines, and AI assistants that run entirely in the browser.',
     bullets: [
       'Store document embeddings alongside metadata',
-      'Hybrid search: filter by tag, rank by similarity',
+      'Filtered search: filter by tag, rank by similarity',
       'No API key, no rate limit, no data egress',
     ],
   },

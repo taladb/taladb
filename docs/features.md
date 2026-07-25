@@ -38,7 +38,7 @@ Results are ordered by descending similarity score. Score range depends on the m
 - `dot` — unbounded, depends on vector magnitude
 - `euclidean` — (0, 1], identical vectors score 1.0
 
-### Hybrid search — metadata filter + vector ranking
+### Filtered vector search — narrow, then rank
 
 The killer feature. Pass a regular document filter as the fourth argument to restrict the candidate set before ranking:
 
@@ -163,14 +163,43 @@ The planner uses the compound index when an `$and` constrains **every** field of
 
 Every write is wrapped in an ACID transaction at the storage layer. Document writes and index updates happen atomically — there is no window where a document exists but its index entry is missing, or vice versa. On crash or power loss, redb recovers to the last committed state.
 
-## Full-text search
+## Full-text search — BM25 ranking
 
-`createIndex` supports a special `_fts:{field}` syntax that builds an inverted token index for a string field. The `$contains` filter operator matches documents whose field value contains all of the supplied search terms after normalisation (lowercasing, punctuation removal, short-word filtering).
+`createFtsIndex` builds an inverted token index over a string field. It powers two things: the `$contains` filter (boolean, "does this field contain all these tokens") and **`searchText`** — relevance-ranked keyword search using [BM25](https://en.wikipedia.org/wiki/Okapi_BM25), the same model behind Lucene and Elasticsearch, running on-device.
 
 ```ts
-await posts.createIndex('_fts:body')
-const results = await posts.find({ body: { $contains: 'rust embedded database' } })
+await posts.createFtsIndex('body')
+
+// Ranked search — best matches first, OR semantics (more matching terms rank higher)
+const hits = await posts.searchText('body', 'rust embedded database', 5)
+// [{ document: Post, score: 3.14 }, { document: Post, score: 1.87 }, ...]
+
+// Boolean filter — every token must be present
+const all = await posts.find({ body: { $contains: 'rust embedded database' } })
 ```
+
+`searchText` accepts an optional metadata filter and `{ k1, b }` to tune term-frequency saturation and length normalisation. See [Search](/api/search) for the full API.
+
+## Hybrid search — keyword + vector, fused
+
+Keyword search misses paraphrases; vector search misses exact identifiers, SKUs, and rare proper nouns. **`hybridSearch`** runs both retrievers and fuses their rankings with [reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (RRF) — the standard recipe for production RAG retrieval, running entirely on-device.
+
+```ts
+await articles.createFtsIndex('body')
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+const results = await articles.hybridSearch(
+  { textField: 'body',      text: 'how do I get a refund' },
+  { vectorField: 'embedding', vector: await embed('how do I get a refund') },
+  5,
+)
+
+results.forEach(({ document, score, textRank, vectorRank }) => {
+  // textRank / vectorRank show which retriever found each hit (null = missed)
+})
+```
+
+A document both retrievers rank well beats one only a single retriever found. Fusion operates on **ranks, not scores**, so there's no fragile normalisation between unbounded BM25 and cosine ∈ [-1, 1]. A metadata filter applies to both retrievers before ranking. See [Search](/api/search) for tuning (`rrfK`, `textWeight`, `vectorWeight`, `candidates`).
 
 ## Live queries
 

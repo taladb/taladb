@@ -5,7 +5,14 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-07-25
+
+**Search grows up.** Full-text search is now **relevance-ranked** with BM25 —
+the model behind Lucene and Elasticsearch — via `searchText`, and TalaDB gains
+`hybridSearch`, which fuses keyword and vector rankings with reciprocal rank
+fusion (RRF) so an exact SKU and a semantic paraphrase both surface from one
+query. This is the on-device RAG retrieval recipe, running across the browser,
+Node.js, and React Native.
 
 Schema evolution across a **version-drifted fleet**. The rule TalaDB now enforces:
 *a replica must preserve fields it does not model.* Under whole-document LWW, an old
@@ -14,6 +21,13 @@ field — it **deletes** that field, for everyone.
 
 ### Fixed
 
+- **Full-text search was entirely missing from `@taladb/node`.** The Node binding
+  never exposed `createFtsIndex` / `dropFtsIndex` / `listIndexes`, so calling them
+  through the unified `taladb` client threw on Node. All are now bound.
+- **Browser in-memory fallback returned JS `Map`s instead of plain objects.** On the
+  no-SharedWorker path, `find` / `findOne` / `findNearest` serialized results as
+  `Map`, so `result.document` was `undefined` (you needed `.get('document')`).
+  They now return ordinary objects, matching the primary worker path.
 - **Read-time write-back no longer deletes a newer peer's fields.** With
   `persistMigrations: true`, the write-back computed `$unset` for every field absent
   from `migrateDocument`'s output. But a migration written today cannot mention a
@@ -31,6 +45,20 @@ field — it **deletes** that field, for everyone.
 
 ### Added
 
+- **`searchText(field, query, topK, filter?, options?)`** — BM25 relevance-ranked
+  full-text search over an FTS index, most relevant first. Unlike the `$contains`
+  filter (every token required), it uses OR semantics — matching more of the query
+  scores higher. Accepts a metadata pre-filter and `{ k1, b }` tuning. Available on
+  every runtime.
+- **`hybridSearch(text, vector, topK, filter?, options?)`** — fuses BM25 keyword
+  ranking with vector similarity using reciprocal rank fusion. Returns per-retriever
+  ranks (`textRank` / `vectorRank`); the optional filter applies to both retrievers
+  before ranking. Tunable via `{ rrfK, textWeight, vectorWeight, candidates }`.
+- **FTS indexes now store BM25 statistics** — term frequencies, per-document token
+  counts, and corpus stats — so `createFtsIndex` powers ranking as well as the
+  boolean `$contains` filter.
+- **`@taladb/node` now exposes full-text search** — `createFtsIndex`, `dropFtsIndex`,
+  `listIndexes`, `searchText`, and `hybridSearch` are available on the Node binding.
 - **`CollectionOptions.downgradeDocument(doc, fromVersion)`** — the **downcast**, the
   missing mirror of `migrateDocument`. Projects a document whose `_v` is *above*
   `syncSchema.version` into the shape this build reads, so a client that was offline
@@ -48,6 +76,10 @@ field — it **deletes** that field, for everyone.
 
 ### Changed
 
+- **FTS index storage upgraded to v1** to carry BM25 statistics. Indexes created
+  before 0.10 remain readable through `$contains`, but must be dropped and recreated
+  to use `searchText` / `hybridSearch` — those calls return a clear `InvalidOperation`
+  error against a pre-0.10 index rather than ranking incorrectly.
 - `persistMigrations` write-backs are additive-only by default (see Fixed). A
   migration that relied on `$unset` firing now needs `retiredFields`, or the
   deprecated broad `allowFieldRemoval: true` escape hatch.

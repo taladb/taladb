@@ -256,6 +256,7 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "createFtsIndex", "dropFtsIndex",
         "createVectorIndex", "dropVectorIndex", "upgradeVectorIndex",
         "findNearest", "findNearestAsync",
+        "searchText", "hybridSearch",
         "findAsync",
         "compact",
         "syncStatus", "flushSync",
@@ -769,6 +770,71 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                     db_, col.c_str(), field.c_str(),
                     qbuf.data(), qbuf.size(), topK, filterPtr);
                 return awaitJobAsPromise(rt, job, /*parseAsJson=*/true);
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // searchText(collection, field, query, topK, filter?, options?)
+    //   → { document, score }[]
+    // ------------------------------------------------------------------
+    if (name == "searchText") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "searchText"), 6,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 4) throw JSError(rt, "searchText requires (collection, field, query, topK, filter?, options?)");
+                auto col   = args[0].getString(rt).utf8(rt);
+                auto field = args[1].getString(rt).utf8(rt);
+                auto query = args[2].getString(rt).utf8(rt);
+                if (!args[3].isNumber()) throw JSError(rt, "topK must be a number");
+                size_t topK = (size_t)args[3].getNumber();
+
+                std::string filterJson = count > 4 ? valueToFilterJson(rt, args[4]) : std::string();
+                const char *filterPtr = count > 4 && !args[4].isNull() && !args[4].isUndefined()
+                    ? filterJson.c_str() : nullptr;
+                std::string optionsJson = count > 5 && args[5].isObject() ? stringify(rt, args[5]) : std::string();
+                const char *optionsPtr = !optionsJson.empty() ? optionsJson.c_str() : nullptr;
+
+                char *result = taladb_search_text(
+                    db_, col.c_str(), field.c_str(), query.c_str(), topK, filterPtr, optionsPtr);
+                if (!result) throw ffiError(rt, "taladb_search_text failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // hybridSearch(collection, textField, text, vectorField, vector, topK,
+    //              filter?, options?) → { document, score, textRank, vectorRank }[]
+    //   vector — Float32Array (preferred, zero-copy) or number[]
+    // ------------------------------------------------------------------
+    if (name == "hybridSearch") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "hybridSearch"), 8,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 6) throw JSError(rt, "hybridSearch requires (collection, textField, text, vectorField, vector, topK, filter?, options?)");
+                auto col   = args[0].getString(rt).utf8(rt);
+                auto tf    = args[1].getString(rt).utf8(rt);
+                auto text  = args[2].getString(rt).utf8(rt);
+                auto vf    = args[3].getString(rt).utf8(rt);
+                std::vector<float> vbuf;
+                extractF32Query(rt, args[4], vbuf);
+                if (!args[5].isNumber()) throw JSError(rt, "topK must be a number");
+                size_t topK = (size_t)args[5].getNumber();
+
+                std::string filterJson = count > 6 ? valueToFilterJson(rt, args[6]) : std::string();
+                const char *filterPtr = count > 6 && !args[6].isNull() && !args[6].isUndefined()
+                    ? filterJson.c_str() : nullptr;
+                std::string optionsJson = count > 7 && args[7].isObject() ? stringify(rt, args[7]) : std::string();
+                const char *optionsPtr = !optionsJson.empty() ? optionsJson.c_str() : nullptr;
+
+                char *result = taladb_hybrid_search(
+                    db_, col.c_str(), tf.c_str(), text.c_str(), vf.c_str(),
+                    vbuf.data(), vbuf.size(), topK, filterPtr, optionsPtr);
+                if (!result) throw ffiError(rt, "taladb_hybrid_search failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);
             });
     }
 

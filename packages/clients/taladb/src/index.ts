@@ -31,6 +31,10 @@ export type {
   VectorMetric,
   VectorIndexOptions,
   VectorSearchResult,
+  TextSearchResult,
+  TextSearchOptions,
+  HybridSearchResult,
+  HybridSearchOptions,
   AggregateStage,
   AggregatePipeline,
   SyncAdapter,
@@ -727,6 +731,12 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
+      searchText: async (field, query, topK, filter?, options?) => {
+        return col.searchText(field, query, topK, filter ?? null, options ?? null) as { document: T; score: number }[];
+      },
+      hybridSearch: async (text, vector, topK, filter?, options?) => {
+        return col.hybridSearch(text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
+      },
       listIndexes: async () => {
         const json = col.listIndexes() as string;
         return JSON.parse(json);
@@ -928,6 +938,32 @@ async function createBrowserDB(
           filterJson: filter ? JSON.stringify(filter) : 'null',
         });
         return JSON.parse(json) as { document: T; score: number }[];
+      },
+
+      searchText: async (field, query, topK, filter?, options?) => {
+        const json = await proxy.send<string>('searchText', {
+          collection: name,
+          field,
+          query,
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : 'null',
+          optionsJson: options ? JSON.stringify(options) : 'null',
+        });
+        return JSON.parse(json) as { document: T; score: number }[];
+      },
+
+      hybridSearch: async (text, vector, topK, filter?, options?) => {
+        const json = await proxy.send<string>('hybridSearch', {
+          collection: name,
+          textField: text.textField,
+          text: text.text,
+          vectorField: vector.vectorField,
+          vectorJson: JSON.stringify(vector.vector),
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : 'null',
+          optionsJson: options ? JSON.stringify(options) : 'null',
+        });
+        return JSON.parse(json) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
       },
 
       subscribe: (filter, callback, onError) =>
@@ -1142,6 +1178,12 @@ async function createNodeDB(
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
+      searchText: async (field, query, topK, filter?, options?) => {
+        return col.searchText(field, query, topK, filter ?? null, options ?? null) as { document: T; score: number }[];
+      },
+      hybridSearch: async (text, vector, topK, filter?, options?) => {
+        return col.hybridSearch(text.textField, text.text, vector.vectorField, vector.vector, topK, filter ?? null, options ?? null) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
+      },
       subscribe: (filter, callback, onError) =>
         makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
       subscribeAggregate: <R extends Document = Document>(
@@ -1223,6 +1265,11 @@ interface NativeDB {
   dropVectorIndex(collection: string, field: string): void;
   upgradeVectorIndex(collection: string, field: string): void;
   findNearest(collection: string, field: string, query: number[], topK: number, filter?: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
+  // Text + hybrid search. Optional: only present on native modules built with
+  // the search HostObject methods (added in 0.10). Absent on older prebuilt
+  // binaries, in which case the collection methods throw a clear error.
+  searchText?(collection: string, field: string, query: string, topK: number, filter: Record<string, unknown> | null, options: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
+  hybridSearch?(collection: string, textField: string, text: string, vectorField: string, vector: number[], topK: number, filter: Record<string, unknown> | null, options: Record<string, unknown> | null): { document: Record<string, unknown>; score: number; textRank: number | null; vectorRank: number | null }[];
   compact(): void;
   close(): void;
   // Bidirectional-sync primitives. Optional: only present on binaries built
@@ -1306,6 +1353,18 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
       findNearest: async (field, vector, topK, filter?) => {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
+      },
+      searchText: async (field, query, topK, filter?, options?) => {
+        if (!native.searchText) {
+          throw new Error('searchText requires @taladb/react-native ≥ 0.10 — rebuild the native module');
+        }
+        return native.searchText(name, field, query, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number }[];
+      },
+      hybridSearch: async (text, vector, topK, filter?, options?) => {
+        if (!native.hybridSearch) {
+          throw new Error('hybridSearch requires @taladb/react-native ≥ 0.10 — rebuild the native module');
+        }
+        return native.hybridSearch(name, text.textField, text.text, vector.vectorField, vector.vector, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
       },
       subscribe: (filter, callback, onError) =>
         makePoller(async () => native.find(name, filter ?? {}) as T[], callback, onError),

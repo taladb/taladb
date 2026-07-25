@@ -2,7 +2,7 @@ import { defineConfig, type HeadConfig } from "vitepress";
 
 const title = "TalaDB";
 const description =
-  "The embedded database for local-first JavaScript apps. Documents + vector search built in Rust — browser (WASM + OPFS), Node.js, and React Native. No cloud. No compromise.";
+  "The embedded vector database for on-device AI. Documents + similarity search built in Rust — browser (WASM + OPFS), Node.js, and React Native. Runs where your model runs. No cloud. No compromise.";
 const siteUrl = "https://taladb.dev";
 const ogImage = `${siteUrl}/tala-db-banner.png`;
 
@@ -110,7 +110,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.9.4",
+        text: "v0.10.0",
         items: [
           {
             text: "Changelog",
@@ -163,6 +163,8 @@ export default defineConfig({
       {
         text: "API Reference",
         items: [
+          { text: "Vector Search", link: "/api/vector-search" },
+          { text: "Search (FTS & Hybrid)", link: "/api/search" },
           { text: "Collection", link: "/api/collection" },
           { text: "Schema Validation", link: "/api/schema" },
           { text: "Filters", link: "/api/filters" },
@@ -188,9 +190,9 @@ export default defineConfig({
         <a href="https://github.com/thinkgrid-labs/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
         <a href="https://github.com/thinkgrid-labs/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
         <a href="https://github.com/sponsors/thinkgrid-labs" target="_blank" rel="noopener">Sponsor</a>
-        <br/>Released under the MIT License.
+        <br/>Released under the Apache License 2.0.
       `,
-      copyright: "Copyright &copy; 2026 ThinkGrid Labs",
+      copyright: "Copyright &copy; 2025-2026 ThinkGrid Labs",
     },
 
     editLink: {

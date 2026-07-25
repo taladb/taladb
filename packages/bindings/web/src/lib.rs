@@ -7,12 +7,26 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
+use serde::Serialize;
 use serde_wasm_bindgen::{from_value, to_value};
 use taladb_core::{
     Collection, Database, Document, FieldType, Filter, HnswOptions, StructuralSchema, TalaDbError,
     Update, Value, VectorMetric,
 };
 use wasm_bindgen::prelude::*;
+
+/// Serialize a query result into a JS value as **plain objects**.
+///
+/// `serde_wasm_bindgen`'s default emits JS `Map`s for maps/structs, so
+/// `result.document` would be `undefined` and callers would need `.get(...)`.
+/// The `json_compatible` serializer emits ordinary objects, matching both the
+/// WorkerDB path (which round-trips through JSON) and what the TypeScript
+/// client expects.
+fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
 
@@ -229,7 +243,7 @@ impl CollectionWasm {
         let f = js_to_filter(filter)?;
         let docs = self.inner.find(f).map_err(err_to_js)?;
         let result: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
-        to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+        to_js(&result)
     }
 
     /// Find a single document. Returns the document or null.
@@ -239,7 +253,7 @@ impl CollectionWasm {
         match self.inner.find_one(f).map_err(err_to_js)? {
             Some(doc) => {
                 let json = doc_to_json(&doc);
-                to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+                to_js(&json)
             }
             None => Ok(JsValue::NULL),
         }
@@ -295,7 +309,7 @@ impl CollectionWasm {
         .map_err(|e| JsValue::from_str(&e))?;
         let docs = self.inner.aggregate(pl).map_err(err_to_js)?;
         let result: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
-        to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+        to_js(&result)
     }
 
     /// Create a secondary index on a field.
@@ -364,6 +378,106 @@ impl CollectionWasm {
         self.inner.upgrade_vector_index(field).map_err(err_to_js)
     }
 
+    /// Create a full-text search index on a string field.
+    #[wasm_bindgen(js_name = createFtsIndex)]
+    pub fn create_fts_index(&self, field: &str) -> Result<(), JsValue> {
+        self.inner.create_fts_index(field).map_err(err_to_js)
+    }
+
+    /// Drop a full-text search index and everything it stores.
+    #[wasm_bindgen(js_name = dropFtsIndex)]
+    pub fn drop_fts_index(&self, field: &str) -> Result<(), JsValue> {
+        self.inner.drop_fts_index(field).map_err(err_to_js)
+    }
+
+    /// Rank documents against a free-text query using BM25 (OR semantics).
+    ///
+    /// Returns a JSON array of `{ document, score }`.
+    #[wasm_bindgen(js_name = searchText)]
+    pub fn search_text(
+        &self,
+        field: &str,
+        query: &str,
+        top_k: u32,
+        filter: JsValue,
+        options: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let pre_filter = if filter.is_null() || filter.is_undefined() {
+            None
+        } else {
+            Some(js_to_filter(filter)?)
+        };
+        let opts = js_options_to_json(options);
+        let bm25 = bm25_from_options(opts.as_ref());
+
+        let results = self
+            .inner
+            .search_text_with(field, query, top_k as usize, &bm25, pre_filter)
+            .map_err(err_to_js)?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect();
+        to_js(&json)
+    }
+
+    /// Hybrid retrieval — BM25 and vector similarity fused with reciprocal
+    /// rank fusion.
+    ///
+    /// `options` accepts `{ rrfK, textWeight, vectorWeight, candidates, k1, b }`.
+    /// Returns a JSON array of `{ document, score, textRank, vectorRank }`.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = hybridSearch)]
+    pub fn hybrid_search(
+        &self,
+        text_field: &str,
+        text: &str,
+        vector_field: &str,
+        vector: Vec<f32>,
+        top_k: u32,
+        filter: JsValue,
+        options: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let pre_filter = if filter.is_null() || filter.is_undefined() {
+            None
+        } else {
+            Some(js_to_filter(filter)?)
+        };
+        let opts = js_options_to_json(options);
+
+        let mut query = taladb_core::fts::HybridQuery::new(
+            text_field,
+            text,
+            vector_field,
+            &vector,
+            top_k as usize,
+        );
+        query.filter = pre_filter;
+        query.bm25 = bm25_from_options(opts.as_ref());
+        query.rrf = rrf_from_options(opts.as_ref());
+        query.candidates = opts
+            .as_ref()
+            .and_then(|o| o.get("candidates"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let results = self.inner.hybrid_search(query).map_err(err_to_js)?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "score": r.score,
+                    "textRank": r.text_rank,
+                    "vectorRank": r.vector_rank,
+                })
+            })
+            .collect();
+        to_js(&json)
+    }
+
     /// Find the `top_k` nearest documents to `query` on a vector index.
     ///
     /// `filter` - optional pre-filter (same format as `find`). Pass `null` to
@@ -397,7 +511,7 @@ impl CollectionWasm {
                 })
             })
             .collect();
-        to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+        to_js(&json)
     }
 }
 
@@ -605,6 +719,47 @@ pub(crate) fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
 /// Supports: { field: value }  →  Eq
 ///           { field: { $gt, $gte, $lt, $lte, $ne, $in, $nin, $exists } }
 ///           { $and: [...] }, { $or: [...] }, { $not: { ... } }
+/// Convert an optional JS options object into plain JSON, treating
+/// `null`/`undefined`/unparseable as "use defaults" rather than an error —
+/// tuning knobs should never be the thing that fails a query.
+fn js_options_to_json(options: JsValue) -> Option<serde_json::Value> {
+    if options.is_null() || options.is_undefined() {
+        return None;
+    }
+    serde_wasm_bindgen::from_value::<serde_json::Value>(options)
+        .ok()
+        .filter(|v| !v.is_null())
+}
+
+fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
+    let mut params = taladb_core::bm25::Bm25Params::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+            params.k1 = v as f32;
+        }
+        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+            params.b = v as f32;
+        }
+    }
+    params
+}
+
+fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
+    let mut params = taladb_core::bm25::RrfParams::default();
+    if let Some(o) = options {
+        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+            params.k = v as f32;
+        }
+        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+            params.text_weight = v as f32;
+        }
+        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+            params.vector_weight = v as f32;
+        }
+    }
+    params
+}
+
 fn js_to_filter(val: JsValue) -> Result<Filter, JsValue> {
     if val.is_null() || val.is_undefined() {
         return Ok(Filter::All);

@@ -3,7 +3,7 @@
 React Native module for TalaDB — embedded local-first storage via JSI TurboModule and a Rust core.
 
 [![npm](https://img.shields.io/npm/v/@taladb/react-native)](https://www.npmjs.com/package/@taladb/react-native)
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](LICENSE)
 
 > **Note:** Most users should install [`taladb`](https://www.npmjs.com/package/taladb) instead, which auto-selects this package when running in React Native.
 
@@ -106,4 +106,4 @@ pnpm --filter @taladb/react-native build:android
 
 ## License
 
-MIT © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
