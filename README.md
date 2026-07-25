@@ -67,25 +67,25 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web
 
 | Operation | Scale | Result |
 |---|---|---|
-| `findOne` by `_id` | 100k docs | **100 µs** |
-| `find` on indexed field | 100k docs | **300 µs** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
 | `findNearest` (384-dim, exact k-NN) | 10k vectors | **17 ms** |
 | `findNearest` (384-dim, exact k-NN) | 50k vectors | **85 ms** |
 | Filtered vector search (metadata + rank) | 50k vectors | **123 ms** |
+| `findOne` by `_id` | 100k docs | **100 µs** |
+| `find` on indexed field | 100k docs | **300 µs** |
+| Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
 
 **Node.js (native)** — file-backed, `fsync`-durable per write:
 
 | Operation | Scale | Result |
 |---|---|---|
+| `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **18 ms / 176 ms** |
+| Filtered vector search (metadata + rank) | 100k vectors | **199 ms** |
 | `findOne` by `_id` | 100k docs | **25 µs** |
 | `find` on indexed field | 100k docs | **169 µs** |
 | `find`, two-sided range (`$gte`+`$lt`) | 100k docs | **1.4 ms** |
 | Bulk ingest (`insertMany`) | batches of 5k | **~36k docs/s** |
-| `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **18 ms / 198 ms** |
-| Filtered vector search (metadata + rank) | 100k vectors | **346 ms** |
 
-Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (93 ms → 15 ms at 50k vectors). The v0.9.0 scan rewrite roughly **halved** native flat vector search and turned two-sided range queries into a single bounded index scan (~463 ms → 1.4 ms). The v0.9.4 browser release build now measures at near-native flat-search parity on the same hardware. Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
+Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (93 ms → 15 ms at 50k vectors). Since 0.10.1 a decoded-vector cache keeps repeated flat searches memory-bound: at 100k vectors, filtered search dropped from 346 ms to **199 ms** (~42% faster). The v0.9.0 scan rewrite roughly **halved** native flat vector search and turned two-sided range queries into a single bounded index scan (~463 ms → 1.4 ms). Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
 
 ## Usage
 

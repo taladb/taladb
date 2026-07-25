@@ -17,9 +17,45 @@
 //! results are sorted descending, and the top-k documents are loaded.
 //! Phase 2 will replace this with an HNSW index for sub-linear search.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize};
+use ulid::Ulid;
 
 use crate::document::{Document, Value};
+
+// ---------------------------------------------------------------------------
+// Decoded-vector cache (flat search)
+// ---------------------------------------------------------------------------
+//
+// The flat search path reads the entire `vec::` table from storage and decodes
+// every f32 vector on *each* query. This cache keeps the decoded vectors in
+// memory so repeated queries are memory-bound rather than storage-bound — the
+// common case for retrieval workloads (many searches, occasional writes).
+//
+// Each entry is tagged with the collection's write generation (see
+// `crate::watch`). A read serves the cache only when the stored generation
+// still matches the collection's current one; any committed write bumps the
+// generation via `watch::notify`, so the flat path stays exact. Unlike the
+// HNSW graph cache, this must never be served stale — flat search is the
+// always-current, exact path.
+
+/// Decoded vectors for one `collection::field`, tagged with the write
+/// generation they were built at.
+pub struct CachedVectors {
+    pub generation: u64,
+    pub vectors: Arc<Vec<(Ulid, Vec<f32>)>>,
+}
+
+pub type VectorCacheMap = HashMap<String, CachedVectors>;
+/// Shared across every `Collection` handle from the same `Database`, so a
+/// write through one handle invalidates reads through another.
+pub type SharedVectorCache = Arc<Mutex<VectorCacheMap>>;
+
+pub fn new_shared_vector_cache() -> SharedVectorCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 // ---------------------------------------------------------------------------
 // Constants

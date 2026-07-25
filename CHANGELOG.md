@@ -5,6 +5,24 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**Faster repeated vector search.** The flat search path — the default, and the
+only vector path on the browser and React Native — no longer re-reads and
+re-decodes the entire vector table from storage on every query.
+
+### Performance
+
+- **Decoded-vector cache for flat `findNearest`.** Vectors are decoded once and
+  held in memory, so repeated similarity queries (and the vector half of
+  `hybridSearch`) are memory-bound instead of storage-bound. The cache is shared
+  across every handle from the same database and tagged with the collection's
+  write generation: any committed insert, update, or delete invalidates it
+  automatically, so the flat path stays exact and current — it is never served
+  stale. No API change. Measured on Node at 100k × 384-dim vectors: **filtered
+  search 346 ms → 199 ms (~42% faster)**, unfiltered 198 ms → 176 ms; small
+  collections (1k–10k) are unchanged within run-to-run noise.
+
 ## [0.10.0] - 2026-07-25
 
 **Search grows up.** Full-text search is now **relevance-ranked** with BM25 —

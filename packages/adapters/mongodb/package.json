@@ -1,6 +1,6 @@
 {
   "name": "@taladb/sync-mongodb",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "MongoDB bidirectional sync adapter for TalaDB — sync a local TalaDB with a MongoDB collection, no intermediate API",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -46,7 +46,7 @@
   },
   "peerDependencies": {
     "mongodb": ">=5.0.0",
-    "taladb": "^0.10.0"
+    "taladb": "^0.10.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

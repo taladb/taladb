@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react-native",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "TalaDB React Native module — document and vector database via JSI HostObject",
   "main": "src/index",
   "types": "src/index.tsx",

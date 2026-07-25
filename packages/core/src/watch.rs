@@ -43,11 +43,18 @@ type Sender = std::sync::mpsc::SyncSender<WriteEvent>;
 #[derive(Default)]
 pub struct WatchRegistry {
     senders: Vec<Sender>,
+    /// Monotonic write counter for this collection, bumped by `notify` after
+    /// every committed mutation. Read caches (e.g. the decoded-vector cache)
+    /// tag an entry with the generation it was built at and treat any later
+    /// value as stale — so `notify` being the single post-commit chokepoint
+    /// makes it the single cache-invalidation point too.
+    generation: u64,
 }
 
 impl WatchRegistry {
     /// Notify all active subscribers of a write.
     pub fn notify(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
         self.senders.retain(|tx| match tx.try_send(WriteEvent) {
             Ok(()) => true,
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -57,6 +64,11 @@ impl WatchRegistry {
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
         });
+    }
+
+    /// The current write generation for this collection.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Register a new subscriber and return the receiving end.
@@ -159,6 +171,15 @@ pub fn notify(registry: &SharedRegistry) {
     // non-blocking (try_send), so holding the lock is cheap.
     let mut guard = registry.lock().unwrap_or_else(|p| p.into_inner());
     guard.notify();
+}
+
+/// The current write generation for a collection's registry. Used by read
+/// caches to detect when their contents have been superseded by a write.
+pub fn generation(registry: &SharedRegistry) -> u64 {
+    registry
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .generation()
 }
 
 // ---------------------------------------------------------------------------
