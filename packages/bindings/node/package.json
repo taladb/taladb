@@ -1,6 +1,6 @@
 {
   "name": "@taladb/node",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "TalaDB Node.js native module — document queries and vector search via napi-rs",
   "main": "index.js",
   "types": "index.d.ts",

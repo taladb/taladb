@@ -75,6 +75,9 @@ pub struct Database {
     /// other handle of the same collection.
     watch_registries:
         Arc<std::sync::Mutex<std::collections::HashMap<String, watch::SharedRegistry>>>,
+    /// Decoded-vector cache for flat search, shared by every Collection handle
+    /// from this Database (keyed by `collection::field`).
+    vector_cache: vector::SharedVectorCache,
     #[cfg(feature = "vector-hnsw")]
     hnsw_cache: vector::SharedHnswCache,
 }
@@ -139,6 +142,7 @@ impl Database {
             backend,
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            vector_cache: vector::new_shared_vector_cache(),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -152,6 +156,7 @@ impl Database {
             backend,
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            vector_cache: vector::new_shared_vector_cache(),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -165,6 +170,7 @@ impl Database {
             backend,
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            vector_cache: vector::new_shared_vector_cache(),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -186,6 +192,7 @@ impl Database {
             backend,
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            vector_cache: vector::new_shared_vector_cache(),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -234,7 +241,8 @@ impl Database {
         };
         let col = Collection::new(name, Arc::clone(&self.backend))
             .with_index_cache(Arc::clone(&self.index_cache))
-            .with_watch_registry(registry);
+            .with_watch_registry(registry)
+            .with_vector_cache(Arc::clone(&self.vector_cache));
         #[cfg(feature = "vector-hnsw")]
         let col = col.with_hnsw_cache(Arc::clone(&self.hnsw_cache));
         Ok(col)

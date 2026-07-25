@@ -27,9 +27,9 @@ use crate::query::options::{
 use crate::query::planner::plan_full;
 use crate::sync::{SyncEvent, SyncHook, now_ms};
 use crate::vector::{
-    HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, VectorDef, VectorMetric, VectorSearchResult,
-    decode_f32_vec, encode_f32_vec, l2_norm, score_from_bytes, value_to_f32_vec, vec_meta_key,
-    vec_table_name,
+    CachedVectors, HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, SharedVectorCache, VectorDef,
+    VectorMetric, VectorSearchResult, compute_similarity, decode_f32_vec, encode_f32_vec,
+    value_to_f32_vec, vec_meta_key, vec_table_name,
 };
 #[cfg(feature = "vector-hnsw")]
 use crate::vector::{SharedHnswCache, build_hnsw, search_hnsw};
@@ -129,6 +129,11 @@ pub struct Collection {
     /// fields remain in plaintext and are fully indexable.
     #[cfg(feature = "encryption")]
     field_encryption: Option<crate::crypto::FieldEncryptionConfig>,
+    /// In-memory decoded vectors for the flat search path, shared across all
+    /// handles from the same `Database` and invalidated by the collection's
+    /// write generation (see [`crate::watch`]). Always present — the flat path
+    /// is the default and the only vector path on web/React Native.
+    vector_cache: SharedVectorCache,
     #[cfg(feature = "vector-hnsw")]
     hnsw_cache: SharedHnswCache,
 }
@@ -144,6 +149,7 @@ impl Collection {
             audit_caller: None,
             #[cfg(feature = "encryption")]
             field_encryption: None,
+            vector_cache: crate::vector::new_shared_vector_cache(),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: crate::vector::new_shared_cache(),
         }
@@ -191,6 +197,7 @@ impl Collection {
             audit_caller: None,
             #[cfg(feature = "encryption")]
             field_encryption: self.field_encryption.clone(),
+            vector_cache: Arc::clone(&self.vector_cache),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: Arc::clone(&self.hnsw_cache),
         }
@@ -248,6 +255,14 @@ impl Collection {
     #[cfg(feature = "vector-hnsw")]
     pub(crate) fn with_hnsw_cache(mut self, cache: SharedHnswCache) -> Self {
         self.hnsw_cache = cache;
+        self
+    }
+
+    /// Attach the shared decoded-vector cache (called by `Database::collection()`
+    /// so all handles from the same `Database` share one cache and invalidate
+    /// each other's entries on write).
+    pub(crate) fn with_vector_cache(mut self, cache: SharedVectorCache) -> Self {
+        self.vector_cache = cache;
         self
     }
 
@@ -348,6 +363,15 @@ impl Collection {
     fn invalidate_index_cache(&self) {
         let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
         guard.remove(&self.name);
+    }
+
+    /// Drop the decoded-vector cache entry for a field. Data writes invalidate
+    /// via the write generation, but `create`/`drop_vector_index` rewrite the
+    /// vec table without bumping it, so they evict explicitly.
+    fn evict_vector_cache(&self, field: &str) {
+        let key = format!("{}::{}", self.name, field);
+        let mut cache = self.vector_cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.remove(&key);
     }
 
     fn load_indexes_cached(&self) -> Result<CachedIndexes, TalaDbError> {
@@ -969,6 +993,7 @@ impl Collection {
 
         wtxn.commit()?;
         self.invalidate_index_cache();
+        self.evict_vector_cache(field);
         Ok(())
     }
 
@@ -1009,6 +1034,7 @@ impl Collection {
         wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
         self.invalidate_index_cache();
+        self.evict_vector_cache(field);
         Ok(())
     }
 
@@ -1081,47 +1107,77 @@ impl Collection {
             }
         }
 
-        // 3b. Flat (brute-force) path
-        let vtable = vec_table_name(&self.name, field);
-        let rtxn = self.backend.begin_read()?;
-        let all_entries = rtxn.scan_all(&vtable)?;
-        drop(rtxn);
+        // 3b. Flat (brute-force) path — served from the decoded-vector cache
+        //     when fresh, so repeated queries never re-read storage.
+        //
+        //     The generation is captured *before* the scan. If a write commits
+        //     during a cache-miss scan, it bumps the generation via
+        //     `watch::notify`, so the entry stored under the older generation
+        //     simply misses on the next read and is rebuilt — the flat path is
+        //     never served stale.
+        let generation = crate::watch::generation(&self.watch_registry);
+        let cache_key = format!("{}::{}", self.name, field);
+        let vectors: Arc<Vec<(ulid::Ulid, Vec<f32>)>> = {
+            let cached = {
+                let cache = self.vector_cache.lock().unwrap_or_else(|p| p.into_inner());
+                cache
+                    .get(&cache_key)
+                    .filter(|c| c.generation == generation)
+                    .map(|c| Arc::clone(&c.vectors))
+            };
+            match cached {
+                Some(vecs) => vecs,
+                None => {
+                    // Miss — read and decode the whole vec table once. The lock
+                    // is released during storage IO; a concurrent miss just
+                    // rebuilds redundantly, which is correct.
+                    let vtable = vec_table_name(&self.name, field);
+                    let rtxn = self.backend.begin_read()?;
+                    let all_entries = rtxn.scan_all(&vtable)?;
+                    drop(rtxn);
+                    let mut decoded: Vec<(ulid::Ulid, Vec<f32>)> =
+                        Vec::with_capacity(all_entries.len());
+                    for (key_bytes, val_bytes) in &all_entries {
+                        let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
+                            Ok(a) => a,
+                            Err(_) => continue,
+                        };
+                        if let Some(v) = decode_f32_vec(val_bytes) {
+                            decoded.push((ulid::Ulid::from_bytes(arr), v));
+                        }
+                    }
+                    let arc = Arc::new(decoded);
+                    let mut cache = self.vector_cache.lock().unwrap_or_else(|p| p.into_inner());
+                    cache.insert(
+                        cache_key,
+                        CachedVectors {
+                            generation,
+                            vectors: Arc::clone(&arc),
+                        },
+                    );
+                    arc
+                }
+            }
+        };
 
         // 4. Resolve the pre-filter to a set of matching ids up front, so the
-        //    scan below scores only candidates that can appear in the result
+        //    scoring loop skips candidates that can't appear in the result
         //    (a 10%-selective filter skips scoring the other 90%).
         let id_filter: Option<std::collections::HashSet<ulid::Ulid>> = match pre_filter {
             Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id).collect()),
             None => None,
         };
 
-        // 5. Score directly from the stored bytes — no intermediate
-        //    `Vec<f32>` per vector. The query's cosine norm is constant across
-        //    every candidate, so hoist it out of the loop once.
+        // 5. Score the in-memory decoded vectors against the query.
         let metric = &def.metric;
-        let query_norm = if matches!(metric, VectorMetric::Cosine) {
-            l2_norm(query)
-        } else {
-            0.0
-        };
-        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(all_entries.len());
-        for (key_bytes, val_bytes) in &all_entries {
-            if key_bytes.len() != 16 {
-                continue;
-            }
-            let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            let id = ulid::Ulid::from_bytes(arr);
+        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(vectors.len());
+        for (id, vec) in vectors.iter() {
             if let Some(ids) = &id_filter
-                && !ids.contains(&id)
+                && !ids.contains(id)
             {
                 continue;
             }
-            if let Some(s) = score_from_bytes(metric, query, query_norm, val_bytes) {
-                scored.push((id, s));
-            }
+            scored.push((*id, compute_similarity(metric, query, vec)));
         }
 
         // 6. Select the top_k by score. `select_nth_unstable` partitions in

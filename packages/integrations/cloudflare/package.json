@@ -1,6 +1,6 @@
 {
   "name": "@taladb/cloudflare",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "TalaDB adapter for Cloudflare Workers — in-memory WASM database with Durable Objects snapshot persistence",
   "type": "module",
   "main": "src/index.js",
