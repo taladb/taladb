@@ -137,14 +137,14 @@ await runMigrations(db, [
 
 ## Full Documentation
 
-**[https://thinkgrid-labs.github.io/taladb](https://thinkgrid-labs.github.io/taladb)**
+**[https://taladb.github.io/taladb](https://taladb.github.io/taladb)**
 
-- [Introduction](https://thinkgrid-labs.github.io/taladb/introduction)
-- [Web (Browser / WASM) Guide](https://thinkgrid-labs.github.io/taladb/guide/web)
-- [Node.js Guide](https://thinkgrid-labs.github.io/taladb/guide/node)
-- [React Native Guide](https://thinkgrid-labs.github.io/taladb/guide/react-native)
-- [API Reference](https://thinkgrid-labs.github.io/taladb/api/collection)
+- [Introduction](https://taladb.github.io/taladb/introduction)
+- [Web (Browser / WASM) Guide](https://taladb.github.io/taladb/guide/web)
+- [Node.js Guide](https://taladb.github.io/taladb/guide/node)
+- [React Native Guide](https://taladb.github.io/taladb/guide/react-native)
+- [API Reference](https://taladb.github.io/taladb/api/collection)
 
 ## License
 
-Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [TalaDB](https://github.com/taladb)

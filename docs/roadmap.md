@@ -7,7 +7,7 @@ description: Planned and in-progress features for TalaDB
 
 This page tracks planned and in-progress work for TalaDB. Sections and items are ordered by estimated impact — things at the top affect the most users and unblock the most use cases.
 
-Have an idea or want to help prioritise? Open a [GitHub Discussion](https://github.com/thinkgrid-labs/taladb/discussions) or a feature request issue.
+Have an idea or want to help prioritise? Open a [GitHub Discussion](https://github.com/taladb/taladb/discussions) or a feature request issue.
 
 ---
 

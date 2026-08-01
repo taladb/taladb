@@ -9,20 +9,20 @@ The `taladb` CLI lets you inspect, export, and manage TalaDB database files from
 
 ## Installation
 
-Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases).
+Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/taladb/taladb/releases).
 
 ::: code-group
 
 ```sh [Linux]
 # Download and extract (replace VERSION with the latest release, e.g. v0.1.1)
-curl -L https://github.com/thinkgrid-labs/taladb/releases/download/VERSION/taladb-linux-x86_64-VERSION.tar.gz \
+curl -L https://github.com/taladb/taladb/releases/download/VERSION/taladb-linux-x86_64-VERSION.tar.gz \
   | tar -xz
 sudo mv taladb /usr/local/bin/
 taladb --version
 ```
 
 ```sh [macOS]
-curl -L https://github.com/thinkgrid-labs/taladb/releases/download/VERSION/taladb-macos-aarch64-VERSION.tar.gz \
+curl -L https://github.com/taladb/taladb/releases/download/VERSION/taladb-macos-aarch64-VERSION.tar.gz \
   | tar -xz
 sudo mv taladb /usr/local/bin/
 taladb --version
@@ -354,4 +354,4 @@ The following commands are planned for a future release:
 | `taladb find-nearest ./myapp.db <collection> <field> <vector-json> --top 5` | Run a similarity query from the terminal |
 | `taladb drop-vector-index ./myapp.db <collection> <field>` | Remove a vector index |
 
-Track progress on the [GitHub issues page](https://github.com/thinkgrid-labs/taladb/issues).
+Track progress on the [GitHub issues page](https://github.com/taladb/taladb/issues).

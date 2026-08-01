@@ -34,12 +34,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "url": "https://github.com/taladb/taladb.git",
     "directory": "packages/adapters/mongodb"
   },
-  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/bidirectional-sync",
+  "homepage": "https://taladb.github.io/taladb/guide/bidirectional-sync",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+    "url": "https://github.com/taladb/taladb/issues"
   },
   "engines": {
     "node": ">=18"

@@ -17,12 +17,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "url": "https://github.com/taladb/taladb.git",
     "directory": "packages/integrations/cloudflare"
   },
   "homepage": "https://taladb.dev/guide/cloudflare",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+    "url": "https://github.com/taladb/taladb/issues"
   },
   "license": "Apache-2.0",
   "peerDependencies": {

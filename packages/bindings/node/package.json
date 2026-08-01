@@ -29,12 +29,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "url": "https://github.com/taladb/taladb.git",
     "directory": "packages/bindings/node"
   },
-  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/node",
+  "homepage": "https://taladb.github.io/taladb/guide/node",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+    "url": "https://github.com/taladb/taladb/issues"
   },
   "engines": {
     "node": ">=18",

@@ -78,7 +78,7 @@ export default defineConfig({
         href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap",
       },
     ],
-    ["meta", { name: "author", content: "thinkgrid-labs" }],
+    ["meta", { name: "author", content: "taladb" }],
     [
       "meta",
       {
@@ -114,11 +114,11 @@ export default defineConfig({
         items: [
           {
             text: "Changelog",
-            link: "https://github.com/thinkgrid-labs/taladb/releases",
+            link: "https://github.com/taladb/taladb/releases",
           },
           {
             text: "Contributing",
-            link: "https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md",
+            link: "https://github.com/taladb/taladb/blob/main/CONTRIBUTING.md",
           },
           {
             text: "npm",
@@ -178,8 +178,8 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: "github", link: "https://github.com/thinkgrid-labs/taladb" },
-      { icon: "heart", link: "https://github.com/sponsors/thinkgrid-labs" },
+      { icon: "github", link: "https://github.com/taladb/taladb" },
+      { icon: "heart", link: "https://github.com/sponsors/taladb" },
     ],
 
     footer: {
@@ -187,16 +187,16 @@ export default defineConfig({
         <a href="/introduction">Docs</a> ·
         <a href="https://www.npmjs.com/package/taladb" target="_blank" rel="noopener">npm</a> ·
         <a href="/roadmap">Roadmap</a> ·
-        <a href="https://github.com/thinkgrid-labs/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
-        <a href="https://github.com/thinkgrid-labs/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
-        <a href="https://github.com/sponsors/thinkgrid-labs" target="_blank" rel="noopener">Sponsor</a>
+        <a href="https://github.com/taladb/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
+        <a href="https://github.com/taladb/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
+        <a href="https://github.com/sponsors/taladb" target="_blank" rel="noopener">Sponsor</a>
         <br/>Released under the Apache License 2.0.
       `,
-      copyright: "Copyright &copy; 2025-2026 ThinkGrid Labs",
+      copyright: "Copyright &copy; 2025-2026 TalaDB",
     },
 
     editLink: {
-      pattern: "https://github.com/thinkgrid-labs/taladb/edit/main/docs/:path",
+      pattern: "https://github.com/taladb/taladb/edit/main/docs/:path",
       text: "Edit this page on GitHub",
     },
 

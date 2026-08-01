@@ -26,17 +26,17 @@
         </a>
       </div>
       <div class="cta-links">
-        <a href="https://github.com/thinkgrid-labs/taladb" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/taladb/taladb" target="_blank" rel="noopener">GitHub</a>
         <span>·</span>
         <a href="https://www.npmjs.com/package/taladb" target="_blank" rel="noopener">npm</a>
         <span>·</span>
         <a href="/roadmap">Roadmap</a>
         <span>·</span>
-        <a href="https://github.com/sponsors/thinkgrid-labs" target="_blank" rel="noopener">Support TalaDB</a>
+        <a href="https://github.com/sponsors/taladb" target="_blank" rel="noopener">Support TalaDB</a>
       </div>
       <p class="cta-sponsor-note">
         TalaDB is maintained by one person.
-        <a href="https://github.com/sponsors/thinkgrid-labs" target="_blank" rel="noopener">Sponsoring on GitHub</a>
+        <a href="https://github.com/sponsors/taladb" target="_blank" rel="noopener">Sponsoring on GitHub</a>
         directly funds continued development.
       </p>
     </div>

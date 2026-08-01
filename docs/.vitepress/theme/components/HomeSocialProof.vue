@@ -3,7 +3,7 @@
     <div class="sp-container">
       <a
         class="sp-badge"
-        href="https://github.com/thinkgrid-labs/taladb"
+        href="https://github.com/taladb/taladb"
         target="_blank"
         rel="noopener"
       >

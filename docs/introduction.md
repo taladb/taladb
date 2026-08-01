@@ -131,7 +131,7 @@ The `taladb` package lists the platform packages as `optionalDependencies`, whic
 
 ## TalaDB vs Recached
 
-[Recached](https://recached.dev) is our sibling project at ThinkGrid Labs. They are deliberately complementary, not competing — the question is never "which one," it's "which layer."
+[Recached](https://recached.dev) is our sibling project at TalaDB. They are deliberately complementary, not competing — the question is never "which one," it's "which layer."
 
 | | TalaDB | Recached |
 |---|---|---|
@@ -149,4 +149,4 @@ They meet where an app needs both — locally queryable data that also syncs acr
 
 TalaDB is production-ready. The Rust core, browser WASM, Node.js bindings, and React Native JSI layer are fully functional, tested, and stable across all supported platforms.
 
-Try the [web demo](https://demo-web.taladb.dev/) to see TalaDB running in the browser with OPFS persistence and on-device semantic search, or the [mobile demo](https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma) to see it running on React Native. Follow the [GitHub repository](https://github.com/thinkgrid-labs/taladb) for progress updates.
+Try the [web demo](https://demo-web.taladb.dev/) to see TalaDB running in the browser with OPFS persistence and on-device semantic search, or the [mobile demo](https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma) to see it running on React Native. Follow the [GitHub repository](https://github.com/taladb/taladb) for progress updates.
