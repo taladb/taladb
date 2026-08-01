@@ -15,7 +15,7 @@ One mental model before anything else: **server components can never render a us
 | Server components | Layout, shell, anything not user-data-dependent |
 | Route handlers | The sync backend (`@taladb/next/server`) — your security boundary |
 
-A complete working app ships in the repo: [`examples/nextjs-sync`](https://github.com/thinkgrid-labs/taladb/tree/main/examples/nextjs-sync) — CI runs a real `next build` over it on every commit.
+A complete working app ships in the repo: [`examples/nextjs-sync`](https://github.com/taladb/taladb/tree/main/examples/nextjs-sync) — CI runs a real `next build` over it on every commit.
 
 ## Install
 

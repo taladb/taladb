@@ -457,7 +457,7 @@ WASM artifacts together — the JS↔native surface changed in this release.
 
 - **Vector index management — React Native** — `createVectorIndex`, `dropVectorIndex`, and `upgradeVectorIndex` are now exposed through the JSI HostObject and declared in the TurboModule Codegen spec (`NativeTalaDB.ts`). Supports `flat` and `hnsw` index types; `opts` accepts `{ metric, m, efConstruction }`.
 
-[0.7.4]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...v0.7.4
+[0.7.4]: https://github.com/taladb/taladb/compare/v0.7.3...v0.7.4
 
 ## [0.7.3] - 2026-04-17
 
@@ -496,7 +496,7 @@ WASM artifacts together — the JS↔native surface changed in this release.
   - Collections without a `schema` option are unchanged — zero overhead.
   - `@taladb/cloudflare` exposes the same `schema` option and exports its own `TalaDbValidationError`.
 
-[0.7.3]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.2...v0.7.3
+[0.7.3]: https://github.com/taladb/taladb/compare/v0.7.2...v0.7.3
 
 ## [Unreleased] — 0.7.2
 

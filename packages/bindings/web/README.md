@@ -86,8 +86,8 @@ pnpm --filter @taladb/web build
 
 ## Full Documentation
 
-**[https://thinkgrid-labs.github.io/taladb/guide/web](https://thinkgrid-labs.github.io/taladb/guide/web)**
+**[https://taladb.github.io/taladb/guide/web](https://taladb.github.io/taladb/guide/web)**
 
 ## License
 
-Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [TalaDB](https://github.com/taladb)

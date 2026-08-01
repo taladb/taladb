@@ -364,7 +364,7 @@ See the [CRDT Sync guide](/guide/crdt-sync) for full documentation.
 
 ## CLI dev tools
 
-Download the pre-built `taladb-cli` binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases):
+Download the pre-built `taladb-cli` binary for your platform from the [GitHub Releases page](https://github.com/taladb/taladb/releases):
 
 ```bash
 taladb inspect myapp.db          # show collections, document counts, index names

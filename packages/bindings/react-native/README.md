@@ -102,8 +102,8 @@ pnpm --filter @taladb/react-native build:android
 
 ## Full Documentation
 
-**[https://thinkgrid-labs.github.io/taladb/guide/react-native](https://thinkgrid-labs.github.io/taladb/guide/react-native)**
+**[https://taladb.github.io/taladb/guide/react-native](https://taladb.github.io/taladb/guide/react-native)**
 
 ## License
 
-Apache 2.0 © [ThinkGrid Labs](https://github.com/thinkgrid-labs)
+Apache 2.0 © [TalaDB](https://github.com/taladb)

@@ -57,7 +57,7 @@ wasm-pack test packages/@taladb/web --headless --chrome
 
 ## Community
 
-If you have questions or want to discuss the roadmap, feel free to open a [GitHub Discussion](https://github.com/thinkgrid-labs/taladb/discussions).
+If you have questions or want to discuss the roadmap, feel free to open a [GitHub Discussion](https://github.com/taladb/taladb/discussions).
 
 ---
 
