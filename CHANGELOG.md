@@ -5,7 +5,7 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.1] - 2026-08-01
 
 **Faster repeated vector search.** The flat search path — the default, and the
 only vector path on the browser and React Native — no longer re-reads and
