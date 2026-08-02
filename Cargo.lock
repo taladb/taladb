@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-cli"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-core"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aes-gcm",
  "getrandom 0.3.4",
@@ -1899,7 +1899,6 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
- "url",
  "web-time",
  "wiremock",
  "zeroize",
@@ -1907,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-ffi"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "serde_json",
  "taladb-core",
@@ -1915,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-node"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "napi",
  "napi-build",
@@ -1927,15 +1926,13 @@ dependencies = [
 
 [[package]]
 name = "taladb-web"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "console_error_panic_hook",
- "futures",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "js-sys",
  "redb",
- "reqwest",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

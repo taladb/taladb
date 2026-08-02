@@ -1,7 +1,7 @@
 use std::ops::Bound;
 
 use crate::document::{Document, Value};
-use crate::engine::{StorageBackend, WriteTxn};
+use crate::engine::{KvOp, StorageBackend, WriteTxn};
 use crate::error::TalaDbError;
 use crate::index::{
     CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, META_VERSION_KEY,
@@ -114,20 +114,27 @@ pub fn rebuild_secondary_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErr
     for def in &defs {
         let idx_table = index_table_name(&def.collection, &def.field);
         let old_keys = txn.range(&idx_table, Bound::Unbounded, Bound::Unbounded)?;
-        for (k, _) in old_keys {
-            txn.delete(&idx_table, &k)?;
-        }
 
         let docs_table = docs_table_name(&def.collection);
         let docs = txn.range(&docs_table, Bound::Unbounded, Bound::Unbounded)?;
+        let mut new_keys: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
         for (_, doc_bytes) in docs {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(val) = doc.get(&def.field)
                 && let Some(idx_key) = encode_index_key(val, doc.id)
             {
-                txn.put(&idx_table, &idx_key, &[])?;
+                new_keys.push(idx_key);
             }
         }
+
+        // Clear-then-rebuild as one batch: this runs at open time on every
+        // database still at v0, so it is squarely on the cold-start path.
+        let ops: Vec<KvOp<'_>> = old_keys
+            .iter()
+            .map(|(k, _)| KvOp::Delete(k.as_slice()))
+            .chain(new_keys.iter().map(|k| KvOp::Put(k.as_slice(), &[])))
+            .collect();
+        txn.apply_batch(&idx_table, &ops)?;
     }
     Ok(())
 }
@@ -146,21 +153,26 @@ pub fn rebuild_compound_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErro
         let ctable = compound_table_name(&def.collection, &fields);
 
         let old_keys = txn.range(&ctable, Bound::Unbounded, Bound::Unbounded)?;
-        for (k, _) in old_keys {
-            txn.delete(&ctable, &k)?;
-        }
 
         let docs_table = docs_table_name(&def.collection);
         let docs = txn.range(&docs_table, Bound::Unbounded, Bound::Unbounded)?;
+        let mut new_keys: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
         for (_, doc_bytes) in docs {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&Value>> = def.fields.iter().map(|f| doc.get(f)).collect();
             if let Some(v) = vals
                 && let Some(key) = encode_compound_key(&v, doc.id)
             {
-                txn.put(&ctable, &key, &[])?;
+                new_keys.push(key);
             }
         }
+
+        let ops: Vec<KvOp<'_>> = old_keys
+            .iter()
+            .map(|(k, _)| KvOp::Delete(k.as_slice()))
+            .chain(new_keys.iter().map(|k| KvOp::Put(k.as_slice(), &[])))
+            .collect();
+        txn.apply_batch(&ctable, &ops)?;
     }
     Ok(())
 }

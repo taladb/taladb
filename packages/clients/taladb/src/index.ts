@@ -968,6 +968,7 @@ async function createBrowserDB(
 
       subscribe: (filter, callback, onError) =>
         nudgedPoller<T>(
+          name,
           () => proxy.send<string>('find', {
             collection: name, filterJson: filter ? s(filter) : 'null',
           }),
@@ -981,6 +982,7 @@ async function createBrowserDB(
         onError?: (error: unknown) => void,
       ) =>
         nudgedPoller<R>(
+          name,
           () => proxy.send<string>('aggregate', {
             collection: name, pipelineJson: s(pipeline),
           }),
@@ -998,8 +1000,16 @@ async function createBrowserDB(
    *
    * Shared by `subscribe` (a filter) and `subscribeAggregate` (a pipeline) — they
    * differ only in which worker op produces the JSON, so `fetchJson` is the seam.
+   *
+   * Each tick first asks the collection for its write generation — a counter the
+   * engine bumps once per committed mutation. Unchanged means nothing can have
+   * moved, so the query is skipped entirely. Without it, every tick re-ran the
+   * full query, serialised the whole result set to JSON, and shipped it across
+   * the worker boundary just to compare strings — constant CPU proportional to
+   * result size, forever, on an idle database.
    */
   function nudgedPoller<R extends Document>(
+    collection: string,
     fetchJson: () => Promise<string>,
     callback: (docs: R[]) => void,
     onError?: (error: unknown) => void,
@@ -1009,6 +1019,11 @@ async function createBrowserDB(
     // otherwise an initially-empty collection never fires the callback and
     // useFind stays in loading state forever.
     let lastJson = '';
+    // -1 (never a real generation) forces the first tick to run the query.
+    let lastGeneration = -1;
+    // Older workers lack the writeGeneration op; one failure disables the
+    // fast path for this subscription and we fall back to always querying.
+    let generationSupported = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let running = false;
     let rerun = false;
@@ -1020,11 +1035,25 @@ async function createBrowserDB(
       // Cancel any pending tick — we're running now (either nudged or ticked).
       if (timer !== null) { clearTimeout(timer); timer = null; }
       try {
-        const json = await fetchJson();
-        if (!active) return;
-        if (json !== lastJson) {
-          lastJson = json;
-          callback(JSON.parse(json) as R[]);
+        // `unchanged` rather than an early return: returning from inside the
+        // try would skip the tick-scheduling below and silently end the loop.
+        let unchanged = false;
+        if (generationSupported) {
+          try {
+            const gen = await proxy.send<number>('writeGeneration', { collection });
+            if (gen === lastGeneration) unchanged = true;
+            else lastGeneration = gen;
+          } catch {
+            generationSupported = false;
+          }
+        }
+        if (!unchanged) {
+          const json = await fetchJson();
+          if (!active) return;
+          if (json !== lastJson) {
+            lastJson = json;
+            callback(JSON.parse(json) as R[]);
+          }
         }
       } catch (error) {
         if (active) onError?.(error);

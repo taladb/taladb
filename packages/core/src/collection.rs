@@ -28,7 +28,7 @@ use crate::query::planner::plan_full;
 use crate::sync::{SyncEvent, SyncHook, now_ms};
 use crate::vector::{
     CachedVectors, HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, SharedVectorCache, VectorDef,
-    VectorMetric, VectorSearchResult, compute_similarity, decode_f32_vec, encode_f32_vec,
+    VectorMetric, VectorSearchResult, decode_f32_vec, encode_f32_vec,
     value_to_f32_vec, vec_meta_key, vec_table_name,
 };
 #[cfg(feature = "vector-hnsw")]
@@ -42,6 +42,68 @@ pub(crate) struct CachedIndexes {
     fts_indexes: Arc<Vec<FtsDef>>,
     vec_indexes: Arc<Vec<VectorDef>>,
     compound_indexes: Arc<Vec<CompoundIndexDef>>,
+    /// Storage table names for every index above, resolved once when the cache
+    /// is built.
+    ///
+    /// These are pure functions of `(collection, field)` — constant for the
+    /// life of the cache — but the write path used to `format!` each one *per
+    /// document per index*, which on a bulk insert is N×M throwaway
+    /// allocations for values that never change.
+    tables: Arc<IndexTables>,
+}
+
+/// Precomputed storage table names for one collection's indexes.
+pub(crate) struct IndexTables {
+    docs: String,
+    tomb: String,
+    /// One per entry of `CachedIndexes::indexes`, same order.
+    btree: Vec<String>,
+    /// `(postings, lengths, stats)` per entry of `fts_indexes`, same order.
+    fts: Vec<(String, String, String)>,
+    /// One per entry of `vec_indexes`, same order.
+    vectors: Vec<String>,
+    /// One per entry of `compound_indexes`, same order.
+    compound: Vec<String>,
+}
+
+impl IndexTables {
+    fn build(
+        collection: &str,
+        indexes: &[IndexDef],
+        fts_indexes: &[FtsDef],
+        vec_indexes: &[VectorDef],
+        compound_indexes: &[CompoundIndexDef],
+    ) -> Self {
+        IndexTables {
+            docs: docs_table_name(collection),
+            tomb: tomb_table_name(collection),
+            btree: indexes
+                .iter()
+                .map(|d| index_table_name(collection, &d.field))
+                .collect(),
+            fts: fts_indexes
+                .iter()
+                .map(|d| {
+                    (
+                        fts_table_name(collection, &d.field),
+                        fts_len_table_name(collection, &d.field),
+                        fts_stats_table_name(collection, &d.field),
+                    )
+                })
+                .collect(),
+            vectors: vec_indexes
+                .iter()
+                .map(|d| vec_table_name(collection, &d.field))
+                .collect(),
+            compound: compound_indexes
+                .iter()
+                .map(|d| {
+                    let refs: Vec<&str> = d.fields.iter().map(|s| s.as_str()).collect();
+                    compound_table_name(collection, &refs)
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Index-definition cache shared between every `Collection` handle returned
@@ -168,6 +230,16 @@ impl Collection {
     pub(crate) fn with_watch_registry(mut self, registry: crate::watch::SharedRegistry) -> Self {
         self.watch_registry = registry;
         self
+    }
+
+    /// This collection's write generation — a counter bumped once per committed
+    /// mutation, through any handle of the same `Database`.
+    ///
+    /// Lets a caller that cannot hold a [`crate::watch::WatchHandle`] (the
+    /// worker/JS boundary, say) detect "has anything changed?" with an integer
+    /// comparison, instead of re-running the query and diffing its output.
+    pub fn write_generation(&self) -> u64 {
+        crate::watch::generation(&self.watch_registry)
     }
 
     /// Subscribe to live query results.
@@ -383,11 +455,29 @@ impl Collection {
         }
         // Load outside the lock so a slow storage read does not block other
         // collections; a racing loader just overwrites with identical data.
+        //
+        // One transaction for all four meta tables: this runs on the first
+        // touch of every collection, so it is squarely on the cold-start path,
+        // and four separate `begin_read`s bought nothing.
+        let rtxn = self.backend.begin_read()?;
+        let indexes = self.read_indexes(rtxn.as_ref())?;
+        let fts_indexes = self.read_fts_indexes(rtxn.as_ref())?;
+        let vec_indexes = self.read_vector_indexes(rtxn.as_ref())?;
+        let compound_indexes = self.read_compound_indexes(rtxn.as_ref())?;
+        drop(rtxn);
+        let tables = IndexTables::build(
+            &self.name,
+            &indexes,
+            &fts_indexes,
+            &vec_indexes,
+            &compound_indexes,
+        );
         let cached = CachedIndexes {
-            indexes: Arc::new(self.load_indexes()?),
-            fts_indexes: Arc::new(self.load_fts_indexes()?),
-            vec_indexes: Arc::new(self.load_vector_indexes()?),
-            compound_indexes: Arc::new(self.load_compound_indexes()?),
+            indexes: Arc::new(indexes),
+            fts_indexes: Arc::new(fts_indexes),
+            vec_indexes: Arc::new(vec_indexes),
+            compound_indexes: Arc::new(compound_indexes),
+            tables: Arc::new(tables),
         };
         let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
         guard.insert(self.name.clone(), cached.clone());
@@ -431,7 +521,8 @@ impl Collection {
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_INDEXES_TABLE, meta_key.as_bytes(), &bytes)?;
 
-        // Backfill existing documents into the new index
+        // Backfill existing documents into the new index — one table open for
+        // the whole backfill rather than one per document.
         let docs_table = docs_table_name(&self.name);
         let existing = wtxn.range(
             &docs_table,
@@ -439,14 +530,20 @@ impl Collection {
             std::ops::Bound::Unbounded,
         )?;
         let idx_table = index_table_name(&self.name, field);
+        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(existing.len());
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(val) = doc.get(field)
                 && let Some(idx_key) = encode_index_key(val, doc.id)
             {
-                wtxn.put(&idx_table, &idx_key, &[])?;
+                keys.push(idx_key);
             }
         }
+        let ops: Vec<crate::engine::KvOp<'_>> = keys
+            .iter()
+            .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
+            .collect();
+        wtxn.apply_batch(&idx_table, &ops)?;
 
         wtxn.commit()?;
         self.invalidate_index_cache();
@@ -468,9 +565,11 @@ impl Collection {
             std::ops::Bound::Unbounded,
             std::ops::Bound::Unbounded,
         )?;
-        for (k, _) in all_entries {
-            wtxn.delete(&idx_table, &k)?;
-        }
+        let ops: Vec<crate::engine::KvOp<'_>> = all_entries
+            .iter()
+            .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
+            .collect();
+        wtxn.apply_batch(&idx_table, &ops)?;
 
         // Remove metadata
         wtxn.delete(META_INDEXES_TABLE, meta_key.as_bytes())?;
@@ -512,18 +611,30 @@ impl Collection {
         let fts_table = fts_table_name(&self.name, field);
         let len_table = fts_len_table_name(&self.name, field);
         let mut stats = FtsStats::default();
+        // Accumulate the whole backfill, then write each table once.
+        let mut postings: Vec<(Vec<u8>, [u8; 4])> = Vec::new();
+        let mut lengths: Vec<([u8; 16], [u8; 4])> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(crate::document::Value::Str(text)) = doc.get(field) {
                 let (freqs, doc_len) = token_frequencies(text);
                 for (token, tf) in &freqs {
-                    let fts_key = encode_fts_key(token, &doc.id);
-                    wtxn.put(&fts_table, &fts_key, &encode_tf(*tf))?;
+                    postings.push((encode_fts_key(token, &doc.id), encode_tf(*tf)));
                 }
-                wtxn.put(&len_table, &doc.id.to_bytes(), &encode_doc_len(doc_len))?;
+                lengths.push((doc.id.to_bytes(), encode_doc_len(doc_len)));
                 stats.add_doc(doc_len);
             }
         }
+        let posting_ops: Vec<crate::engine::KvOp<'_>> = postings
+            .iter()
+            .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
+            .collect();
+        wtxn.apply_batch(&fts_table, &posting_ops)?;
+        let len_ops: Vec<crate::engine::KvOp<'_>> = lengths
+            .iter()
+            .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
+            .collect();
+        wtxn.apply_batch(&len_table, &len_ops)?;
         let stats_table = fts_stats_table_name(&self.name, field);
         wtxn.put(&stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
 
@@ -552,9 +663,11 @@ impl Collection {
                 std::ops::Bound::Unbounded,
                 std::ops::Bound::Unbounded,
             )?;
-            for (k, _) in all {
-                wtxn.delete(&table, &k)?;
-            }
+            let ops: Vec<crate::engine::KvOp<'_>> = all
+                .iter()
+                .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
+                .collect();
+            wtxn.apply_batch(&table, &ops)?;
         }
         wtxn.delete(META_FTS_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
@@ -858,6 +971,7 @@ impl Collection {
             std::ops::Bound::Unbounded,
         )?;
         let ctable = compound_table_name(&self.name, fields);
+        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(existing.len());
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&crate::document::Value>> =
@@ -865,9 +979,14 @@ impl Collection {
             if let Some(v) = vals
                 && let Some(key) = encode_compound_key(&v, doc.id)
             {
-                wtxn.put(&ctable, &key, &[])?;
+                keys.push(key);
             }
         }
+        let ops: Vec<crate::engine::KvOp<'_>> = keys
+            .iter()
+            .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
+            .collect();
+        wtxn.apply_batch(&ctable, &ops)?;
 
         wtxn.commit()?;
         self.invalidate_index_cache();
@@ -892,28 +1011,66 @@ impl Collection {
             std::ops::Bound::Unbounded,
             std::ops::Bound::Unbounded,
         )?;
-        for (k, _) in all {
-            wtxn.delete(&ctable, &k)?;
-        }
+        let ops: Vec<crate::engine::KvOp<'_>> = all
+            .iter()
+            .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
+            .collect();
+        wtxn.apply_batch(&ctable, &ops)?;
         wtxn.delete(META_COMPOUND_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
     }
 
-    fn load_compound_indexes(&self) -> Result<Vec<CompoundIndexDef>, TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
+    fn read_compound_indexes(
+        &self,
+        rtxn: &dyn crate::engine::ReadTxn,
+    ) -> Result<Vec<CompoundIndexDef>, TalaDbError> {
+        self.scan_meta(rtxn, META_COMPOUND_TABLE, |v| Ok(postcard::from_bytes(v)?))
+    }
+
+    /// Decode every entry of a meta table whose key belongs to this collection.
+    ///
+    /// Meta keys are `"{collection}::{...}"`, so the collection's entries form a
+    /// contiguous key range — this seeks straight to it instead of reading the
+    /// whole table and filtering, and streams the values rather than
+    /// materialising every row first.
+    fn scan_meta<T>(
+        &self,
+        rtxn: &dyn crate::engine::ReadTxn,
+        table: &str,
+        decode: impl Fn(&[u8]) -> Result<T, TalaDbError>,
+    ) -> Result<Vec<T>, TalaDbError> {
         let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_COMPOUND_TABLE)?;
-        let mut defs = Vec::new();
-        for (k, v) in all {
-            let key_str = String::from_utf8_lossy(&k);
-            if key_str.starts_with(&prefix) {
-                let def: CompoundIndexDef = postcard::from_bytes(&v)?;
-                defs.push(def);
-            }
+        let start = prefix.clone().into_bytes();
+        // Successor of the prefix: same bytes with the final one incremented,
+        // which is the first key that cannot start with `prefix`. `:` is 0x3A,
+        // so it never overflows.
+        let mut end = start.clone();
+        if let Some(last) = end.last_mut() {
+            *last += 1;
         }
-        Ok(defs)
+        let mut out = Vec::new();
+        let mut err = None;
+        rtxn.scan(
+            table,
+            std::ops::Bound::Included(start.as_slice()),
+            std::ops::Bound::Excluded(end.as_slice()),
+            &mut |_, v| match decode(v) {
+                Ok(def) => {
+                    out.push(def);
+                    Ok(crate::engine::ScanFlow::Continue)
+                }
+                Err(e) => {
+                    err = Some(e);
+                    Ok(crate::engine::ScanFlow::Stop)
+                }
+            },
+        )?;
+        match err {
+            Some(e) => Err(e),
+            None => Ok(out),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -965,16 +1122,22 @@ impl Collection {
         )?;
         let vtable = vec_table_name(&self.name, field);
         let mut backfill: Vec<(ulid::Ulid, Vec<f32>)> = Vec::new();
+        let mut encoded: Vec<([u8; 16], Vec<u8>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(val) = doc.get(field)
                 && let Some(vec) = value_to_f32_vec(val)
                 && vec.len() == dimensions
             {
-                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                encoded.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
                 backfill.push((doc.id, vec));
             }
         }
+        let ops: Vec<crate::engine::KvOp<'_>> = encoded
+            .iter()
+            .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
+            .collect();
+        wtxn.apply_batch(&vtable, &ops)?;
 
         // Persist HNSW options and build the in-memory graph when requested
         if let Some(hnsw_opts) = hnsw {
@@ -1017,9 +1180,11 @@ impl Collection {
             std::ops::Bound::Unbounded,
             std::ops::Bound::Unbounded,
         )?;
-        for (k, _) in all {
-            wtxn.delete(&vtable, &k)?;
-        }
+        let ops: Vec<crate::engine::KvOp<'_>> = all
+            .iter()
+            .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
+            .collect();
+        wtxn.apply_batch(&vtable, &ops)?;
 
         // Remove HNSW metadata (if present) and evict from in-memory cache
         let hnsw_meta_key = format!("{}::{}", self.name, field);
@@ -1169,7 +1334,13 @@ impl Collection {
         };
 
         // 5. Score the in-memory decoded vectors against the query.
+        //
+        //    The query's L2 norm is constant across every candidate, so it is
+        //    computed once here instead of being recomputed inside
+        //    `cosine_similarity` for each stored vector (one extra dot product
+        //    plus a sqrt per candidate, over the whole table).
         let metric = &def.metric;
+        let query_norm = crate::vector::l2_norm(query);
         let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(vectors.len());
         for (id, vec) in vectors.iter() {
             if let Some(ids) = &id_filter
@@ -1177,7 +1348,10 @@ impl Collection {
             {
                 continue;
             }
-            scored.push((*id, compute_similarity(metric, query, vec)));
+            scored.push((
+                *id,
+                crate::vector::score_with_query_norm(metric, query, query_norm, vec),
+            ));
         }
 
         // 6. Select the top_k by score. `select_nth_unstable` partitions in
@@ -1294,48 +1468,39 @@ impl Collection {
 
     fn load_vector_indexes(&self) -> Result<Vec<VectorDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
-        let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_VECTOR_TABLE)?;
-        let mut defs = Vec::new();
-        for (k, v) in all {
-            let key_str = String::from_utf8_lossy(&k);
-            if key_str.starts_with(&prefix) {
-                let def: VectorDef = postcard::from_bytes(&v)?;
-                defs.push(def);
-            }
-        }
-        Ok(defs)
+        self.read_vector_indexes(rtxn.as_ref())
+    }
+
+    fn read_vector_indexes(
+        &self,
+        rtxn: &dyn crate::engine::ReadTxn,
+    ) -> Result<Vec<VectorDef>, TalaDbError> {
+        self.scan_meta(rtxn, META_VECTOR_TABLE, |v| Ok(postcard::from_bytes(v)?))
     }
 
     fn load_fts_indexes(&self) -> Result<Vec<FtsDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
-        let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_FTS_TABLE)?;
-        let mut defs = Vec::new();
-        for (k, v) in all {
-            let key_str = String::from_utf8_lossy(&k);
-            if key_str.starts_with(&prefix) {
-                // Tolerates pre-versioning metadata; see `decode_fts_def`.
-                defs.push(decode_fts_def(&v)?);
-            }
-        }
-        Ok(defs)
+        self.read_fts_indexes(rtxn.as_ref())
+    }
+
+    fn read_fts_indexes(
+        &self,
+        rtxn: &dyn crate::engine::ReadTxn,
+    ) -> Result<Vec<FtsDef>, TalaDbError> {
+        // Tolerates pre-versioning metadata; see `decode_fts_def`.
+        self.scan_meta(rtxn, META_FTS_TABLE, |v| Ok(decode_fts_def(v)?))
     }
 
     fn load_indexes(&self) -> Result<Vec<IndexDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
-        let prefix = format!("{}::", self.name);
-        // Scan meta table and filter by collection prefix
-        let all = rtxn.scan_all(META_INDEXES_TABLE)?;
-        let mut defs = Vec::new();
-        for (k, v) in all {
-            let key_str = String::from_utf8_lossy(&k);
-            if key_str.starts_with(&prefix) {
-                let def: IndexDef = postcard::from_bytes(&v)?;
-                defs.push(def);
-            }
-        }
-        Ok(defs)
+        self.read_indexes(rtxn.as_ref())
+    }
+
+    fn read_indexes(
+        &self,
+        rtxn: &dyn crate::engine::ReadTxn,
+    ) -> Result<Vec<IndexDef>, TalaDbError> {
+        self.scan_meta(rtxn, META_INDEXES_TABLE, |v| Ok(postcard::from_bytes(v)?))
     }
 
     // ------------------------------------------------------------------
@@ -1349,104 +1514,203 @@ impl Collection {
         cache: &CachedIndexes,
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
-        let docs_table = docs_table_name(&self.name);
-        let doc_bytes = postcard::to_allocvec(doc)?;
-        wtxn.put(&docs_table, &doc.id.to_bytes(), &doc_bytes)?;
+        self.write_docs_and_indexes(&[(doc, old_doc)], cache, wtxn)
+    }
 
-        // Secondary indexes
-        for idx in cache.indexes.iter() {
-            let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(old) = old_doc
-                && let Some(old_val) = old.get(&idx.field)
-                && let Some(old_key) = encode_index_key(old_val, old.id)
-            {
-                wtxn.delete(&idx_table, &old_key)?;
-            }
-            if let Some(new_val) = doc.get(&idx.field)
-                && let Some(idx_key) = encode_index_key(new_val, doc.id)
-            {
-                wtxn.put(&idx_table, &idx_key, &[])?;
-            }
+    /// Write `docs` and maintain every index, grouping storage operations by
+    /// table so each table is resolved **once per batch** rather than once per
+    /// document per index.
+    ///
+    /// Ordering within a table is deletes-before-puts, which is safe because
+    /// every index key embeds the document's ULID: one document's delete can
+    /// never target another's insert. FTS corpus statistics are likewise
+    /// accumulated in memory and written once, instead of a read-modify-write
+    /// of the same record per document.
+    ///
+    /// Each element is `(new_doc, previous_version)`; `None` means an insert.
+    fn write_docs_and_indexes(
+        &self,
+        docs: &[(&Document, Option<&Document>)],
+        cache: &CachedIndexes,
+        wtxn: &mut dyn crate::engine::WriteTxn,
+    ) -> Result<(), TalaDbError> {
+        use crate::engine::KvOp;
+        if docs.is_empty() {
+            return Ok(());
         }
+        let tables = &cache.tables;
 
-        // FTS indexes
-        for fts in cache.fts_indexes.iter() {
-            let fts_table = fts_table_name(&self.name, &fts.field);
-            let len_table = fts_len_table_name(&self.name, &fts.field);
-            let stats_table = fts_stats_table_name(&self.name, &fts.field);
-            let mut removed_len: Option<u32> = None;
-            let mut added_len: Option<u32> = None;
-
-            // Remove old tokens
-            if let Some(old) = old_doc
-                && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
-            {
-                for token in tokenize(old_text) {
-                    let key = encode_fts_key(&token, &old.id);
-                    wtxn.delete(&fts_table, &key)?;
-                }
-                // Trust the recorded length over a re-tokenization of the old
-                // text: if the tokenizer ever changes, the stored value is
-                // what the running totals were actually built from.
-                let stored = wtxn
-                    .get(&len_table, &old.id.to_bytes())?
-                    .map(|b| decode_doc_len(&b));
-                removed_len = Some(stored.unwrap_or_else(|| token_frequencies(old_text).1));
-                wtxn.delete(&len_table, &old.id.to_bytes())?;
-            }
-
-            // Write new tokens
-            if let Some(crate::document::Value::Str(new_text)) = doc.get(&fts.field) {
-                let (freqs, doc_len) = token_frequencies(new_text);
-                for (token, tf) in &freqs {
-                    let key = encode_fts_key(token, &doc.id);
-                    wtxn.put(&fts_table, &key, &encode_tf(*tf))?;
-                }
-                wtxn.put(&len_table, &doc.id.to_bytes(), &encode_doc_len(doc_len))?;
-                added_len = Some(doc_len);
-            }
-
-            if removed_len.is_some() || added_len.is_some() {
-                adjust_fts_stats(wtxn, &stats_table, removed_len, added_len)?;
-            }
+        // --- document bodies ---
+        let mut doc_keys: Vec<[u8; 16]> = Vec::with_capacity(docs.len());
+        let mut doc_bodies: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
+        for (doc, _) in docs {
+            doc_keys.push(doc.id.to_bytes());
+            doc_bodies.push(postcard::to_allocvec(doc)?);
         }
+        let body_ops: Vec<KvOp<'_>> = doc_keys
+            .iter()
+            .zip(&doc_bodies)
+            .map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice()))
+            .collect();
+        wtxn.apply_batch(&tables.docs, &body_ops)?;
 
-        // Vector indexes
-        for vdef in cache.vec_indexes.iter() {
-            let vtable = vec_table_name(&self.name, &vdef.field);
-            // Remove old vector entry if updating
-            if old_doc.is_some() {
-                wtxn.delete(&vtable, &doc.id.to_bytes())?;
-            }
-            // Write new vector if field is present and is a valid numeric array
-            if let Some(val) = doc.get(&vdef.field)
-                && let Some(vec) = value_to_f32_vec(val)
-                && vec.len() == vdef.dimensions
-            {
-                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
-            }
-        }
-
-        // Compound indexes
-        for cidx in cache.compound_indexes.iter() {
-            let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
-            let ctable = compound_table_name(&self.name, &field_refs);
-            // Remove old compound entry
-            if let Some(old) = old_doc {
-                let old_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| old.get(f)).collect();
-                if let Some(v) = old_vals
-                    && let Some(old_key) = encode_compound_key(&v, old.id)
+        // --- secondary indexes ---
+        for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
+            let mut keys: Vec<(Vec<u8>, bool)> = Vec::new(); // (key, is_delete)
+            for (doc, old_doc) in docs {
+                if let Some(old) = old_doc
+                    && let Some(old_val) = old.get(&idx.field)
+                    && let Some(old_key) = encode_index_key(old_val, old.id)
                 {
-                    wtxn.delete(&ctable, &old_key)?;
+                    keys.push((old_key, true));
+                }
+                if let Some(new_val) = doc.get(&idx.field)
+                    && let Some(idx_key) = encode_index_key(new_val, doc.id)
+                {
+                    keys.push((idx_key, false));
                 }
             }
-            // Write new compound entry
-            let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = new_vals
-                && let Some(new_key) = encode_compound_key(&v, doc.id)
-            {
-                wtxn.put(&ctable, &new_key, &[])?;
+            if keys.is_empty() {
+                continue;
             }
+            // Deletes first: an update whose indexed value is unchanged emits
+            // the same key twice, and the put must win.
+            let ops: Vec<KvOp<'_>> = keys
+                .iter()
+                .filter(|(_, del)| *del)
+                .map(|(k, _)| KvOp::Delete(k.as_slice()))
+                .chain(
+                    keys.iter()
+                        .filter(|(_, del)| !*del)
+                        .map(|(k, _)| KvOp::Put(k.as_slice(), &[])),
+                )
+                .collect();
+            wtxn.apply_batch(table, &ops)?;
+        }
+
+        // --- FTS indexes ---
+        for (fts, (fts_table, len_table, stats_table)) in
+            cache.fts_indexes.iter().zip(&tables.fts)
+        {
+            let mut posting_deletes: Vec<Vec<u8>> = Vec::new();
+            let mut posting_puts: Vec<(Vec<u8>, [u8; 4])> = Vec::new();
+            let mut len_deletes: Vec<[u8; 16]> = Vec::new();
+            let mut len_puts: Vec<([u8; 16], [u8; 4])> = Vec::new();
+            let mut removed_total: Vec<u32> = Vec::new();
+            let mut added_total: Vec<u32> = Vec::new();
+
+            for (doc, old_doc) in docs {
+                if let Some(old) = old_doc
+                    && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
+                {
+                    for token in tokenize(old_text) {
+                        posting_deletes.push(encode_fts_key(&token, &old.id));
+                    }
+                    // Trust the recorded length over a re-tokenization of the
+                    // old text: if the tokenizer ever changes, the stored value
+                    // is what the running totals were actually built from.
+                    let stored = wtxn
+                        .get(len_table, &old.id.to_bytes())?
+                        .map(|b| decode_doc_len(&b));
+                    removed_total.push(stored.unwrap_or_else(|| token_frequencies(old_text).1));
+                    len_deletes.push(old.id.to_bytes());
+                }
+                if let Some(crate::document::Value::Str(new_text)) = doc.get(&fts.field) {
+                    let (freqs, doc_len) = token_frequencies(new_text);
+                    for (token, tf) in &freqs {
+                        posting_puts.push((encode_fts_key(token, &doc.id), encode_tf(*tf)));
+                    }
+                    len_puts.push((doc.id.to_bytes(), encode_doc_len(doc_len)));
+                    added_total.push(doc_len);
+                }
+            }
+
+            if !posting_deletes.is_empty() || !posting_puts.is_empty() {
+                let ops: Vec<KvOp<'_>> = posting_deletes
+                    .iter()
+                    .map(|k| KvOp::Delete(k.as_slice()))
+                    .chain(
+                        posting_puts
+                            .iter()
+                            .map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice())),
+                    )
+                    .collect();
+                wtxn.apply_batch(fts_table, &ops)?;
+            }
+            if !len_deletes.is_empty() || !len_puts.is_empty() {
+                let ops: Vec<KvOp<'_>> = len_deletes
+                    .iter()
+                    .map(|k| KvOp::Delete(k.as_slice()))
+                    .chain(
+                        len_puts
+                            .iter()
+                            .map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice())),
+                    )
+                    .collect();
+                wtxn.apply_batch(len_table, &ops)?;
+            }
+            if !removed_total.is_empty() || !added_total.is_empty() {
+                adjust_fts_stats_batch(wtxn, stats_table, &removed_total, &added_total)?;
+            }
+        }
+
+        // --- vector indexes ---
+        for (vdef, vtable) in cache.vec_indexes.iter().zip(&tables.vectors) {
+            let mut deletes: Vec<[u8; 16]> = Vec::new();
+            let mut puts: Vec<([u8; 16], Vec<u8>)> = Vec::new();
+            for (doc, old_doc) in docs {
+                if old_doc.is_some() {
+                    deletes.push(doc.id.to_bytes());
+                }
+                if let Some(val) = doc.get(&vdef.field)
+                    && let Some(vec) = value_to_f32_vec(val)
+                    && vec.len() == vdef.dimensions
+                {
+                    puts.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
+                }
+            }
+            if deletes.is_empty() && puts.is_empty() {
+                continue;
+            }
+            let ops: Vec<KvOp<'_>> = deletes
+                .iter()
+                .map(|k| KvOp::Delete(k.as_slice()))
+                .chain(puts.iter().map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice())))
+                .collect();
+            wtxn.apply_batch(vtable, &ops)?;
+        }
+
+        // --- compound indexes ---
+        for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {
+            let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
+            let mut deletes: Vec<Vec<u8>> = Vec::new();
+            let mut puts: Vec<Vec<u8>> = Vec::new();
+            for (doc, old_doc) in docs {
+                if let Some(old) = old_doc {
+                    let old_vals: Option<Vec<&Value>> =
+                        field_refs.iter().map(|f| old.get(f)).collect();
+                    if let Some(v) = old_vals
+                        && let Some(old_key) = encode_compound_key(&v, old.id)
+                    {
+                        deletes.push(old_key);
+                    }
+                }
+                let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
+                if let Some(v) = new_vals
+                    && let Some(new_key) = encode_compound_key(&v, doc.id)
+                {
+                    puts.push(new_key);
+                }
+            }
+            if deletes.is_empty() && puts.is_empty() {
+                continue;
+            }
+            let ops: Vec<KvOp<'_>> = deletes
+                .iter()
+                .map(|k| KvOp::Delete(k.as_slice()))
+                .chain(puts.iter().map(|k| KvOp::Put(k.as_slice(), &[])))
+                .collect();
+            wtxn.apply_batch(ctable, &ops)?;
         }
 
         Ok(())
@@ -1511,9 +1775,13 @@ impl Collection {
         }
         let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
+        // One batched pass over the whole insert: every index table is opened
+        // once, not once per document.
+        let batch: Vec<(&Document, Option<&Document>)> =
+            docs.iter().map(|d| (d, None)).collect();
+        self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
-            self.write_doc_and_indexes_with_compound(doc, None, &cache, wtxn.as_mut())?;
             // Audit rows commit atomically with the batch.
             if let Some(caller) = &self.audit_caller {
                 write_audit_entry(
@@ -1554,8 +1822,33 @@ impl Collection {
         self.decrypt_docs(docs)
     }
 
+    /// Return the first document matching `filter`, or `None`.
+    ///
+    /// Stops at the first match rather than materialising the whole result set
+    /// and taking its head — on an unindexed predicate that is the difference
+    /// between decoding one document and decoding the entire collection.
+    ///
+    /// "First" means first in the plan's natural order (index order for an
+    /// index-backed plan, `_id` order for a scan), which is the same document
+    /// the previous implementation returned.
     pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, TalaDbError> {
-        Ok(self.find(filter)?.into_iter().next())
+        let cache = self.load_indexes_cached()?;
+        let qplan = plan_full(
+            &filter,
+            &cache.indexes,
+            &cache.fts_indexes,
+            &cache.compound_indexes,
+        );
+        let rtxn = self.backend.begin_read()?;
+        let docs = crate::query::executor::execute_limited(
+            &qplan,
+            &filter,
+            rtxn.as_ref(),
+            &self.name,
+            None,
+            Some(1),
+        )?;
+        Ok(self.decrypt_docs(docs)?.into_iter().next())
     }
 
     /// Like `find`, but with sort, pagination, and field projection.
@@ -1581,7 +1874,26 @@ impl Collection {
             &cache.compound_indexes,
         );
         let rtxn = self.backend.begin_read()?;
-        let mut docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, deadline)?;
+        // Without a sort the result is the plan's natural order, so `skip +
+        // limit` documents are all that can ever be observed — stop the walk
+        // there instead of decoding the rest and throwing them away. With a
+        // sort, every candidate can still reach the page, so no limit is
+        // pushed down.
+        let pushdown = if options.sort.is_empty() {
+            options
+                .limit
+                .map(|l| (options.skip as usize).saturating_add(l as usize))
+        } else {
+            None
+        };
+        let mut docs = crate::query::executor::execute_limited(
+            &qplan,
+            &filter,
+            rtxn.as_ref(),
+            &self.name,
+            deadline,
+            pushdown,
+        )?;
         // Decrypt encrypted fields before sorting/projecting.
         docs = self.decrypt_docs(docs)?;
 
@@ -1893,15 +2205,25 @@ impl Collection {
         let tomb_table = tomb_table_name(&self.name);
 
         let mut wtxn = self.backend.begin_write()?;
+
+        // Read every previous version in one batched pass inside the write txn,
+        // so old index entries are computed from the bytes actually being
+        // replaced without paying a table open per document.
+        let keys: Vec<[u8; 16]> = docs.iter().map(|d| d.id.to_bytes()).collect();
+        let key_refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+        let old_docs: Vec<Option<Document>> = wtxn
+            .get_many(&docs_table, &key_refs)?
+            .into_iter()
+            .map(|bytes| match bytes {
+                Some(b) => postcard::from_bytes(&b).map(Some).map_err(TalaDbError::from),
+                None => Ok(None),
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut batch: Vec<(&Document, Option<&Document>)> = Vec::with_capacity(docs.len());
         let mut ids = Vec::with_capacity(docs.len());
-        for doc in &docs {
-            let id = doc.id;
-            // Read the previous version inside the write txn so old index entries
-            // are computed from the bytes actually being replaced.
-            let old_doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
-                Some(bytes) => Some(postcard::from_bytes(&bytes)?),
-                None => None,
-            };
+        let mut tomb_clears: Vec<[u8; 16]> = Vec::with_capacity(docs.len());
+        for (doc, old_doc) in docs.iter().zip(&old_docs) {
             if origin == WriteOrigin::AuthoritativeRemote
                 && let (Some(Value::Int(incoming)), Some(Value::Int(stored))) = (
                     doc.get(REMOTE_REVISION_FIELD),
@@ -1911,13 +2233,23 @@ impl Collection {
             {
                 continue;
             }
-            self.write_doc_and_indexes_with_compound(doc, old_doc.as_ref(), &cache, wtxn.as_mut())?;
-            // Clear any tombstone: this id is alive again. Without this, a replace
-            // would leave a tombstone newer than the document, and the next export
-            // would delete it on peers.
-            wtxn.delete(&tomb_table, &id.to_bytes())?;
-            // Audit rows commit atomically with the batch.
-            if let Some(caller) = &self.audit_caller {
+            batch.push((doc, old_doc.as_ref()));
+            tomb_clears.push(doc.id.to_bytes());
+            ids.push(doc.id);
+        }
+
+        self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
+        // Clear any tombstone: these ids are alive again. Without this, a replace
+        // would leave a tombstone newer than the document, and the next export
+        // would delete it on peers.
+        let tomb_ops: Vec<crate::engine::KvOp<'_>> = tomb_clears
+            .iter()
+            .map(|k| crate::engine::KvOp::Delete(k.as_slice()))
+            .collect();
+        wtxn.apply_batch(&tomb_table, &tomb_ops)?;
+        // Audit rows commit atomically with the batch.
+        if let Some(caller) = &self.audit_caller {
+            for id in &ids {
                 write_audit_entry(
                     wtxn.as_mut(),
                     &self.name,
@@ -1926,7 +2258,6 @@ impl Collection {
                     caller,
                 )?;
             }
-            ids.push(id);
         }
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
@@ -1975,17 +2306,19 @@ impl Collection {
         };
 
         let mut wtxn = self.backend.begin_write()?;
-        let mut removed = Vec::new();
-        for &id in ids {
-            // Read inside the write txn so index cleanup is computed from the bytes
-            // actually being removed.
-            let doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
-                Some(bytes) => Some(postcard::from_bytes(&bytes)?),
-                None => None,
-            };
-            let Some(doc) = doc else { continue };
-            self.delete_doc_and_indexes_inner(&doc, &cache, wtxn.as_mut(), deleted_at)?;
-            if let Some(caller) = &self.audit_caller {
+        // Read inside the write txn so index cleanup is computed from the bytes
+        // actually being removed — batched, so the docs table opens once.
+        let keys: Vec<[u8; 16]> = ids.iter().map(|id| id.to_bytes()).collect();
+        let key_refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+        let mut docs: Vec<Document> = Vec::new();
+        for bytes in wtxn.get_many(&docs_table, &key_refs)?.into_iter().flatten() {
+            docs.push(postcard::from_bytes(&bytes)?);
+        }
+        let removed: Vec<Ulid> = docs.iter().map(|d| d.id).collect();
+        let batch: Vec<&Document> = docs.iter().collect();
+        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut(), deleted_at)?;
+        if let Some(caller) = &self.audit_caller {
+            for id in &removed {
                 write_audit_entry(
                     wtxn.as_mut(),
                     &self.name,
@@ -1994,7 +2327,6 @@ impl Collection {
                     caller,
                 )?;
             }
-            removed.push(id);
         }
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
@@ -2168,11 +2500,19 @@ impl Collection {
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        for candidate in &candidates {
-            let stored_old: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
-                Some(bytes) => postcard::from_bytes(&bytes)?,
-                None => continue,
-            };
+        // Re-read every candidate in one batched pass. Candidate ids are
+        // distinct (index keys embed the ULID, and the Or/In plans deduplicate),
+        // so reading them all before writing any is equivalent to interleaving —
+        // and costs one table open instead of one per candidate.
+        let cand_keys: Vec<[u8; 16]> = candidates.iter().map(|c| c.id.to_bytes()).collect();
+        let cand_refs: Vec<&[u8]> = cand_keys.iter().map(|k| k.as_slice()).collect();
+        let stored: Vec<Option<Vec<u8>>> = wtxn.get_many(&docs_table, &cand_refs)?;
+        // Both versions of each updated document, held until the whole set is
+        // computed so the index maintenance can run as one batched pass.
+        let mut pairs: Vec<(Document, Document)> = Vec::new(); // (new, stored_old)
+        for bytes in stored.into_iter() {
+            let Some(bytes) = bytes else { continue };
+            let stored_old: Document = postcard::from_bytes(&bytes)?;
             if !filter.matches_with_cache(&stored_old, &regex_cache) {
                 continue;
             }
@@ -2192,12 +2532,6 @@ impl Collection {
                 });
             }
             self.encrypt_doc(&mut new_doc)?;
-            self.write_doc_and_indexes_with_compound(
-                &new_doc,
-                Some(&stored_old),
-                &cache,
-                wtxn.as_mut(),
-            )?;
             // Audit row commits atomically with the batch.
             if let Some(caller) = &self.audit_caller {
                 write_audit_entry(
@@ -2208,8 +2542,12 @@ impl Collection {
                     caller,
                 )?;
             }
+            pairs.push((new_doc, stored_old));
             count += 1;
         }
+        let batch: Vec<(&Document, Option<&Document>)> =
+            pairs.iter().map(|(new, old)| (new, Some(old))).collect();
+        self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
@@ -2291,7 +2629,6 @@ impl Collection {
             if !filter.matches_with_cache(&current, &regex_cache) {
                 continue;
             }
-            self.delete_doc_and_indexes_with_compound(&current, &cache, wtxn.as_mut())?;
             // Audit row commits atomically with the batch.
             if let Some(caller) = &self.audit_caller {
                 write_audit_entry(
@@ -2305,6 +2642,9 @@ impl Collection {
             deleted.push(current);
             count += 1;
         }
+        // One batched pass: each index table is opened once, not once per doc.
+        let batch: Vec<&Document> = deleted.iter().collect();
+        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut(), Some(now_ms()))?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
@@ -2326,7 +2666,9 @@ impl Collection {
             return rtxn.count_entries(&docs_table_name(&self.name));
         }
         // Run the query without the field-decryption pass that `find` does —
-        // only the match count matters, not field contents.
+        // only the match count matters, not field contents. When the plan's
+        // index range exactly reproduces the filter, the index entries answer
+        // the question and no document is decoded at all.
         let cache = self.load_indexes_cached()?;
         let qplan = plan_full(
             &filter,
@@ -2335,8 +2677,7 @@ impl Collection {
             &cache.compound_indexes,
         );
         let rtxn = self.backend.begin_read()?;
-        let docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
-        Ok(docs.len() as u64)
+        crate::query::executor::count_matching(&qplan, &filter, rtxn.as_ref(), &self.name)
     }
 
     /// Remove tombstones older than `before_ms` (milliseconds since Unix epoch).
@@ -2384,19 +2725,25 @@ impl Collection {
         // with a newer timestamp. Only prune entries whose stored timestamp
         // still satisfies the cutoff at commit time.
         let mut wtxn = self.backend.begin_write()?;
-        let mut count: u64 = 0;
-        for key in &candidates {
-            let still_eligible = match wtxn.get(&tomb_table, key)? {
-                Some(bytes) => postcard::from_bytes::<i64>(&bytes)
+        let key_refs: Vec<&[u8]> = candidates.iter().map(|k| k.as_slice()).collect();
+        let stored = wtxn.get_many(&tomb_table, &key_refs)?;
+        let eligible: Vec<&Vec<u8>> = candidates
+            .iter()
+            .zip(&stored)
+            .filter(|(_, bytes)| match bytes {
+                Some(b) => postcard::from_bytes::<i64>(b)
                     .map(|ts| (ts as u64) < before_ms)
                     .unwrap_or(false),
                 None => false,
-            };
-            if still_eligible {
-                wtxn.delete(&tomb_table, key)?;
-                count += 1;
-            }
-        }
+            })
+            .map(|(k, _)| k)
+            .collect();
+        let count = eligible.len() as u64;
+        let ops: Vec<crate::engine::KvOp<'_>> = eligible
+            .iter()
+            .map(|k| crate::engine::KvOp::Delete(k.as_slice()))
+            .collect();
+        wtxn.apply_batch(&tomb_table, &ops)?;
         wtxn.commit()?;
         Ok(count)
     }
@@ -2434,62 +2781,109 @@ impl Collection {
         wtxn: &mut dyn crate::engine::WriteTxn,
         deleted_at: Option<u64>,
     ) -> Result<(), TalaDbError> {
-        let docs_table = docs_table_name(&self.name);
-        wtxn.delete(&docs_table, &doc.id.to_bytes())?;
+        self.delete_docs_and_indexes(std::slice::from_ref(&doc), cache, wtxn, deleted_at)
+    }
 
-        // Write a tombstone so this deletion can be exported via SyncAdapter
+    /// Delete `docs` and every index entry they own, grouped by table so each
+    /// table is resolved once per batch. Mirror of [`Self::write_docs_and_indexes`].
+    ///
+    /// `deleted_at: None` deletes **without** writing tombstones — see
+    /// [`Self::delete_doc_and_indexes_inner`]'s caller notes.
+    fn delete_docs_and_indexes(
+        &self,
+        docs: &[&Document],
+        cache: &CachedIndexes,
+        wtxn: &mut dyn crate::engine::WriteTxn,
+        deleted_at: Option<u64>,
+    ) -> Result<(), TalaDbError> {
+        use crate::engine::KvOp;
+        if docs.is_empty() {
+            return Ok(());
+        }
+        let tables = &cache.tables;
+        let ids: Vec<[u8; 16]> = docs.iter().map(|d| d.id.to_bytes()).collect();
+
+        let body_ops: Vec<KvOp<'_>> =
+            ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+        wtxn.apply_batch(&tables.docs, &body_ops)?;
+
+        // Write tombstones so these deletions can be exported via SyncAdapter
         // and propagated to remote replicas that may not have received the
         // HTTP push event.
         if let Some(deleted_at) = deleted_at {
-            let tomb_table = tomb_table_name(&self.name);
             let deleted_at = i64::try_from(deleted_at).map_err(|_| {
                 TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
             })?;
             let ts_bytes = postcard::to_allocvec(&deleted_at)?;
-            wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
+            let tomb_ops: Vec<KvOp<'_>> = ids
+                .iter()
+                .map(|k| KvOp::Put(k.as_slice(), ts_bytes.as_slice()))
+                .collect();
+            wtxn.apply_batch(&tables.tomb, &tomb_ops)?;
         }
 
-        for idx in cache.indexes.iter() {
-            let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(val) = doc.get(&idx.field)
-                && let Some(idx_key) = encode_index_key(val, doc.id)
-            {
-                wtxn.delete(&idx_table, &idx_key)?;
-            }
+        for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
+            let keys: Vec<Vec<u8>> = docs
+                .iter()
+                .filter_map(|doc| {
+                    doc.get(&idx.field)
+                        .and_then(|val| encode_index_key(val, doc.id))
+                })
+                .collect();
+            let ops: Vec<KvOp<'_>> = keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            wtxn.apply_batch(table, &ops)?;
         }
 
-        for fts in cache.fts_indexes.iter() {
-            let fts_table = fts_table_name(&self.name, &fts.field);
-            let len_table = fts_len_table_name(&self.name, &fts.field);
-            if let Some(crate::document::Value::Str(text)) = doc.get(&fts.field) {
-                for token in tokenize(text) {
-                    let key = encode_fts_key(&token, &doc.id);
-                    wtxn.delete(&fts_table, &key)?;
+        for (fts, (fts_table, len_table, stats_table)) in
+            cache.fts_indexes.iter().zip(&tables.fts)
+        {
+            let mut posting_keys: Vec<Vec<u8>> = Vec::new();
+            let mut len_keys: Vec<[u8; 16]> = Vec::new();
+            let mut removed: Vec<u32> = Vec::new();
+            for doc in docs {
+                if let Some(crate::document::Value::Str(text)) = doc.get(&fts.field) {
+                    for token in tokenize(text) {
+                        posting_keys.push(encode_fts_key(&token, &doc.id));
+                    }
+                    let stored = wtxn
+                        .get(len_table, &doc.id.to_bytes())?
+                        .map(|b| decode_doc_len(&b));
+                    removed.push(stored.unwrap_or_else(|| token_frequencies(text).1));
+                    len_keys.push(doc.id.to_bytes());
                 }
-                let stored = wtxn
-                    .get(&len_table, &doc.id.to_bytes())?
-                    .map(|b| decode_doc_len(&b));
-                let removed = stored.unwrap_or_else(|| token_frequencies(text).1);
-                wtxn.delete(&len_table, &doc.id.to_bytes())?;
-                let stats_table = fts_stats_table_name(&self.name, &fts.field);
-                adjust_fts_stats(wtxn, &stats_table, Some(removed), None)?;
             }
+            if posting_keys.is_empty() {
+                continue;
+            }
+            let ops: Vec<KvOp<'_>> = posting_keys
+                .iter()
+                .map(|k| KvOp::Delete(k.as_slice()))
+                .collect();
+            wtxn.apply_batch(fts_table, &ops)?;
+            let len_ops: Vec<KvOp<'_>> =
+                len_keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            wtxn.apply_batch(len_table, &len_ops)?;
+            adjust_fts_stats_batch(wtxn, stats_table, &removed, &[])?;
         }
 
-        for vdef in cache.vec_indexes.iter() {
-            let vtable = vec_table_name(&self.name, &vdef.field);
-            wtxn.delete(&vtable, &doc.id.to_bytes())?;
+        for vtable in &tables.vectors {
+            let ops: Vec<KvOp<'_>> =
+                ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            wtxn.apply_batch(vtable, &ops)?;
         }
 
-        for cidx in cache.compound_indexes.iter() {
+        for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {
             let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
-            let ctable = compound_table_name(&self.name, &field_refs);
-            let vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals
-                && let Some(key) = encode_compound_key(&v, doc.id)
-            {
-                wtxn.delete(&ctable, &key)?;
-            }
+            let keys: Vec<Vec<u8>> = docs
+                .iter()
+                .filter_map(|doc| {
+                    let vals: Option<Vec<&Value>> =
+                        field_refs.iter().map(|f| doc.get(f)).collect();
+                    vals.and_then(|v| encode_compound_key(&v, doc.id))
+                })
+                .collect();
+            let ops: Vec<KvOp<'_>> = keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            wtxn.apply_batch(ctable, &ops)?;
         }
 
         Ok(())
@@ -2508,27 +2902,38 @@ struct FusedEntry {
 ///
 /// Read-modify-write is safe here because every caller already holds the
 /// single write transaction.
-fn adjust_fts_stats(
+/// Apply a batch of document arrivals and departures to a field's corpus
+/// statistics: one read-modify-write of the stats record regardless of how many
+/// documents moved.
+///
+/// `add_doc`/`remove_doc` are commutative counter updates, so folding them in
+/// memory and persisting once is identical to applying each in turn — and turns
+/// an O(N) sequence of read-modify-writes on a single hot key into O(1).
+fn adjust_fts_stats_batch(
     wtxn: &mut dyn crate::engine::WriteTxn,
     stats_table: &str,
-    removed_len: Option<u32>,
-    added_len: Option<u32>,
+    removed_lens: &[u32],
+    added_lens: &[u32],
 ) -> Result<(), TalaDbError> {
+    if removed_lens.is_empty() && added_lens.is_empty() {
+        return Ok(());
+    }
     let mut stats: FtsStats = match wtxn.get(stats_table, FTS_STATS_KEY)? {
         // A corrupt or truncated stats record must not fail the write; the
         // worst case is a slightly wrong average until the index is rebuilt.
         Some(bytes) => postcard::from_bytes(&bytes).unwrap_or_default(),
         None => FtsStats::default(),
     };
-    if let Some(len) = removed_len {
-        stats.remove_doc(len);
+    for len in removed_lens {
+        stats.remove_doc(*len);
     }
-    if let Some(len) = added_len {
-        stats.add_doc(len);
+    for len in added_lens {
+        stats.add_doc(*len);
     }
     wtxn.put(stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
     Ok(())
 }
+
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     match update {

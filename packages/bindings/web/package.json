@@ -1,6 +1,6 @@
 {
   "name": "@taladb/web",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "TalaDB WASM bindings — document queries and vector search in the browser",
   "main": "pkg/taladb_web.js",
   "types": "pkg/taladb_web.d.ts",

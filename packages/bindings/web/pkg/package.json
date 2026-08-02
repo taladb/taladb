@@ -2,11 +2,11 @@
   "name": "taladb-web",
   "type": "module",
   "collaborators": [
-    "thinkgrid-labs"
+    "taladb"
   ],
   "description": "TalaDB browser WASM bindings (wasm-bindgen + OPFS) and Cloudflare Workers",
-  "version": "0.10.0",
-  "license": "MIT",
+  "version": "0.10.2",
+  "license": "Apache-2.0",
   "files": [
     "taladb_web_bg.wasm",
     "taladb_web.js",

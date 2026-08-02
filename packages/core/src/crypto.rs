@@ -287,6 +287,47 @@ impl<'a> WriteTxn for EncryptedWriteTxn<'a> {
     fn commit(self: Box<Self>) -> Result<(), TalaDbError> {
         self.inner.commit()
     }
+
+    fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
+        self.inner
+            .get_many(table, keys)?
+            .into_iter()
+            .zip(keys)
+            .map(|(v, k)| match v {
+                Some(data) => Ok(Some(decrypt(self.key, table, k, &data)?)),
+                None => Ok(None),
+            })
+            .collect()
+    }
+
+    fn apply_batch(
+        &mut self,
+        table: &str,
+        ops: &[crate::engine::KvOp<'_>],
+    ) -> Result<(), TalaDbError> {
+        use crate::engine::KvOp;
+        // Values must be encrypted before reaching the inner backend, and the
+        // ciphertext has to outlive the borrowed-slice batch handed down — so
+        // it is materialised here rather than borrowed from the caller.
+        let mut ciphertexts: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+        for op in ops {
+            match op {
+                KvOp::Put(k, v) => ciphertexts.push(Some(encrypt(self.key, table, k, v)?)),
+                KvOp::Delete(_) => ciphertexts.push(None),
+            }
+        }
+        let inner_ops: Vec<KvOp<'_>> = ops
+            .iter()
+            .zip(&ciphertexts)
+            .map(|(op, ct)| match (op, ct) {
+                (KvOp::Put(k, _), Some(ct)) => KvOp::Put(k, ct.as_slice()),
+                (KvOp::Delete(k), _) => KvOp::Delete(k),
+                // Unreachable: the loop above pairs every Put with a Some.
+                (KvOp::Put(k, v), None) => KvOp::Put(k, v),
+            })
+            .collect();
+        self.inner.apply_batch(table, &inner_ops)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +378,45 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
 
     fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
         self.inner.count_entries(table)
+    }
+
+    fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
+        self.inner
+            .get_many(table, keys)?
+            .into_iter()
+            .zip(keys)
+            .map(|(v, k)| match v {
+                Some(data) => Ok(Some(decrypt(self.key, table, k, &data)?)),
+                None => Ok(None),
+            })
+            .collect()
+    }
+
+    fn scan(
+        &self,
+        table: &str,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        f: crate::engine::ScanFn<'_>,
+    ) -> Result<(), TalaDbError> {
+        // Values arrive encrypted, so this layer cannot hand the caller a
+        // borrowed slice from storage — each value is decrypted into a buffer
+        // first. Keys stay borrowed, and the caller still avoids materialising
+        // the whole range.
+        let mut err = None;
+        self.inner.scan(table, start, end, &mut |k, v| {
+            match decrypt(self.key, table, k, v) {
+                Ok(plain) => f(k, &plain),
+                Err(e) => {
+                    err = Some(e);
+                    Ok(crate::engine::ScanFlow::Stop)
+                }
+            }
+        })?;
+        match err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 

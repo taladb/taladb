@@ -117,6 +117,26 @@ let pendingSnapshotResolve = null;
  */
 const initPromises = new Map();
 
+/**
+ * WASM fetch + compile, started at module scope rather than inside `doInit`.
+ *
+ * The worker is spawned and its module evaluated well before the main thread's
+ * `init` message arrives. Waiting for that message to *begin* downloading ~1 MB
+ * of WASM left the whole spawn-and-post round trip idle; kicking it off here
+ * overlaps the two. `doInit` simply awaits this.
+ *
+ * A rejection here is not unhandled: `doInit` awaits it and surfaces the error
+ * to the caller as a failed `init`. The no-op catch keeps the runtime from
+ * reporting it as unhandled in the window between module eval and that await.
+ * @type {Promise<typeof import('../pkg/taladb_web')>}
+ */
+const wasmReady = (async () => {
+  const wasm = await import(/* @vite-ignore */ '../pkg/taladb_web.js');
+  await wasm.default();
+  return wasm;
+})();
+wasmReady.catch(() => {});
+
 /** The dbName that was successfully initialised (or is being initialised). */
 let activeDbName = null;
 
@@ -479,6 +499,10 @@ async function dispatch(op, args) {
     case 'count':
       return db.count(args.collection, args.filterJson ?? 'null');
 
+    // Cheap change-detection for subscribe(): one integer, no query.
+    case 'writeGeneration':
+      return db.writeGeneration(args.collection);
+
     case 'aggregate':
       return db.aggregate(args.collection, args.pipelineJson ?? '[]');
 
@@ -688,13 +712,28 @@ async function loadOrCreateSalt(root, saltFileName) {
 // ---------------------------------------------------------------------------
 
 async function doInit(dbName, configJson, passphrase = null) {
-  const wasm = await import(/* @vite-ignore */ '../pkg/taladb_web.js');
-  await wasm.default();
+  encrypted = typeof passphrase === 'string' && passphrase.length > 0;
+
+  const opfsAvailable = canUseOpfs();
+
+  // Compiling ~1 MB of WASM and setting up OPFS are independent, and OPFS setup
+  // is four awaited round trips (getDirectory → getFileHandle → lock →
+  // createSyncAccessHandle). Starting both now lets the storage latency hide
+  // behind the compile instead of following it.
+  //
+  // `wasmReady` was already kicked off at module scope — see its declaration.
+  const opfsSetup = opfsAvailable
+    ? (async () => {
+        const root = await navigator.storage.getDirectory();
+        const fileName = `taladb_${dbName.replaceAll(/[/\\:]/g, '_')}.redb`;
+        return { root, fileName, fileHandle: await root.getFileHandle(fileName, { create: true }) };
+      })().catch(() => null)
+    : Promise.resolve(null);
+
+  const wasm = await wasmReady;
 
   // Hoist to module scope so snapshot reloads in dispatch() can use it.
   WorkerDB = wasm.WorkerDB;
-
-  encrypted = typeof passphrase === 'string' && passphrase.length > 0;
 
   // Open the BroadcastChannel now that we know the db name.
   if (typeof BroadcastChannel !== 'undefined') {
@@ -762,16 +801,13 @@ async function doInit(dbName, configJson, passphrase = null) {
     );
   }
 
-  const opfsAvailable = await checkOpfs();
-  if (!opfsAvailable) {
-    if (encrypted) {
-      throw new Error(
-        'TalaDB encryption requires OPFS, which is unavailable in this browser context. ' +
-        'Refusing to open — the in-memory/IndexedDB fallback cannot encrypt at rest.'
-      );
-    }
-    warn('OPFS unavailable — falling back to IndexedDB-backed in-memory');
-    const snapshot = await idbLoadSnapshot(dbName);
+  /**
+   * Open an in-memory database seeded from the last IndexedDB snapshot, and
+   * keep flushing snapshots back. The degradation path whenever OPFS is
+   * unusable. Never valid for encrypted databases — the snapshot is plaintext.
+   */
+  async function openIdbFallback(name) {
+    const snapshot = await idbLoadSnapshot(name);
     db = openWithSnapshot(snapshot);
     idbFallback = true;
     snapshotWriter = true;
@@ -780,12 +816,24 @@ async function doInit(dbName, configJson, passphrase = null) {
     } else {
       log('New in-memory database — writes will be persisted to IndexedDB');
     }
+  }
+
+  // `opfsSetup` resolves to null when OPFS is unusable — either the capability
+  // check said so up front, or getDirectory/getFileHandle actually failed.
+  const opfs = await opfsSetup;
+  if (!opfs) {
+    if (encrypted) {
+      throw new Error(
+        'TalaDB encryption requires OPFS, which is unavailable in this browser context. ' +
+        'Refusing to open — the in-memory/IndexedDB fallback cannot encrypt at rest.'
+      );
+    }
+    warn('OPFS unavailable — falling back to IndexedDB-backed in-memory');
+    await openIdbFallback(dbName);
     return;
   }
 
-  const root = await navigator.storage.getDirectory();
-  const fileName = `taladb_${dbName.replaceAll(/[/\\:]/g, '_')}.redb`;
-  const fileHandle = await root.getFileHandle(fileName, { create: true });
+  const { root, fileName, fileHandle } = opfs;
 
   // Encrypted mode: the 16-byte key-derivation salt lives in an OPFS sidecar
   // file next to the DB. It is loaded/created only AFTER this tab has won the
@@ -796,7 +844,20 @@ async function doInit(dbName, configJson, passphrase = null) {
     // Web Locks not available — open directly (single-tab safe only).
     warn('Web Locks unavailable — multi-tab write safety disabled');
     if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
-    const syncHandle = await fileHandle.createSyncAccessHandle();
+    let syncHandle;
+    try {
+      syncHandle = await fileHandle.createSyncAccessHandle();
+    } catch (e) {
+      // `createSyncAccessHandle` can exist on the prototype and still throw —
+      // Firefox without storage access, a cross-origin iframe, a revoked
+      // permission. The removed probe file used to surface that as "OPFS
+      // unavailable"; catching it here keeps the same graceful degradation
+      // rather than failing the open outright.
+      if (encrypted) throw e; // the IDB fallback cannot encrypt at rest
+      warn('OPFS sync access unavailable — falling back to IndexedDB:', e);
+      await openIdbFallback(dbName);
+      return;
+    }
     try {
       db = openWithOpfs(syncHandle);
     } catch (e) {
@@ -863,7 +924,18 @@ async function doInit(dbName, configJson, passphrase = null) {
       let syncHandle = null;
       try {
         if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
-        syncHandle = await fileHandle.createSyncAccessHandle();
+        try {
+          syncHandle = await fileHandle.createSyncAccessHandle();
+        } catch (e) {
+          // See the no-locks branch: the method can exist and still throw, and
+          // that used to be caught by the probe file. Degrade to IndexedDB
+          // instead of failing the open.
+          if (encrypted) throw e; // the IDB fallback cannot encrypt at rest
+          warn('OPFS sync access unavailable — falling back to IndexedDB:', e);
+          await openIdbFallback(dbName);
+          resolve();
+          return; // releases the Web Lock — this tab is not the OPFS holder
+        }
         db = openWithOpfs(syncHandle);
         snapshotWriter = !encrypted; // encrypted DBs never write a plaintext IDB snapshot
         log(`Opened "${fileName}" via OPFS (Web Locks)`);
@@ -893,21 +965,24 @@ async function doInit(dbName, configJson, passphrase = null) {
 // OPFS capability probe
 // ---------------------------------------------------------------------------
 
-async function checkOpfs() {
-  try {
-    const root = await navigator.storage.getDirectory();
-    // Probe createSyncAccessHandle — only available in Dedicated Workers.
-    // getDirectory() succeeding alone is not sufficient.
-    // Use a unique filename so concurrent workers don't collide on the same
-    // probe file (each createSyncAccessHandle is exclusive).
-    const probeName = `_taladb_probe_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const probe = await root.getFileHandle(probeName, { create: true });
-    if (typeof probe.createSyncAccessHandle !== 'function') return false;
-    const handle = await probe.createSyncAccessHandle();
-    handle.close();
-    await root.removeEntry(probeName);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Whether this context can do synchronous OPFS I/O.
+ *
+ * This used to create a uniquely-named probe file, open a sync access handle on
+ * it, close it, and delete it — four sequential OPFS round trips on every cold
+ * start, immediately before the real open performed the identical sequence on
+ * the actual database file and would have failed the same way. The capability
+ * check below is synchronous and free; anything the probe would have caught
+ * (permissions, cross-origin isolation, a non-Worker scope) surfaces from the
+ * real open, which `doInit` already handles by falling back to IndexedDB.
+ *
+ * @returns {boolean}
+ */
+function canUseOpfs() {
+  return (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.storage?.getDirectory === 'function' &&
+    typeof FileSystemFileHandle !== 'undefined' &&
+    typeof FileSystemFileHandle.prototype?.createSyncAccessHandle === 'function'
+  );
 }

@@ -239,6 +239,75 @@ async fn sleep_ms_wasm(ms: u32) {
     let _ = JsFuture::from(promise).await;
 }
 
+/// POST `payload` once, returning the HTTP status (or `None` on a network
+/// error / abort).
+///
+/// Uses the platform `fetch` directly rather than an HTTP client crate: this is
+/// a single JSON POST inside a worker that already has `fetch`, and pulling in
+/// `reqwest` for it cost the browser bundle `http`, `url`, `idna`,
+/// `form_urlencoded`, `serde_urlencoded` and the `futures` facade — all of it
+/// downloaded, decoded and compiled on every cold start.
+///
+/// The timeout is an `AbortSignal`, which also cancels the in-flight request
+/// instead of merely abandoning the future.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_post(
+    endpoint: &str,
+    headers: &HashMap<String, String>,
+    body: &str,
+    timeout_ms: u32,
+) -> Option<u16> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let global = js_sys::global();
+    let fetch: js_sys::Function = js_sys::Reflect::get(&global, &JsValue::from_str("fetch"))
+        .ok()?
+        .dyn_into()
+        .ok()?;
+
+    let header_obj = js_sys::Object::new();
+    for (k, v) in headers {
+        js_sys::Reflect::set(
+            &header_obj,
+            &JsValue::from_str(k),
+            &JsValue::from_str(v),
+        )
+        .ok()?;
+    }
+    js_sys::Reflect::set(
+        &header_obj,
+        &JsValue::from_str("content-type"),
+        &JsValue::from_str("application/json"),
+    )
+    .ok()?;
+
+    let init = js_sys::Object::new();
+    js_sys::Reflect::set(&init, &JsValue::from_str("method"), &JsValue::from_str("POST")).ok()?;
+    js_sys::Reflect::set(&init, &JsValue::from_str("headers"), &header_obj).ok()?;
+    js_sys::Reflect::set(&init, &JsValue::from_str("body"), &JsValue::from_str(body)).ok()?;
+
+    // AbortSignal.timeout(ms) where available; harmless to omit if not.
+    if let Ok(ctor) = js_sys::Reflect::get(&global, &JsValue::from_str("AbortSignal"))
+        && let Ok(timeout_fn) = js_sys::Reflect::get(&ctor, &JsValue::from_str("timeout"))
+        && let Some(timeout_fn) = timeout_fn.dyn_ref::<js_sys::Function>()
+        && let Ok(signal) = timeout_fn.call1(&ctor, &JsValue::from_f64(timeout_ms as f64))
+    {
+        js_sys::Reflect::set(&init, &JsValue::from_str("signal"), &signal).ok()?;
+    }
+
+    let promise: js_sys::Promise = fetch
+        .call2(&JsValue::UNDEFINED, &JsValue::from_str(endpoint), &init)
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let response = JsFuture::from(promise).await.ok()?;
+    js_sys::Reflect::get(&response, &JsValue::from_str("status"))
+        .ok()?
+        .as_f64()
+        .map(|s| s as u16)
+}
+
 /// POST `payload` with exponential-backoff retry (4 total attempts).
 #[cfg(target_arch = "wasm32")]
 async fn fire_wasm_with_retry(
@@ -247,31 +316,20 @@ async fn fire_wasm_with_retry(
     payload: &JsonValue,
 ) -> bool {
     const BACKOFFS_MS: &[u32] = &[200, 400, 800];
-    let client = reqwest::Client::new();
     let max_attempts = BACKOFFS_MS.len() + 1;
+    let Ok(body) = serde_json::to_string(payload) else {
+        return false;
+    };
 
     for attempt in 0..max_attempts {
         if attempt > 0 {
             sleep_ms_wasm(BACKOFFS_MS[attempt - 1]).await;
         }
-
-        let mut req = client.post(endpoint).json(payload);
-        for (k, v) in headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-
-        use futures::future::{Either, select};
-        let send = Box::pin(req.send());
-        let timeout = Box::pin(sleep_ms_wasm(10_000));
-        let response = match select(send, timeout).await {
-            Either::Left((result, _)) => result,
-            Either::Right(_) => continue,
-        };
-        match response {
-            Ok(resp) if resp.status().is_success() => return true,
-            Ok(resp) if resp.status().is_server_error() => continue,
-            Ok(_) => return false, // 4xx — permanent, no retry
-            Err(_) => continue,    // network error — retry
+        match fetch_post(endpoint, headers, &body, 10_000).await {
+            Some(status) if (200..300).contains(&status) => return true,
+            Some(status) if status >= 500 => continue, // transient — retry
+            Some(_) => return false,                   // 4xx — permanent
+            None => continue,                          // network error / timeout
         }
     }
     false
@@ -702,6 +760,21 @@ impl WorkerDB {
             .count(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// This collection's write generation — a counter bumped once per committed
+    /// mutation.
+    ///
+    /// Backs `subscribe()`: a live query can compare one integer per tick
+    /// instead of re-running the query and `JSON.stringify`-ing the whole
+    /// result set to see whether anything moved.
+    #[wasm_bindgen(js_name = writeGeneration)]
+    pub fn write_generation(&self, collection: &str) -> Result<f64, JsValue> {
+        Ok(self
+            .db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .write_generation() as f64)
     }
 
     /// Run an aggregation pipeline. Returns a JSON array of result documents.

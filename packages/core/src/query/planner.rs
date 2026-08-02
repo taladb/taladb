@@ -41,6 +41,16 @@ pub enum QueryPlan {
     /// branches are index-accelerated).
     IndexOr { plans: Vec<QueryPlan> },
 
+    /// Intersect the results of multiple index-backed sub-plans ($and where
+    /// more than one conjunct is indexed).
+    ///
+    /// Without this the planner picks the *first* indexed conjunct and
+    /// post-filters the rest, so `status == "active" AND userId == X` scans
+    /// every active row to find one user's. Intersecting id sets instead bounds
+    /// the work by the most selective branch, and only documents satisfying
+    /// every indexed conjunct are ever decoded.
+    IndexAnd { plans: Vec<QueryPlan> },
+
     /// Full-text search via the inverted token index.
     FtsSearch {
         field: String,
@@ -247,6 +257,32 @@ fn plan_inner(
             // pick (which post-filters the far bound over the whole tail).
             if let Some(plan) = bounded_range_from_and(filters, indexed_fields) {
                 return plan;
+            }
+
+            // More than one conjunct is index-backed → intersect their id sets
+            // rather than picking one arbitrarily and post-filtering the rest.
+            //
+            // Only *equality* branches qualify. A range branch can cover a huge
+            // slice of the index, so scanning it to intersect can cost more than
+            // the post-filter it replaces — whereas an equality branch is
+            // exactly the selective shape intersection is for. `_id` plans are
+            // excluded too: they are already point lookups, and a single one is
+            // strictly cheaper than any intersection.
+            let indexed_eq: Vec<QueryPlan> = filters
+                .iter()
+                .filter(|f| {
+                    matches!(f, Filter::Eq(field, _)
+                        if field != "_id" && indexed_fields.contains(&field.as_str()))
+                })
+                .filter_map(|f| {
+                    match plan_inner(f, indexed_fields, fts_fields, compound_indexes) {
+                        QueryPlan::FullScan => None,
+                        plan => Some(plan),
+                    }
+                })
+                .collect();
+            if indexed_eq.len() > 1 {
+                return QueryPlan::IndexAnd { plans: indexed_eq };
             }
 
             // Fall back to single-field index on any sub-filter

@@ -24,22 +24,31 @@ zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
 # HNSW approximate nearest-neighbor index — opt-in via `vector-hnsw` feature.
 # Pure Rust, WASM-compatible, MIT license.
 instant-distance = { version = "0.6", optional = true }
-# Config parsing — YAML and JSON config file support.
+# Config parsing — JSON always; YAML only behind `config-yaml`.
 serde_json = { version = "1.0", features = ["preserve_order"] }
-serde_yaml = "0.9"
+# serde_yaml drags in unsafe-libyaml. Browser and React Native builds receive
+# their config as a JSON string and never read a file off disk, so paying for a
+# YAML parser there is pure bundle weight — hence the feature gate.
+serde_yaml = { version = "0.9", optional = true }
 # WASM-compatible SystemTime — re-exports std::time on native, uses js_sys::Date on wasm32.
 web-time = "1"
 # Random bytes — used for ULID generation. wasm_js feature enabled by taladb-web for WASM targets.
 getrandom = "0.3"
-# URL validation in config (lightweight, no extra TLS deps).
-url = "2.5"
+# NOTE: endpoint validation deliberately does not use the `url` crate — it pulls
+# in `idna` and its Unicode tables, which is significant permanent weight in a
+# WASM bundle. See `config::split_http_endpoint`.
 # HTTP push sync — only pulled in when the `sync-http` feature is enabled.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 
 [features]
+default      = ["config-yaml"]
 encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = ["dep:instant-distance"]
 sync-http    = ["dep:reqwest"]
+# Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
+# Native builds turn it off (`default-features = false`) to drop serde_yaml and
+# unsafe-libyaml from the bundle. JSON config works either way.
+config-yaml  = ["dep:serde_yaml"]
 
 [dev-dependencies]
 tempfile = "3.10"
