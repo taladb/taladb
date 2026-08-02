@@ -393,6 +393,22 @@ pub fn execute_pipeline(
     mut docs: Vec<Document>,
     pipeline: &[Stage],
 ) -> Result<Vec<Document>, TalaDbError> {
+    // Compile every regex in every `$match` stage once, up front — the same
+    // thing the query executor does via `Matcher::new`.
+    //
+    // Going through `Filter::matches` instead rebuilt the automaton for every
+    // document, and swallowed compile failures into `unwrap_or(false)`. That
+    // second half is the real bug: an invalid or over-size-limit pattern
+    // silently matched nothing here while the identical filter through `find()`
+    // returned `InvalidFilter`. Same query, two answers, one of them a silent
+    // empty result.
+    let mut regex_cache = HashMap::new();
+    for stage in pipeline {
+        if let Stage::Match(filter) = stage {
+            regex_cache.extend(filter.compile_regex_cache()?);
+        }
+    }
+
     let mut i = 0;
     while i < pipeline.len() {
         if let Stage::Sort(specs) = &pipeline[i]
@@ -404,15 +420,22 @@ pub fn execute_pipeline(
             i += 1;
             continue;
         }
-        docs = apply_stage(docs, &pipeline[i])?;
+        docs = apply_stage(docs, &pipeline[i], &regex_cache)?;
         i += 1;
     }
     Ok(docs)
 }
 
-fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, TalaDbError> {
+fn apply_stage(
+    docs: Vec<Document>,
+    stage: &Stage,
+    regex_cache: &HashMap<String, regex::Regex>,
+) -> Result<Vec<Document>, TalaDbError> {
     match stage {
-        Stage::Match(filter) => Ok(docs.into_iter().filter(|d| filter.matches(d)).collect()),
+        Stage::Match(filter) => Ok(docs
+            .into_iter()
+            .filter(|d| filter.matches_with_cache(d, regex_cache))
+            .collect()),
 
         Stage::Group { key, accumulators } => apply_group(docs, key, accumulators),
 

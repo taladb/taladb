@@ -224,7 +224,10 @@ pub trait ImportValidator: Send + Sync {
 pub struct ImportReport {
     /// Documents actually written locally (upserted or deleted) after LWW.
     pub applied: u64,
-    /// Upserts the validator asked to [`ImportDecision::Skip`].
+    /// Changes not applied: either the validator asked to
+    /// [`ImportDecision::Skip`], or the change carried a `changed_at` too far
+    /// ahead of the local clock to be usable as an ordering token (see
+    /// [`MAX_CLOCK_SKEW_MS`]).
     pub skipped: u64,
     /// Upserts diverted to the quarantine table via
     /// [`ImportDecision::Quarantine`].
@@ -533,16 +536,7 @@ impl SyncAdapter for LastWriteWins {
                     continue;
                 }
 
-                let changed_at = doc
-                    .get("_changed_at")
-                    .and_then(|v| {
-                        if let Value::Int(ts) = v {
-                            Some(*ts as u64)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
+                let changed_at = doc_changed_at(&doc);
 
                 changes.push(Change {
                     collection: col_name.to_string(),
@@ -568,7 +562,7 @@ impl SyncAdapter for LastWriteWins {
                     );
                     0
                 });
-                let changed_at = ts as u64;
+                let changed_at = timestamp_from_i64(ts);
                 if changed_at > since_ms {
                     let mut id_arr = [0u8; 16];
                     id_arr.copy_from_slice(&key_bytes);
@@ -614,6 +608,25 @@ impl LastWriteWins {
         let mut rejects: Vec<(String, Ulid, QuarantineRecord)> = Vec::new();
 
         for change in changeset {
+            // An unusable ordering token is rejected before the change can
+            // influence anything, on both the upsert and delete paths.
+            //
+            // Skipping rather than erroring is deliberate: this is the tolerant
+            // import path, and letting one malformed row abort the whole
+            // changeset would just trade a data-integrity bug for a
+            // denial-of-service one. The count surfaces on `ImportReport`.
+            if !changed_at_is_plausible(change.changed_at) {
+                tracing::warn!(
+                    collection = %change.collection,
+                    id = %change.id,
+                    changed_at = change.changed_at,
+                    "sync: skipping change whose changed_at is implausibly far in the \
+                     future; it would outrank every local write permanently"
+                );
+                report.skipped += 1;
+                continue;
+            }
+
             let col = db.collection(&change.collection)?;
 
             match change.op {
@@ -660,22 +673,14 @@ impl LastWriteWins {
                             // remote upsert is strictly newer than the
                             // deletion (deletes win ties, matching the Delete
                             // import path below).
-                            let tomb_ts =
-                                read_tombstone_ts(db, &change.collection, change.id)?.unwrap_or(0);
-                            change.changed_at > tomb_ts as u64
+                            let tomb_ts = read_tombstone_ts(db, &change.collection, change.id)?
+                                .map_or(0, timestamp_from_i64);
+                            change.changed_at > tomb_ts
                         }
                         Some(local_doc) => {
-                            let local_ts = local_doc
-                                .get("_changed_at")
-                                .and_then(|v| {
-                                    if let Value::Int(ts) = v {
-                                        Some(*ts as u64)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                // _changed_at defaults to 0 if absent — document always loses conflicts
-                                .unwrap_or(0);
+                            // Absent, wrong-typed, or negative `_changed_at`
+                            // floors to 0 — the document always loses conflicts.
+                            let local_ts = doc_changed_at(local_doc);
                             // Remote wins if newer. Equal timestamps are broken
                             // by comparing the serialized document bytes — both
                             // replicas evaluate the same comparison, so they
@@ -704,19 +709,7 @@ impl LastWriteWins {
                     // identically on every replica.
                     let should_delete = match col.find_by_id(change.id)? {
                         None => false,
-                        Some(local_doc) => {
-                            let local_ts = local_doc
-                                .get("_changed_at")
-                                .and_then(|v| {
-                                    if let Value::Int(ts) = v {
-                                        Some(*ts as u64)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or(0);
-                            change.changed_at >= local_ts
-                        }
+                        Some(local_doc) => change.changed_at >= doc_changed_at(&local_doc),
                     };
                     let existed = if should_delete {
                         col.delete_by_id_at(change.id, change.changed_at)?
@@ -729,12 +722,21 @@ impl LastWriteWins {
                     // downstream peers that haven't seen it yet.
                     let tomb_table = tomb_table_name(&change.collection);
                     let mut wtxn = db.backend().begin_write()?;
-                    let ts_bytes = postcard::to_allocvec(&(change.changed_at as i64))?;
+                    // Infallible given the plausibility check above, which caps
+                    // `changed_at` far below `i64::MAX`. Converting rather than
+                    // casting keeps it that way: an `as i64` here would wrap a
+                    // large value negative and silently skip the tombstone
+                    // write, so the deletion would apply locally but never
+                    // reach downstream peers.
+                    let deleted_at = i64::try_from(change.changed_at).map_err(|_| {
+                        TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
+                    })?;
+                    let ts_bytes = postcard::to_allocvec(&deleted_at)?;
                     let existing_ts: i64 = wtxn
                         .get(&tomb_table, &change.id.to_bytes())?
                         .and_then(|b| postcard::from_bytes::<i64>(&b).ok())
                         .unwrap_or(0);
-                    if change.changed_at as i64 > existing_ts {
+                    if deleted_at > existing_ts {
                         wtxn.put(&tomb_table, &change.id.to_bytes(), &ts_bytes)?;
                     }
                     wtxn.commit()?;
@@ -803,6 +805,62 @@ fn doc_tie_break_wins(remote: &Document, local: &Document) -> Result<bool, TalaD
     let remote_bytes = postcard::to_allocvec(remote)?;
     let local_bytes = postcard::to_allocvec(local)?;
     Ok(remote_bytes > local_bytes)
+}
+
+/// How far ahead of the local clock an incoming `changed_at` may legitimately
+/// sit before it is treated as corrupt rather than merely skewed.
+///
+/// Sync timestamps are wall-clock milliseconds taken on whichever device
+/// authored the write, so some skew is normal and must be tolerated — an
+/// unsynchronised phone can be minutes or hours out. A full day is far beyond
+/// any plausible skew while still being astronomically below the values that
+/// cause the damage this bound exists to prevent.
+pub const MAX_CLOCK_SKEW_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Interpret a stored `_changed_at` (or tombstone) value as a millisecond
+/// timestamp.
+///
+/// Sync timestamps are *stored* as `Value::Int(i64)` but *compared* as `u64`,
+/// and a plain `as u64` maps every negative value onto `u64::MAX` — the largest
+/// timestamp that exists. A single document carrying `_changed_at: -1` would
+/// therefore win every conflict on every replica, permanently: no local edit
+/// (stamped `now_ms()`) could ever displace it, and each replica would keep
+/// re-sending it to the others.
+///
+/// A negative value is not a timestamp we can order, so it floors to the epoch
+/// — which always *loses* instead of always winning. Failing towards "this
+/// write is ancient" is the safe direction: the worst case is that a corrupt
+/// row is overwritten by a good one.
+fn timestamp_from_i64(ts: i64) -> u64 {
+    u64::try_from(ts).unwrap_or(0)
+}
+
+/// Read a document's `_changed_at` as a millisecond timestamp, defaulting to
+/// the epoch when it is absent, the wrong type, or negative (see
+/// [`timestamp_from_i64`]). A document with no usable timestamp always loses a
+/// conflict.
+fn doc_changed_at(doc: &Document) -> u64 {
+    match doc.get("_changed_at") {
+        Some(Value::Int(ts)) => timestamp_from_i64(*ts),
+        _ => 0,
+    }
+}
+
+/// Whether an incoming change's `changed_at` is usable as an ordering token.
+///
+/// Everything downstream of Last-Write-Wins trusts this number to decide which
+/// version of a document survives, and it arrives from a peer. A value far
+/// enough in the future outranks every timestamp the local clock can ever
+/// produce, which makes the change permanently unbeatable rather than merely
+/// newest — one such row freezes a document across the whole fleet.
+///
+/// Bounding it against the local clock (plus [`MAX_CLOCK_SKEW_MS`]) keeps
+/// ordinary skew working while making that outcome unreachable. This also
+/// subsumes the `> i64::MAX` case that
+/// [`Collection::delete_by_id_at`](crate::collection::Collection) rejects, so
+/// that guard now only ever fires for direct callers.
+fn changed_at_is_plausible(changed_at: u64) -> bool {
+    changed_at <= now_ms().saturating_add(MAX_CLOCK_SKEW_MS)
 }
 
 /// Current wall-clock time in milliseconds since Unix epoch.

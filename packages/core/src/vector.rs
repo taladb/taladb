@@ -445,6 +445,12 @@ pub fn l2_norm(a: &[f32]) -> f32 {
 /// whole table, so computing it once at the top of the loop removes a dot
 /// product and a square root per stored vector. `query_norm` is ignored for
 /// metrics other than [`VectorMetric::Cosine`].
+///
+/// `query` and `stored` are expected to have the same length. They are walked
+/// in lockstep and the shorter one ends the reduction, so a mismatch yields a
+/// score computed over the common prefix rather than an error — callers that
+/// can encounter untrusted or corrupt vectors should length-check first, as
+/// `Collection::find_nearest` does.
 #[inline]
 pub fn score_with_query_norm(
     metric: &VectorMetric,

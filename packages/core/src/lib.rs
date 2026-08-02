@@ -470,7 +470,12 @@ impl Database {
         // into an intermediate that holds the entire database alongside the
         // output. Only one table is resident at a time now — this is the API
         // the WASM persistence path calls, where peak heap is the constraint.
-        buf.extend_from_slice(&u32::try_from(table_names.len()).unwrap_or(u32::MAX).to_le_bytes());
+        // Every length prefix is written through `len_prefix`, which fails
+        // rather than saturating. A saturated prefix would claim `u32::MAX`
+        // bytes while the real (shorter) bytes are still appended, so the
+        // reader would run off into the next field — producing a snapshot that
+        // restores as corrupt instead of one that refuses to be written.
+        buf.extend_from_slice(&len_prefix(table_names.len())?);
         for name in &table_names {
             let pairs = txn.scan_all(name)?;
             let name_bytes = name.as_bytes();
@@ -484,13 +489,13 @@ impl Database {
                 .sum();
             buf.reserve(table_bytes + name_bytes.len() + 12);
 
-            buf.extend_from_slice(&u32::try_from(name_bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
+            buf.extend_from_slice(&len_prefix(name_bytes.len())?);
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(pairs.len() as u64).to_le_bytes());
             for (key, val) in &pairs {
-                buf.extend_from_slice(&u32::try_from(key.len()).unwrap_or(u32::MAX).to_le_bytes());
+                buf.extend_from_slice(&len_prefix(key.len())?);
                 buf.extend_from_slice(key);
-                buf.extend_from_slice(&u32::try_from(val.len()).unwrap_or(u32::MAX).to_le_bytes());
+                buf.extend_from_slice(&len_prefix(val.len())?);
                 buf.extend_from_slice(val);
             }
         }
@@ -562,6 +567,20 @@ impl Database {
 // Snapshot binary helpers
 // ---------------------------------------------------------------------------
 
+/// Encode a length as the little-endian `u32` prefix the snapshot format uses,
+/// refusing anything that does not fit.
+///
+/// The write side must never emit a prefix that disagrees with the bytes that
+/// follow it: the reader trusts the prefix to find the *next* field, so a
+/// wrong one desynchronises the whole remaining stream rather than corrupting
+/// one entry. Failing here keeps `restore_from_snapshot`'s strict bounds
+/// checking meaningful — the two sides agree on what is representable.
+fn len_prefix(len: usize) -> Result<[u8; 4], TalaDbError> {
+    u32::try_from(len)
+        .map(u32::to_le_bytes)
+        .map_err(|_| TalaDbError::InvalidSnapshot)
+}
+
 fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, TalaDbError> {
     let end = cursor.checked_add(4).ok_or(TalaDbError::InvalidSnapshot)?;
     if end > data.len() {
@@ -600,4 +619,44 @@ fn read_slice<'a>(data: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a 
     let slice = &data[*cursor..end];
     *cursor = end;
     Ok(slice)
+}
+
+#[cfg(test)]
+mod snapshot_encoding_tests {
+    use super::*;
+
+    /// The write side must refuse a length it cannot encode rather than
+    /// saturating. A saturated prefix claims `u32::MAX` bytes while the real
+    /// (shorter) bytes follow, so the reader walks off into the next field and
+    /// the whole remaining stream desynchronises — a snapshot that restores as
+    /// corrupt rather than one that refuses to be written.
+    #[test]
+    fn len_prefix_round_trips_and_rejects_the_unrepresentable() {
+        assert_eq!(len_prefix(0).unwrap(), 0u32.to_le_bytes());
+        assert_eq!(len_prefix(16).unwrap(), 16u32.to_le_bytes());
+        assert_eq!(
+            len_prefix(u32::MAX as usize).unwrap(),
+            u32::MAX.to_le_bytes()
+        );
+
+        // Only reachable on 64-bit targets; on wasm32 `usize` is 32 bits and
+        // every value is representable, which is itself the correct outcome.
+        #[cfg(not(target_pointer_width = "32"))]
+        {
+            let too_big = u32::MAX as usize + 1;
+            assert!(
+                matches!(len_prefix(too_big), Err(TalaDbError::InvalidSnapshot)),
+                "an unencodable length must be an error, not a saturated prefix"
+            );
+        }
+    }
+
+    /// A prefix written by `len_prefix` is exactly what `read_u32` expects.
+    #[test]
+    fn len_prefix_is_readable_by_the_snapshot_reader() {
+        let encoded = len_prefix(1234).unwrap();
+        let mut cursor = 0usize;
+        assert_eq!(read_u32(&encoded, &mut cursor).unwrap(), 1234);
+        assert_eq!(cursor, 4);
+    }
 }

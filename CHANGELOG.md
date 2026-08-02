@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.2] - 2026-08-02
 
+### Fixed
+
+- **A remote peer could freeze a document permanently.** Last-Write-Wins trusted
+  the `changed_at` on an incoming change without bound, and read a document's
+  stored `_changed_at` — a `Value::Int(i64)` — with a plain `as u64`. Both let a
+  single change mint an ordering token no local write could ever beat: `u64::MAX`
+  outranks every timestamp the clock can produce, and `-1` cast to `u64` *is*
+  `u64::MAX`. Once such a document propagated, every replica kept re-sending it
+  and no edit on any device could displace it.
+
+  Incoming changes whose `changed_at` sits further ahead of the local clock than
+  `MAX_CLOCK_SKEW_MS` (24 h — far beyond real skew, far below the values that do
+  the damage) are now skipped and counted in `ImportReport::skipped` rather than
+  applied. Skipping rather than erroring is deliberate: this is the tolerant
+  import path, and letting one malformed row abort a whole changeset would trade
+  a data-integrity bug for a denial-of-service one. Stored timestamps that can't
+  be ordered now floor to the epoch, so they always *lose* instead of always
+  winning — including on the export side, which previously handed peers the same
+  saturated value. Ordinary clock skew is unaffected.
+
+- **`$match` disagreed with `find()` on invalid regexes.** The aggregation
+  pipeline evaluated `$match` through `Filter::matches`, which recompiles the
+  pattern for every document and swallows compile failures into
+  `unwrap_or(false)`. An invalid or over-size-limit pattern therefore returned an
+  empty result set — indistinguishable from a legitimate no-match — while the
+  identical filter through `find()` returned `InvalidFilter`. Patterns are now
+  compiled once per pipeline, as the query executor already did, and a bad one is
+  an error on both paths.
+
+- **A wrong-dimension vector could rank into `findNearest` results.** The scoring
+  reductions walk the query and stored vectors in lockstep and stop at the
+  shorter, so a truncated entry was scored over its common prefix — and a short
+  prefix can out-score a full-length vector. The write path enforces the index
+  dimension, so this was only reachable through `restore_from_snapshot` (which
+  writes raw table bytes) or on-disk corruption; the flat scan now skips
+  mismatched entries outright.
+
+- **`export_snapshot` could write a corrupt snapshot instead of failing.** Length
+  prefixes were encoded with `u32::try_from(..).unwrap_or(u32::MAX)`, which
+  claims `u32::MAX` bytes while the real, shorter bytes still follow — the reader
+  then walks into the next field and desynchronises the whole remaining stream.
+  Unrepresentable lengths are now an `InvalidSnapshot` error at write time, so
+  the two sides agree on what is encodable.
+
 **A faster engine, same API.** Exact vector search is ~63% quicker at 100k
 vectors, scans are ~30% quicker, and two query shapes — `findOne` and `$and`
 over several indexed fields — stopped doing work proportional to the whole

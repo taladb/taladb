@@ -1359,6 +1359,19 @@ impl Collection {
             {
                 continue;
             }
+            // Skip entries whose dimension doesn't match the query. The scoring
+            // reductions walk both slices with `chunks_exact` and stop at the
+            // shorter, so a wrong-length vector would otherwise be *partially*
+            // scored and could rank into the top-k on a truncated dot product.
+            //
+            // The write path enforces `vec.len() == vdef.dimensions`, so this is
+            // unreachable from ordinary inserts — it guards the paths that
+            // bypass it: `restore_from_snapshot` (which writes raw table bytes)
+            // and on-disk corruption, where `decode_f32_vec` happily returns a
+            // short vector as long as the byte count is a multiple of four.
+            if vec.len() != query.len() {
+                continue;
+            }
             scored.push((
                 *id,
                 crate::vector::score_with_query_norm(metric, query, query_norm, vec),
