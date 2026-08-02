@@ -36,6 +36,48 @@ use crate::error::TalaDbError;
 // Localhost variants accepted for plaintext HTTP without a warning.
 const LOCALHOST_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "::1"];
 
+/// Split an absolute HTTP(S) endpoint into `(scheme, host)`, or `None` if it is
+/// not one.
+///
+/// A full URL parser is deliberately not used here. `url` drags in `idna` and
+/// its Unicode tables, which is a large, permanent addition to a WASM bundle
+/// that is downloaded and compiled on every cold start — for a config sanity
+/// check that only ever needed the scheme and the host. The endpoint is handed
+/// to `fetch`/`reqwest` afterwards, which does parse it properly; this is a
+/// fail-fast on obviously wrong config, not a security boundary.
+///
+/// `host` excludes any port and userinfo, and keeps the brackets on an IPv6
+/// literal, matching what `Url::host_str` returned.
+fn split_http_endpoint(raw: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = raw.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    // Authority runs up to the first '/', '?' or '#'.
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|a| !a.is_empty())?;
+    // Drop userinfo (`user:pass@host`); the last '@' wins, as in RFC 3986.
+    let hostport = match authority.rsplit_once('@') {
+        Some((_, after)) => after,
+        None => authority,
+    };
+    // An IPv6 literal is bracketed, and its colons are not port separators.
+    let host = if let Some(close) = hostport.find(']') {
+        if !hostport.starts_with('[') {
+            return None;
+        }
+        &hostport[..=close]
+    } else {
+        hostport.split(':').next()?
+    };
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((scheme, host))
+}
+
 // ---------------------------------------------------------------------------
 // Config structs
 // ---------------------------------------------------------------------------
@@ -136,30 +178,20 @@ impl TalaDbConfig {
         .into_iter()
         .flatten()
         {
-            let parsed = url::Url::parse(raw).map_err(|e| {
-                TalaDbError::Config(format!("invalid endpoint URL \"{raw}\" — {e}"))
+            let (scheme, host) = split_http_endpoint(raw).ok_or_else(|| {
+                TalaDbError::Config(format!(
+                    "invalid endpoint URL \"{raw}\" — must be an absolute \
+                     http:// or https:// URL with a host"
+                ))
             })?;
-            if parsed.scheme() != "http" && parsed.scheme() != "https" {
-                return Err(TalaDbError::Config(format!(
-                    "invalid endpoint URL \"{raw}\" — must start with http:// or https://"
-                )));
-            }
-            if parsed.host().is_none() {
-                return Err(TalaDbError::Config(format!(
-                    "invalid endpoint URL \"{raw}\" — missing host"
-                )));
-            }
             // Warn when a non-localhost HTTP endpoint is used — changesets are
             // transmitted without encryption and are vulnerable to interception.
-            if parsed.scheme() == "http" {
-                let host = parsed.host_str().unwrap_or("");
-                if !LOCALHOST_HOSTS.contains(&host) {
-                    tracing::warn!(
-                        endpoint = raw,
-                        "taladb: sync endpoint uses plaintext HTTP — \
-                         use HTTPS in production to prevent changeset interception"
-                    );
-                }
+            if scheme == "http" && !LOCALHOST_HOSTS.contains(&host) {
+                tracing::warn!(
+                    endpoint = raw,
+                    "taladb: sync endpoint uses plaintext HTTP — \
+                     use HTTPS in production to prevent changeset interception"
+                );
             }
         }
         Ok(())
@@ -183,8 +215,17 @@ pub fn load_from_path(path: &Path) -> Result<TalaDbConfig, TalaDbError> {
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let config: TalaDbConfig = match ext {
+        #[cfg(feature = "config-yaml")]
         "yml" | "yaml" => serde_yaml::from_str(&content)
             .map_err(|e| TalaDbError::Config(format!("invalid YAML config: {e}")))?,
+        #[cfg(not(feature = "config-yaml"))]
+        "yml" | "yaml" => {
+            return Err(TalaDbError::Config(
+                "YAML config support is not compiled into this build \
+                 (enable the `config-yaml` feature) — use .json instead"
+                    .into(),
+            ));
+        }
         "json" => serde_json::from_str(&content)
             .map_err(|e| TalaDbError::Config(format!("invalid JSON config: {e}")))?,
         other => {
@@ -433,5 +474,51 @@ sync:
         );
         let cfg = load_from_path(f.path()).unwrap();
         assert!(cfg.sync.exclude_fields.is_empty());
+    }
+
+    // ── split_http_endpoint ─────────────────────────────────────────────
+    //
+    // These pin the behaviour that replaced `url::Url::parse`, including the
+    // shapes a hand-rolled split is most likely to get wrong.
+
+    #[test]
+    fn endpoint_split_extracts_scheme_and_host() {
+        for (raw, want) in [
+            ("https://api.example.com", ("https", "api.example.com")),
+            ("http://localhost:3000/insert", ("http", "localhost")),
+            ("https://api.example.com/a/b?x=1#f", ("https", "api.example.com")),
+            ("https://user:pw@api.example.com/p", ("https", "api.example.com")),
+            ("http://127.0.0.1:8080", ("http", "127.0.0.1")),
+            ("http://[::1]:9000/sync", ("http", "[::1]")),
+            ("https://api.example.com?q=1", ("https", "api.example.com")),
+        ] {
+            assert_eq!(split_http_endpoint(raw), Some(want), "for {raw}");
+        }
+    }
+
+    #[test]
+    fn endpoint_split_rejects_non_http_and_hostless() {
+        for raw in [
+            "ftp://wrong.example.com",
+            "/relative/path",
+            "not-a-url",
+            "https://",
+            "https:///path-only",
+            "://no-scheme",
+            "https://has space/x",
+            "",
+        ] {
+            assert_eq!(split_http_endpoint(raw), None, "should reject {raw}");
+        }
+    }
+
+    /// The localhost allowlist is matched against the extracted host, so a
+    /// plaintext loopback endpoint must not be flagged while a remote one is.
+    #[test]
+    fn endpoint_split_host_feeds_localhost_allowlist() {
+        let (_, host) = split_http_endpoint("http://localhost:3000/x").unwrap();
+        assert!(LOCALHOST_HOSTS.contains(&host));
+        let (_, host) = split_http_endpoint("http://evil.example.com/x").unwrap();
+        assert!(!LOCALHOST_HOSTS.contains(&host));
     }
 }

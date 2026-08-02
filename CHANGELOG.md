@@ -5,6 +5,115 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-08-02
+
+**A faster engine, same API.** Exact vector search is ~63% quicker at 100k
+vectors, scans are ~30% quicker, and two query shapes — `findOne` and `$and`
+over several indexed fields — stopped doing work proportional to the whole
+collection. No API changes; no migration.
+
+All Node figures below come from `pnpm bench` run back-to-back against the
+0.10.1 and 0.10.2 binaries on the same machine (2018 MacBook Pro, Intel
+i5-8259U, 8 GB). The 0.10.1 pass reproduced the previously published table
+within a few percent, so the deltas are like-for-like rather than a
+different-day artefact.
+
+### Performance
+
+- **Vector scoring in a single pass.** The flat `findNearest` loop computed the
+  query vector's L2 norm once *per candidate*, and made three separate passes
+  over each stored vector. The norm is now hoisted out of the loop and the dot
+  product and stored-vector norm are accumulated together in one pass — much
+  friendlier to cache and autovectorisation. At 384 dimensions:
+  **100k vectors 174 ms → 65 ms (−63%)**, 50k 85 ms → 33 ms, 10k 18.2 ms →
+  7.7 ms, 1k 3.0 ms → 1.9 ms. Filtered search 199 ms → 171 ms (it gains less
+  because much of its time is the pre-filter query, not scoring).
+- **One storage-table resolution per batch, not per key.** Fetching *N*
+  documents opened the underlying table *N* times, at roughly 2.3 µs each —
+  enough to make an index-backed lookup returning many rows *slower* than a
+  full scan. Reads now resolve a table once per transaction and fetch in
+  batches; index maintenance groups its writes per table. **Bulk ingest
+  33.6k → 39.2k docs/s (+17%)**, indexed equality 194 → 174 µs.
+- **Range scans stream instead of materialising.** A range walk copied every key
+  and value into a freshly allocated pair of `Vec`s and built the entire result
+  set before the caller saw the first entry. Entries are now handed to the query
+  engine borrowed from the page cache. **Unindexed scan 452 ms → 317 ms
+  (−30%)**, unindexed `count` 477 ms → 324 ms (−32%).
+- **`findOne` and bounded `find` stop when they have enough.** Both previously
+  materialised every match and then discarded all but the first rows, so an
+  unindexed `findOne` cost a full scan. The limit is now pushed into the storage
+  walk. On a 20k-document collection: unindexed `findOne` 93 ms → **125 µs**;
+  indexed-equality `findOne` 109 ms → **28 µs**; `find` with `limit: 20` and no
+  sort 50 ms → **53 µs**. A limit is deliberately *not* pushed down when a
+  `$sort` is present, because every candidate can still reach the page.
+- **`$and` over multiple indexed equalities intersects the indexes.** The
+  planner previously picked the first indexed conjunct and post-filtered the
+  rest, so `status = "active" AND city = "x"` scanned every active row. It now
+  intersects id sets smallest-first and decodes only documents satisfying every
+  conjunct: **109 ms → 4.9 ms** on a 20k collection whose first conjunct matched
+  everything. Range conjuncts are excluded on purpose — a wide range can cost
+  more to intersect than to post-filter.
+- **`count` can answer from the index alone.** When an index range exactly
+  reproduces the filter, `count` no longer decodes documents: 109 ms → 2.87 ms
+  for an indexed equality over 20k rows.
+- **Corpus statistics written once per batch.** A batched write updated the
+  full-text `FtsStats` record once *per document*; it is now folded in memory
+  and persisted once.
+
+### Cold start (browser)
+
+- **Smaller payload.** `taladb_web_bg.wasm` 2,009,406 → **1,694,846 B** raw
+  (−15.7%); 748,583 → 635,567 B gzip; 548,354 → 471,161 B brotli. The browser
+  bundle no longer carries a YAML config parser or an HTTP client crate — the
+  single JSON `POST` used by push sync now calls the platform `fetch` directly,
+  with an `AbortSignal` timeout that actually cancels the request — and endpoint
+  validation no longer pulls in a URL parser's Unicode tables for what is a
+  scheme-and-host check.
+- **Less serial work before the first query.** The worker begins fetching and
+  compiling the WASM at module scope rather than waiting for the page's `init`
+  message, and WASM compilation now runs concurrently with OPFS setup instead of
+  before it. The OPFS capability probe — which created, opened, closed and
+  deleted a scratch file on every start — is gone; the real open reveals the same
+  thing. *(Payload sizes are measured; the wall-clock effect of the sequencing
+  changes has not yet been measured in a browser.)*
+- **Fewer JS round-trips per storage operation.** The OPFS backend resolved
+  `read`/`write` by property lookup and allocated a fresh options object and
+  buffer on every call — on every redb page access. These are now resolved once
+  and reused.
+- **Cheaper live queries.** `subscribe()` polled every 300 ms by re-running the
+  query and `JSON.stringify`-ing the whole result set to detect change. It now
+  compares a write-generation counter first and only re-runs when something has
+  actually been committed.
+
+### Fixed
+
+- **`count` disagreed with `find` for `NaN` equality.** `Filter::Eq(field, NaN)`
+  matches nothing (`NaN != NaN`), but `NaN` encodes to a real index key whose
+  range contains the stored row — so the new index-only `count` path would have
+  returned 1 where `find` returns 0. The fast path now declines `NaN`. Signed
+  zero is unaffected (the planner already emits both encodings, and `0.0 ==
+  -0.0`). Both cases are covered by tests.
+- **Browsers where `createSyncAccessHandle` exists but throws** (Firefox without
+  storage access, cross-origin iframes) failed to open instead of degrading.
+  The removed OPFS probe had caught this implicitly; both open paths now fall
+  back to the IndexedDB-backed engine explicitly. Encrypted databases still
+  refuse to degrade, because the IndexedDB snapshot is plaintext.
+
+### Internal
+
+- `StorageBackend` gained batch (`get_many`, `apply_batch`) and streaming
+  (`scan`) operations. Both have default implementations in terms of the
+  existing methods, so third-party backends keep working unchanged — they simply
+  do not get the speedup until they override them.
+- The `release-wasm` Cargo profile was removed. `wasm-pack --release` uses
+  `[profile.release]` and cannot be pointed at a custom profile, so its
+  `opt-level = "z"` had never taken effect; WASM size is now controlled by
+  `wasm-opt` flags that wasm-pack does honour.
+- `serde_yaml` is now behind a `config-yaml` feature (on by default; off for the
+  browser build). JSON config is unaffected.
+- Release builds use `codegen-units = 1`, which improves the generated code at
+  the cost of slower release compilation.
+
 ## [0.10.1] - 2026-08-01
 
 **Faster repeated vector search.** The flat search path — the default, and the

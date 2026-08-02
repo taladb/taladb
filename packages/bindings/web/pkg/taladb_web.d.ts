@@ -457,6 +457,15 @@ export class WorkerDB {
      * the `openDB({ migrations })` runner, which advances it per migration.
      */
     userVersion(): number;
+    /**
+     * This collection's write generation — a counter bumped once per committed
+     * mutation.
+     *
+     * Backs `subscribe()`: a live query can compare one integer per tick
+     * instead of re-running the query and `JSON.stringify`-ing the whole
+     * result set to see whether anything moved.
+     */
+    writeGeneration(collection: string): number;
 }
 
 /**
@@ -512,7 +521,49 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_collectionwasm_free: (a: number, b: number) => void;
+    readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
     readonly __wbg_workerdb_free: (a: number, b: number) => void;
+    readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_createCompoundIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_createFtsIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
+    readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_dropFtsIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_dropVectorIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_find: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
+    readonly collectionwasm_findOne: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any, l: any) => [number, number, number];
+    readonly collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
+    readonly collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
+    readonly collectionwasm_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: any) => [number, number, number];
+    readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
+    readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
+    readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
+    readonly idb_load_snapshot: (a: number, b: number) => any;
+    readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
+    readonly is_opfs_available: () => any;
+    readonly opfs_delete_snapshot: (a: number, b: number) => any;
+    readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
+    readonly opfs_load_snapshot: (a: number, b: number) => any;
+    readonly opfs_open_backend: (a: number, b: number) => any;
+    readonly taladbwasm_collection: (a: number, b: number, c: number) => [number, number, number];
+    readonly taladbwasm_exportChanges: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly taladbwasm_exportSnapshot: (a: number) => [number, number, number, number];
+    readonly taladbwasm_importChanges: (a: number, b: number, c: number) => [number, number, number];
+    readonly taladbwasm_listCollectionNames: (a: number) => [number, number, number, number];
+    readonly taladbwasm_openInMemory: () => [number, number, number];
+    readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
+    readonly taladbwasm_setUserVersion: (a: number, b: number) => [number, number];
+    readonly taladbwasm_userVersion: (a: number) => [number, number, number];
     readonly workerdb_aggregate: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_compact: (a: number) => [number, number];
     readonly workerdb_compactTombstones: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -557,56 +608,13 @@ export interface InitOutput {
     readonly workerdb_updateOne: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_userVersion: (a: number) => [number, number, number];
-    readonly __wbg_collectionwasm_free: (a: number, b: number) => void;
-    readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
-    readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_createCompoundIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_createFtsIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
-    readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
-    readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_dropFtsIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_dropVectorIndex: (a: number, b: number, c: number) => [number, number];
-    readonly collectionwasm_find: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number];
-    readonly collectionwasm_findOne: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any, l: any) => [number, number, number];
-    readonly collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
-    readonly collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
-    readonly collectionwasm_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: any) => [number, number, number];
-    readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
-    readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
-    readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
-    readonly taladbwasm_collection: (a: number, b: number, c: number) => [number, number, number];
-    readonly taladbwasm_exportChanges: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly taladbwasm_exportSnapshot: (a: number) => [number, number, number, number];
-    readonly taladbwasm_importChanges: (a: number, b: number, c: number) => [number, number, number];
-    readonly taladbwasm_listCollectionNames: (a: number) => [number, number, number, number];
-    readonly taladbwasm_openInMemory: () => [number, number, number];
-    readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
-    readonly taladbwasm_setUserVersion: (a: number, b: number) => [number, number];
-    readonly taladbwasm_userVersion: (a: number) => [number, number, number];
+    readonly workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
     readonly init: () => void;
-    readonly idb_load_snapshot: (a: number, b: number) => any;
-    readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
-    readonly is_opfs_available: () => any;
-    readonly opfs_delete_snapshot: (a: number, b: number) => any;
-    readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
-    readonly opfs_load_snapshot: (a: number, b: number) => any;
-    readonly opfs_open_backend: (a: number, b: number) => any;
-    readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__hf48dca00410c72ae: (a: number, b: number) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hf94044be7a5c5efa: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__h014c297fadd2a065: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__h6f0d9de467faf809: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h20bda61557acb630: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h0dbbf48826ad16e8: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__ha4a918128dde32ae: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

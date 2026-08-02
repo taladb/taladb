@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 authors = ["taladb"]
 license = "Apache-2.0"
@@ -17,7 +17,14 @@ license = "Apache-2.0"
 [profile.release]
 opt-level = 3
 lto = true
+# One codegen unit lets LTO see the whole crate graph: better inlining across
+# the storage/query boundary, and a smaller wasm binary.
+codegen-units = 1
 
-[profile.release-wasm]
-inherits = "release"
-opt-level = "z"
+# NOTE: there is deliberately no `release-wasm` profile. `wasm-pack build
+# --release` uses `[profile.release]` and cannot be pointed at a custom one, so
+# a size-tuned profile here would silently never run — which is exactly what
+# happened to the `opt-level = "z"` profile this replaces. WASM size is instead
+# controlled by the `wasm-opt` flags in
+# `packages/bindings/web/Cargo.toml` under
+# `[package.metadata.wasm-pack.profile.release]`, which wasm-pack does honour.

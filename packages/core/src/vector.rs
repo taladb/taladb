@@ -418,6 +418,39 @@ pub fn l2_norm(a: &[f32]) -> f32 {
     a.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
+/// [`compute_similarity`] with the query's L2 norm supplied by the caller.
+///
+/// This is the form a flat scan wants: `query_norm` is invariant across the
+/// whole table, so computing it once at the top of the loop removes a dot
+/// product and a square root per stored vector. `query_norm` is ignored for
+/// metrics other than [`VectorMetric::Cosine`].
+#[inline]
+pub fn score_with_query_norm(
+    metric: &VectorMetric,
+    query: &[f32],
+    query_norm: f32,
+    stored: &[f32],
+) -> f32 {
+    match metric {
+        VectorMetric::Cosine => {
+            let mut dot = 0.0f32;
+            let mut norm_b = 0.0f32;
+            for (q, s) in query.iter().zip(stored) {
+                dot += q * s;
+                norm_b += s * s;
+            }
+            let norm_b = norm_b.sqrt();
+            if query_norm == 0.0 || norm_b == 0.0 {
+                0.0
+            } else {
+                dot / (query_norm * norm_b)
+            }
+        }
+        VectorMetric::Dot => dot_similarity(query, stored),
+        VectorMetric::Euclidean => euclidean_similarity(query, stored),
+    }
+}
+
 /// Score a query against a stored vector held as raw little-endian f32 bytes,
 /// without decoding it into an intermediate `Vec<f32>` first. In a flat scan
 /// this removes one heap allocation per stored vector per query.

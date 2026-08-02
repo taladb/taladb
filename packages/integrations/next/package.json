@@ -1,6 +1,6 @@
 {
   "name": "@taladb/next",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "First-party Next.js integration for TalaDB — sync route handlers for the server, a SyncProvider for the client",
   "sideEffects": false,
   "exports": {
@@ -47,9 +47,9 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@taladb/react": "^0.10.1",
+    "@taladb/react": "^0.10.2",
     "react": ">=18.0.0",
-    "taladb": "^0.10.1"
+    "taladb": "^0.10.2"
   },
   "peerDependenciesMeta": {
     "@taladb/react": {
