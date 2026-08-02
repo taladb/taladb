@@ -148,7 +148,7 @@ fn falls_back_when_sort_field_is_missing_from_some_docs() {
     for i in 0..50 {
         let mut fields = vec![("name".into(), Value::Str(format!("item-{i:03}")))];
         if i % 2 == 0 {
-            fields.push(("score".into(), Value::Int(i as i64)));
+            fields.push(("score".into(), Value::Int(i64::from(i))));
         }
         col.insert(fields).unwrap();
     }

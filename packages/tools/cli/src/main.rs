@@ -227,7 +227,7 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_inspect(file: &PathBuf) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
 
     println!("TalaDB Inspector");
     println!("────────────────");
@@ -252,7 +252,7 @@ fn cmd_inspect(file: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_collections(file: &PathBuf) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let collections = db.list_collection_names()?;
     for name in &collections {
         println!("{name}");
@@ -265,10 +265,10 @@ fn cmd_collections(file: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_count(file: &PathBuf, collection: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let col = db.collection(collection)?;
     let n = col.count(Filter::All)?;
-    println!("{}", n);
+    println!("{n}");
     Ok(())
 }
 
@@ -282,7 +282,7 @@ fn cmd_export(
     fmt: ExportFormat,
     out: Option<&std::path::Path>,
 ) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let col = db.collection(collection)?;
     let docs = col.find(Filter::All)?;
 
@@ -333,9 +333,9 @@ fn cmd_export(
     match out {
         Some(path) => {
             check_no_traversal(path, "--out")?;
-            std::fs::write(path, &output).with_context(|| format!("writing {:?}", path))?
+            std::fs::write(path, &output).with_context(|| format!("writing {path:?}"))?
         }
-        None => println!("{}", output),
+        None => println!("{output}"),
     }
 
     Ok(())
@@ -347,10 +347,10 @@ fn cmd_export(
 
 fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
     check_no_traversal(data, "import data")?;
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let col = db.collection(collection)?;
 
-    let content = std::fs::read_to_string(data).with_context(|| format!("reading {:?}", data))?;
+    let content = std::fs::read_to_string(data).with_context(|| format!("reading {data:?}"))?;
 
     // Detect format: NDJSON (one JSON object per line) vs JSON array
     let docs: Vec<serde_json::Value> = if content.trim_start().starts_with('[') {
@@ -379,7 +379,7 @@ fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
         .collect();
 
     col.insert_many(items)?;
-    eprintln!("Imported {} documents into '{}'", count, collection);
+    eprintln!("Imported {count} documents into '{collection}'");
     Ok(())
 }
 
@@ -388,10 +388,10 @@ fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let col = db.collection(collection)?;
     let n = col.delete_many(Filter::All)?;
-    eprintln!("Deleted {} documents from '{}'", n, collection);
+    eprintln!("Deleted {n} documents from '{collection}'");
     Ok(())
 }
 
@@ -400,13 +400,12 @@ fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     db.collection(collection)?
         .upgrade_vector_index(field)
         .with_context(|| {
             format!(
-                "rebuilding HNSW graph for '{collection}::{field}' in {:?}",
-                file
+                "rebuilding HNSW graph for '{collection}::{field}' in {file:?}"
             )
         })?;
     eprintln!("HNSW graph for '{collection}::{field}' rebuilt successfully.");
@@ -428,7 +427,7 @@ fn cmd_sync(
         Some(p) => {
             check_no_traversal(p, "--config")?;
             taladb_core::load_from_path(p)
-                .with_context(|| format!("loading config from {:?}", p))?
+                .with_context(|| format!("loading config from {p:?}"))?
         }
         None => {
             let dir = file.parent().unwrap_or(std::path::Path::new("."));
@@ -450,7 +449,7 @@ fn cmd_sync(
         .ok_or_else(|| anyhow::anyhow!("sync.endpoint is required when sync.enabled: true"))?
         .to_string();
 
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
 
     let all_names = db.list_collection_names()?;
     let col_names: Vec<&str> = match collection {

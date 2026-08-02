@@ -28,6 +28,22 @@ different-day artefact.
   **100k vectors 174 ms → 65 ms (−63%)**, 50k 85 ms → 33 ms, 10k 18.2 ms →
   7.7 ms, 1k 3.0 ms → 1.9 ms. Filtered search 199 ms → 171 ms (it gains less
   because much of its time is the pre-filter query, not scoring).
+- **Vector scoring is now lane-parallel.** Even after the single-pass change the
+  reductions were scalar: floating-point addition is not associative, so the
+  compiler could not split a `+=` chain into vector lanes — every element waited
+  on the previous partial sum. Each reduction now accumulates into 8 independent
+  lanes, which authorises that reordering in the source. No `unsafe`, no
+  `core::arch` intrinsics, no nightly: it vectorises on x86 AVX, aarch64 NEON,
+  and the wasm128 SIMD every shipping browser has. Measured with the new
+  `cargo bench` harness, per-candidate scoring at 384 dimensions:
+  **dot 602 ns → 116 ns (−82%)**, **euclidean 618 ns → 124 ns (−83%)**,
+  **cosine 633 ns → 346 ns (−57%)**. Cosine gains less because it does twice the
+  work per element; precomputing stored-vector norms in the decoded-vector cache
+  would close most of the remaining gap and is the obvious next step.
+
+  Reassociating the sums changes results in the last bits or two of an `f32`.
+  Ranking is unaffected, and tests pin the new results against a scalar
+  reference at every length, including the non-multiple-of-8 remainder.
 - **One storage-table resolution per batch, not per key.** Fetching *N*
   documents opened the underlying table *N* times, at roughly 2.3 µs each —
   enough to make an index-backed lookup returning many rows *slower* than a
@@ -98,6 +114,68 @@ different-day artefact.
   The removed OPFS probe had caught this implicitly; both open paths now fall
   back to the IndexedDB-backed engine explicitly. Encrypted databases still
   refuse to degrade, because the IndexedDB snapshot is plaintext.
+- **React Native reported the *previous* call's error.** `taladb_last_error()`
+  was only ever written on failure and never cleared, and roughly a third of the
+  failure paths returned `NULL`/`-1` without setting a message at all. A caller
+  checking the error after a success — or after one of those silent failures —
+  read a stale message describing an unrelated operation, which is the opposite
+  of the documented contract. Every entry point now clears the slot on entry and
+  every failure path sets a message.
+- **React Native `insertMany` silently dropped malformed documents.** Elements
+  that failed to parse were filtered out and the call returned a *shorter* id
+  array with no indication which inputs had vanished, so a caller zipping ids
+  back onto its input mis-associated every document after the first bad one. The
+  call is now all-or-nothing and names the offending index.
+- **Range queries were wrong for integers above 2^53.** `$gt`/`$gte`/`$lt`/
+  `$lte` compared a mixed `Int`/`Float` pair by casting the integer to `f64`,
+  which rounds: `Int(9007199254740993)` compared *equal* to
+  `Float(9007199254740992.0)` instead of greater. The comparison is now exact in
+  both directions, including floats outside the `i64` range, where the reverse
+  cast used to saturate.
+- **`skip` and `limit` past 2^32 wrapped on 32-bit targets.** Both are `u64` in
+  the API but index into a `Vec`, and `usize` is 32 bits on `wasm32` — the
+  primary target. A `skip` of 2^32 + 5 truncated to 5 and returned the *first*
+  page. They now saturate, so an out-of-range page is empty.
+
+### Changed — breaking
+
+- **`TalaDbError` now carries the originating storage error as a
+  [`source`](https://doc.rust-lang.org/std/error/trait.Error.html#method.source).**
+  Every `redb` failure used to be flattened into `Storage(String)`, so an
+  application could not tell a full disk from a corrupt page from a contended
+  table — exactly the distinction an on-device database needs in order to decide
+  retry-versus-fail. Storage failures are now separate variants carrying their
+  `redb` error, and `redb` is re-exported for downcasting. `Display` output is
+  unchanged, so error text crossing into JavaScript is byte-identical.
+- **`TalaDbError` is `#[non_exhaustive]`.** Adding a variant had been a silent
+  breaking change for any downstream exhaustive `match` — `QueryTimeout` and
+  `ChangesetTooLarge` both were. Rust callers matching on it need a `_` arm; use
+  the new `TalaDbError::code()` for a stable machine-readable discriminant
+  instead of matching variant by variant. The JavaScript-visible `error.code`
+  values are unchanged.
+- **`VectorMetric` is now `Copy`.** Only affects code that explicitly `.clone()`d
+  it, which still compiles.
+- **`vector::score_from_bytes` was removed.** It had no callers: flat search
+  decodes the vector table once into a cache and scores against `&[f32]`, so
+  nothing reached the raw bytes. Its doc comment claimed to be the fast path,
+  which is worse than not existing.
+
+### Added
+
+- **`Value` conversions and accessors.** `From` impls for the Rust types that
+  map onto it (`bool`, the integer and float types, `String`/`&str`, `Vec<u8>`,
+  `Option<T>`), `FromIterator` for arrays, a `Display` impl for logs and error
+  messages, and the four missing accessors — `as_bytes`, `as_array`,
+  `as_object`, and `get` — plus `is_null`. Building a document no longer means
+  naming the variant for every field.
+- **`cargo bench -p taladb-core`.** Criterion benchmarks for vector scoring,
+  filtered scans, insert throughput, and snapshot export. Performance is a
+  headline claim for this project, and until now the only numbers came through
+  the Node binding, which measures the N-API boundary alongside the engine.
+- **Crate metadata and documentation.** `taladb-core` is a published crate that
+  had no `repository`, `keywords`, `categories`, or `readme`, and a docs.rs
+  landing page with no prose at all. It now has all of them, plus a crate-level
+  guide with runnable examples.
 
 ### Internal
 
@@ -113,6 +191,32 @@ different-day artefact.
   browser build). JSON config is unaffected.
 - Release builds use `codegen-units = 1`, which improves the generated code at
   the cost of slower release compilation.
+- **`create_vector_index` no longer builds a decoded copy of every vector on the
+  default build.** The copy exists only to seed an HNSW graph, but it was
+  populated unconditionally — including when `vector-hnsw` is off, which is the
+  default and therefore the browser and React Native builds. At 100k documents ×
+  384 dimensions that was ~150 MB of WASM heap held for the whole backfill and
+  never read.
+- **`export_snapshot` no longer holds the whole database twice.** It collected
+  every table into an intermediate before writing, even though the table count —
+  the only reason given for collecting — is known from `list_tables` alone. Each
+  table now streams straight into the output buffer, which is sized up front
+  rather than grown entry by entry. The byte format is unchanged.
+- **`TalaDbError` stays 48 bytes.** Attaching the `redb` sources inline would
+  have taken it to 176 (`redb::Error` alone is 160), widening every
+  `Result<T, TalaDbError>` in the engine — a cost paid on the success path. The
+  three oversized sources are boxed; a test pins the size.
+- The four `Database` constructors each repeated the same six-field struct
+  literal, so adding a cache field was a four-site edit that compiled fine if you
+  missed one. They now funnel through a private `from_backend`.
+- **Workspace lints and an MSRV.** `[workspace.lints]` is declared once and
+  inherited by every crate, `rust-version = "1.88"` is now stated rather than
+  implied, and the tree is clean under `cargo clippy --workspace --all-targets`.
+  `unsafe_op_in_unsafe_fn` is denied, which is what forces the React Native FFI
+  to mark each raw-pointer dereference at its call site: the four helpers that
+  hand out references derived from caller-supplied pointers are now `unsafe fn`
+  with documented safety contracts, rather than safe functions returning an
+  unbounded lifetime.
 
 ## [0.10.1] - 2026-08-01
 

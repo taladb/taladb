@@ -116,7 +116,7 @@ impl HttpSyncHook {
     pub fn new(config: SyncConfig) -> Self {
         let exclude: HashSet<String> = config.exclude_fields.iter().cloned().collect();
         if !config.enabled {
-            return HttpSyncHook {
+            return Self {
                 config: Arc::new(config),
                 exclude,
                 senders: Vec::new(),
@@ -165,7 +165,7 @@ impl HttpSyncHook {
             });
         }
 
-        HttpSyncHook {
+        Self {
             config: Arc::new(config),
             exclude,
             senders,

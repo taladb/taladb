@@ -26,13 +26,13 @@ pub struct SortSpec {
 
 impl SortSpec {
     pub fn asc(field: impl Into<String>) -> Self {
-        SortSpec {
+        Self {
             field: field.into(),
             direction: SortDirection::Asc,
         }
     }
     pub fn desc(field: impl Into<String>) -> Self {
-        SortSpec {
+        Self {
             field: field.into(),
             direction: SortDirection::Desc,
         }

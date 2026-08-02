@@ -12,8 +12,8 @@ const HTML: &str = include_str!("../studio.html");
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
-pub fn cmd_studio(file: &Path, port: u16, host: &str, no_open: bool) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+pub(crate) fn cmd_studio(file: &Path, port: u16, host: &str, no_open: bool) -> Result<()> {
+    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     // Loopback by default: the studio has no authentication, so any reachable
     // client can browse and delete documents.
     let addr = format!("{host}:{port}");
@@ -332,7 +332,7 @@ mod tests {
                 }
             }
 
-            let path2 = db_path.clone();
+            let path2 = db_path;
             std::thread::spawn(move || {
                 let db = Database::open(&path2).unwrap();
                 let server = Server::http(format!("127.0.0.1:{port}")).unwrap();
@@ -354,7 +354,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
 
-            TestServer {
+            Self {
                 port,
                 client: reqwest::blocking::Client::new(),
                 _dir: dir,

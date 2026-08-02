@@ -4,7 +4,16 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "TalaDB core: embedded local-first document database powered by redb"
+readme = "README.md"
+keywords = ["database", "embedded", "local-first", "vector-search", "wasm"]
+categories = ["database-implementations", "wasm", "data-structures"]
+
+[lints]
+workspace = true
 
 [dependencies]
 redb       = "2.1"
@@ -50,7 +59,12 @@ sync-http    = ["dep:reqwest"]
 # unsafe-libyaml from the bundle. JSON config works either way.
 config-yaml  = ["dep:serde_yaml"]
 
+[[bench]]
+name = "engine"
+harness = false
+
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3.10"
 wiremock = "0.6"
 tokio    = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }

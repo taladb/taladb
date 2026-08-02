@@ -1,3 +1,54 @@
+//! **TalaDB core** — an embedded, local-first document database with built-in
+//! vector search, designed to run on the device rather than behind a network
+//! hop.
+//!
+//! This crate is the engine. Applications normally reach it through a language
+//! binding — `taladb` / `@taladb/web` / `@taladb/react` on npm — but it is
+//! usable directly from Rust, which is what the examples below do.
+//!
+//! # Getting started
+//!
+//! ```no_run
+//! use taladb_core::{Database, Filter, Value};
+//!
+//! # fn main() -> Result<(), taladb_core::TalaDbError> {
+//! let db = Database::open_in_memory()?;
+//! let books = db.collection("books")?;
+//!
+//! books.insert(vec![
+//!     ("title".into(), Value::Str("Noli Me Tángere".into())),
+//!     ("year".into(), Value::Int(1887)),
+//! ])?;
+//!
+//! let found = books.find(Filter::Gte("year".into(), Value::Int(1800)))?;
+//! assert_eq!(found.len(), 1);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # What's in here
+//!
+//! - [`Database`] — open a database ([`Database::open`], [`Database::open_in_memory`],
+//!   or [`Database::open_with_backend`] for a custom storage backend such as
+//!   OPFS in the browser) and hand out [`Collection`]s.
+//! - [`Collection`] — insert, query, update, and index documents.
+//! - [`Filter`] and [`FindOptions`] — the query language: comparisons, logical
+//!   combinators, sorting, pagination, and projection.
+//! - [`vector`] — vector indexes and `find_nearest`, exact by default and
+//!   approximate (HNSW) behind the `vector-hnsw` feature.
+//! - [`bm25`] / [`fts`] — full-text search over the same documents.
+//! - [`sync`] and [`crdt`] — changeset replication and last-write-wins merge for
+//!   syncing a device against an origin.
+//! - [`TalaDbError`] — one error type for everything, carrying the originating
+//!   storage error as a [`source`](std::error::Error::source).
+//!
+//! # Runtime targets
+//!
+//! The browser (via `wasm32-unknown-unknown`) and React Native are the primary
+//! targets; native and Node are supported but are not what the design optimises
+//! for. Anything that would bloat a WASM bundle is feature-gated — see the
+//! `config-yaml`, `encryption`, `vector-hnsw`, and `sync-http` features.
+
 pub mod aggregate;
 pub mod audit;
 pub mod bm25;
@@ -44,6 +95,10 @@ pub use sync::{
     NoopSyncHook, QuarantineRecord, SchemaValidator, StructuralSchema, SyncAdapter, SyncEvent,
     SyncHook,
 };
+/// Re-exported because [`TalaDbError`]'s storage variants carry `redb` errors as
+/// their [`source`](std::error::Error::source): downcasting to them requires
+/// naming the same `redb` version the engine was built against.
+pub use redb;
 /// Re-exported so bindings can parse and construct document ids without taking a
 /// direct `ulid` dependency (and risking a version skew against the engine's).
 pub use ulid::Ulid;
@@ -51,6 +106,17 @@ pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;
 use std::sync::Arc;
+
+/// Narrow a `u64` count to `usize`, saturating instead of wrapping.
+///
+/// `skip`, `limit`, and stored entry counts are `u64` in the public API but
+/// index into `Vec`s, and `usize` is 32 bits on `wasm32` — the primary target.
+/// A plain `as usize` there wraps: `skip = 2^32 + 5` silently becomes `5` and
+/// returns the *first* page instead of an empty one. Saturating turns an absurd
+/// value into "past the end", which every caller already handles.
+pub(crate) fn clamp_to_usize(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
 
 // Snapshot magic + version bytes written at the start of every snapshot.
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TDBS";
@@ -134,11 +200,15 @@ impl Database {
         let key = crypto::derive_key(passphrase, &salt, crypto::MIN_PBKDF2_ITERATIONS)?;
         Self::open_with_backend(Box::new(crypto::EncryptedBackend::new(raw, key)))
     }
-    /// Open a file-backed database at the given path.
-    pub fn open(path: &Path) -> Result<Self, TalaDbError> {
-        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+    /// Build a `Database` around an already-constructed backend, running the
+    /// built-in migration chain first.
+    ///
+    /// Every public constructor funnels through here so the cache set is
+    /// declared exactly once — adding a cache field is otherwise a four-site
+    /// edit that compiles fine if you miss one.
+    fn from_backend(backend: Arc<dyn StorageBackend>) -> Result<Self, TalaDbError> {
         run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
-        Ok(Database {
+        Ok(Self {
             backend,
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -146,34 +216,21 @@ impl Database {
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
+    }
+
+    /// Open a file-backed database at the given path.
+    pub fn open(path: &Path) -> Result<Self, TalaDbError> {
+        Self::from_backend(Arc::new(RedbBackend::open(path)?))
     }
 
     /// Open a database with a custom storage backend (e.g. OPFS in WASM).
     pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, TalaDbError> {
-        let backend: Arc<dyn StorageBackend> = Arc::from(backend);
-        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
-        Ok(Database {
-            backend,
-            index_cache: collection::new_shared_index_cache(),
-            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            vector_cache: vector::new_shared_vector_cache(),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: vector::new_shared_cache(),
-        })
+        Self::from_backend(Arc::from(backend))
     }
 
     /// Open an in-memory database (useful for tests).
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
-        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open_in_memory()?);
-        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
-        Ok(Database {
-            backend,
-            index_cache: collection::new_shared_index_cache(),
-            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            vector_cache: vector::new_shared_vector_cache(),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: vector::new_shared_cache(),
-        })
+        Self::from_backend(Arc::new(RedbBackend::open_in_memory()?))
     }
 
     /// Open a database and run any pending migrations before returning.
@@ -185,17 +242,9 @@ impl Database {
         path: &Path,
         migrations: &[Migration],
     ) -> Result<Self, TalaDbError> {
-        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
-        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
-        run_migrations(backend.as_ref(), migrations)?;
-        Ok(Database {
-            backend,
-            index_cache: collection::new_shared_index_cache(),
-            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            vector_cache: vector::new_shared_vector_cache(),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: vector::new_shared_cache(),
-        })
+        let db = Self::from_backend(Arc::new(RedbBackend::open(path)?))?;
+        run_migrations(db.backend.as_ref(), migrations)?;
+        Ok(db)
     }
 
     /// Access the raw storage backend.
@@ -233,7 +282,7 @@ impl Database {
             let mut map = self
                 .watch_registries
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Arc::clone(
                 map.entry(name.to_string())
                     .or_insert_with(watch::new_registry),
@@ -416,23 +465,32 @@ impl Database {
         buf.extend_from_slice(SNAPSHOT_MAGIC);
         buf.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
 
-        // Collect all tables first so we can write the count up front.
-        let mut tables: Vec<(String, engine::KvPairs)> = Vec::new();
-        for name in table_names {
-            let pairs = txn.scan_all(&name)?;
-            tables.push((name, pairs));
-        }
-
-        buf.extend_from_slice(&(tables.len() as u32).to_le_bytes());
-        for (name, pairs) in &tables {
+        // The table count is known from `list_tables` alone, so each table can
+        // be scanned and written straight into `buf` instead of being collected
+        // into an intermediate that holds the entire database alongside the
+        // output. Only one table is resident at a time now — this is the API
+        // the WASM persistence path calls, where peak heap is the constraint.
+        buf.extend_from_slice(&u32::try_from(table_names.len()).unwrap_or(u32::MAX).to_le_bytes());
+        for name in &table_names {
+            let pairs = txn.scan_all(name)?;
             let name_bytes = name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+
+            // One growth up front for the whole table rather than one per
+            // `extend_from_slice`: 4 B key length + 4 B value length per entry,
+            // plus the table header.
+            let table_bytes: usize = pairs
+                .iter()
+                .map(|(key, val)| key.len() + val.len() + 8)
+                .sum();
+            buf.reserve(table_bytes + name_bytes.len() + 12);
+
+            buf.extend_from_slice(&u32::try_from(name_bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(pairs.len() as u64).to_le_bytes());
-            for (key, val) in pairs {
-                buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            for (key, val) in &pairs {
+                buf.extend_from_slice(&u32::try_from(key.len()).unwrap_or(u32::MAX).to_le_bytes());
                 buf.extend_from_slice(key);
-                buf.extend_from_slice(&(val.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&u32::try_from(val.len()).unwrap_or(u32::MAX).to_le_bytes());
                 buf.extend_from_slice(val);
             }
         }
@@ -466,7 +524,7 @@ impl Database {
             return Err(TalaDbError::InvalidSnapshot);
         }
 
-        let db = Database::open_in_memory()?;
+        let db = Self::open_in_memory()?;
         let mut cursor: usize = 8;
 
         let table_count = read_u32(data, &mut cursor)? as usize;
@@ -476,7 +534,7 @@ impl Database {
                 .map_err(|_| TalaDbError::InvalidSnapshot)?
                 .to_string();
 
-            let entry_count = read_u64(data, &mut cursor)? as usize;
+            let entry_count = clamp_to_usize(read_u64(data, &mut cursor)?);
 
             // Write all entries for this table in a single transaction.
             let mut wtxn = db.backend.begin_write()?;

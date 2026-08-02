@@ -78,7 +78,11 @@ pub fn idf(doc_count: u64, doc_freq: u64) -> f32 {
     let n = doc_count as f32;
     // A stale df can exceed N; clamping keeps the numerator non-negative.
     let df = (doc_freq as f32).min(n);
-    (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+    // `ln_1p(x)` rather than `(1.0 + x).ln()`: for a very common term the ratio
+    // approaches zero, where adding 1 first discards most of its significant
+    // bits and the log of the rounded sum loses precision. `ln_1p` is computed
+    // for exactly this case.
+    ((n - df + 0.5) / (df + 0.5)).ln_1p()
 }
 
 /// BM25 contribution of one query term to one document.

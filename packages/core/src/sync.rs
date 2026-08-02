@@ -109,7 +109,7 @@ pub struct RecordingSyncHook {
 #[cfg(test)]
 impl RecordingSyncHook {
     pub fn new() -> Self {
-        RecordingSyncHook {
+        Self {
             events: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -274,14 +274,14 @@ impl FieldType {
         matches!(
             (self, value),
             (_, Value::Null)
-                | (FieldType::Any, _)
-                | (FieldType::Bool, Value::Bool(_))
-                | (FieldType::Int, Value::Int(_))
-                | (FieldType::Float, Value::Float(_))
-                | (FieldType::Str, Value::Str(_))
-                | (FieldType::Bytes, Value::Bytes(_))
-                | (FieldType::Array, Value::Array(_))
-                | (FieldType::Object, Value::Object(_))
+                | (Self::Any, _)
+                | (Self::Bool, Value::Bool(_))
+                | (Self::Int, Value::Int(_))
+                | (Self::Float, Value::Float(_))
+                | (Self::Str, Value::Str(_))
+                | (Self::Bytes, Value::Bytes(_))
+                | (Self::Array, Value::Array(_))
+                | (Self::Object, Value::Object(_))
         )
     }
 }
@@ -414,7 +414,7 @@ pub struct SchemaValidator {
 
 impl SchemaValidator {
     pub fn new(schemas: HashMap<String, StructuralSchema>) -> Self {
-        SchemaValidator { schemas }
+        Self { schemas }
     }
 
     /// Build a validator, rejecting any schema whose directives can never run
@@ -431,7 +431,7 @@ impl SchemaValidator {
                 other => other,
             })?;
         }
-        Ok(SchemaValidator { schemas })
+        Ok(Self { schemas })
     }
 }
 
@@ -488,7 +488,7 @@ pub struct LastWriteWins {
 
 impl LastWriteWins {
     pub fn new() -> Self {
-        LastWriteWins { validator: None }
+        Self { validator: None }
     }
 
     /// Attach a tolerant import-time validator. Every upsert imported through

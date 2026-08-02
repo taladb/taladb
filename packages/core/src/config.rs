@@ -155,7 +155,7 @@ fn default_true() -> bool {
 
 impl Default for DurabilityConfig {
     fn default() -> Self {
-        DurabilityConfig {
+        Self {
             flush_every_write: true,
             flush_ms: None,
         }

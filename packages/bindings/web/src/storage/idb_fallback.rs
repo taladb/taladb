@@ -162,7 +162,7 @@ fn request_promise(req: &JsValue) -> Promise {
     let req = req.clone();
     Promise::new(&mut |resolve, reject| {
         let req_s = req.clone();
-        let resolve_c = resolve.clone();
+        let resolve_c = resolve;
 
         let on_success = Closure::once(move |_: JsValue| {
             let result =

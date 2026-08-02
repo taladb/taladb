@@ -39,7 +39,7 @@ pub enum QueryPlan {
 
     /// Union the results of multiple index-backed sub-plans ($or when all
     /// branches are index-accelerated).
-    IndexOr { plans: Vec<QueryPlan> },
+    IndexOr { plans: Vec<Self> },
 
     /// Intersect the results of multiple index-backed sub-plans ($and where
     /// more than one conjunct is indexed).
@@ -49,7 +49,7 @@ pub enum QueryPlan {
     /// every active row to find one user's. Intersecting id sets instead bounds
     /// the work by the most selective branch, and only documents satisfying
     /// every indexed conjunct are ever decoded.
-    IndexAnd { plans: Vec<QueryPlan> },
+    IndexAnd { plans: Vec<Self> },
 
     /// Full-text search via the inverted token index.
     FtsSearch {

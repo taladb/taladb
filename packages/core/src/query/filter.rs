@@ -28,11 +28,11 @@ pub enum Filter {
     /// field exists / does not exist
     Exists(String, bool),
     /// $and
-    And(Vec<Filter>),
+    And(Vec<Self>),
     /// $or
-    Or(Vec<Filter>),
+    Or(Vec<Self>),
     /// $not
-    Not(Box<Filter>),
+    Not(Box<Self>),
     /// Full-text search: field contains all tokens from the query string.
     /// Requires a full-text index created with `Collection::create_fts_index`.
     Contains(String, String),
@@ -46,43 +46,43 @@ impl Filter {
     /// Evaluate this filter against a document. Used as a post-filter after index scans.
     pub fn matches(&self, doc: &Document) -> bool {
         match self {
-            Filter::All => true,
+            Self::All => true,
 
-            Filter::Eq(field, val) => {
+            Self::Eq(field, val) => {
                 if field == "_id" {
                     return matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
                 doc.get(field).is_some_and(|v| v == val)
             }
 
-            Filter::Ne(field, val) => {
+            Self::Ne(field, val) => {
                 if field == "_id" {
                     return !matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
                 doc.get(field).is_none_or(|v| v != val)
             }
 
-            Filter::Gt(field, val) => doc
+            Self::Gt(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord == std::cmp::Ordering::Greater),
 
-            Filter::Gte(field, val) => doc
+            Self::Gte(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord != std::cmp::Ordering::Less),
 
-            Filter::Lt(field, val) => doc
+            Self::Lt(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord == std::cmp::Ordering::Less),
 
-            Filter::Lte(field, val) => doc
+            Self::Lte(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord != std::cmp::Ordering::Greater),
 
-            Filter::In(field, vals) => {
+            Self::In(field, vals) => {
                 if field == "_id" {
                     let id_str = doc.id.to_string();
                     return vals
@@ -92,7 +92,7 @@ impl Filter {
                 doc.get(field).is_some_and(|v| vals.contains(v))
             }
 
-            Filter::Nin(field, vals) => {
+            Self::Nin(field, vals) => {
                 if field == "_id" {
                     let id_str = doc.id.to_string();
                     return !vals
@@ -102,21 +102,21 @@ impl Filter {
                 doc.get(field).is_none_or(|v| !vals.contains(v))
             }
 
-            Filter::Exists(field, should_exist) => {
+            Self::Exists(field, should_exist) => {
                 if field == "_id" {
                     return *should_exist;
                 }
                 doc.contains_key(field) == *should_exist
             }
 
-            Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
+            Self::And(filters) => filters.iter().all(|f| f.matches(doc)),
 
-            Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
+            Self::Or(filters) => filters.iter().any(|f| f.matches(doc)),
 
-            Filter::Not(inner) => !inner.matches(doc),
+            Self::Not(inner) => !inner.matches(doc),
 
             // Post-filter: check all tokens appear in the field value
-            Filter::Contains(field, query) => {
+            Self::Contains(field, query) => {
                 use crate::fts::tokenize;
                 let query_tokens = tokenize(query);
                 if query_tokens.is_empty() {
@@ -135,7 +135,7 @@ impl Filter {
             // Regex post-filter — compiled on each invocation, always a full scan.
             // Size limits guard against ReDoS via catastrophic backtracking or
             // excessively large compiled automata from user-supplied patterns.
-            Filter::Regex(field, pattern) => {
+            Self::Regex(field, pattern) => {
                 if let Some(Value::Str(text)) = doc.get(field) {
                     regex::RegexBuilder::new(pattern)
                         // Limit the compiled NFA/DFA size to 1 MiB each.
@@ -165,13 +165,13 @@ impl Filter {
 
     fn collect_regex_patterns_into(&self, out: &mut Vec<String>) {
         match self {
-            Filter::Regex(_, pattern) => out.push(pattern.clone()),
-            Filter::And(filters) | Filter::Or(filters) => {
+            Self::Regex(_, pattern) => out.push(pattern.clone()),
+            Self::And(filters) | Self::Or(filters) => {
                 for f in filters {
                     f.collect_regex_patterns_into(out);
                 }
             }
-            Filter::Not(inner) => inner.collect_regex_patterns_into(out),
+            Self::Not(inner) => inner.collect_regex_patterns_into(out),
             _ => {}
         }
     }
@@ -205,19 +205,19 @@ impl Filter {
         regex_cache: &HashMap<String, regex::Regex>,
     ) -> bool {
         match self {
-            Filter::Regex(field, pattern) => {
+            Self::Regex(field, pattern) => {
                 let Some(re) = regex_cache.get(pattern) else {
                     return false;
                 };
                 matches!(doc.get(field), Some(Value::Str(text)) if re.is_match(text))
             }
-            Filter::And(filters) => filters
+            Self::And(filters) => filters
                 .iter()
                 .all(|f| f.matches_with_cache(doc, regex_cache)),
-            Filter::Or(filters) => filters
+            Self::Or(filters) => filters
                 .iter()
                 .any(|f| f.matches_with_cache(doc, regex_cache)),
-            Filter::Not(inner) => !inner.matches_with_cache(doc, regex_cache),
+            Self::Not(inner) => !inner.matches_with_cache(doc, regex_cache),
             other => other.matches(doc),
         }
     }
@@ -226,16 +226,16 @@ impl Filter {
     /// Used by the query planner to select an index.
     pub fn primary_field(&self) -> Option<&str> {
         match self {
-            Filter::Eq(f, _)
-            | Filter::Ne(f, _)
-            | Filter::Gt(f, _)
-            | Filter::Gte(f, _)
-            | Filter::Lt(f, _)
-            | Filter::Lte(f, _)
-            | Filter::In(f, _)
-            | Filter::Nin(f, _)
-            | Filter::Exists(f, _) => Some(f.as_str()),
-            Filter::And(filters) => filters.iter().find_map(|f| f.primary_field()),
+            Self::Eq(f, _)
+            | Self::Ne(f, _)
+            | Self::Gt(f, _)
+            | Self::Gte(f, _)
+            | Self::Lt(f, _)
+            | Self::Lte(f, _)
+            | Self::In(f, _)
+            | Self::Nin(f, _)
+            | Self::Exists(f, _) => Some(f.as_str()),
+            Self::And(filters) => filters.iter().find_map(|f| f.primary_field()),
             _ => None,
         }
     }

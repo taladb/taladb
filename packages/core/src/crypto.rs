@@ -213,7 +213,7 @@ impl EncryptedBackend {
     /// does not exist, making misconfiguration a compile-time error.
     #[cfg(feature = "encryption")]
     pub fn new(inner: Arc<dyn StorageBackend>, key: EncryptionKey) -> Self {
-        EncryptedBackend { inner, key }
+        Self { inner, key }
     }
 }
 
@@ -892,12 +892,12 @@ mod tests {
         assert_eq!(count, 2);
 
         // Old key must no longer decrypt.
-        let enc_old = EncryptedBackend::new(raw.clone(), old_key.clone());
+        let enc_old = EncryptedBackend::new(raw.clone(), old_key);
         let rtxn_old = enc_old.begin_read().unwrap();
         assert!(rtxn_old.get("docs::test", b"k1").is_err());
 
         // New key must decrypt correctly.
-        let enc_new = EncryptedBackend::new(raw.clone(), new_key.clone());
+        let enc_new = EncryptedBackend::new(raw, new_key);
         let rtxn_new = enc_new.begin_read().unwrap();
         assert_eq!(
             rtxn_new.get("docs::test", b"k1").unwrap().unwrap(),

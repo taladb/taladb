@@ -154,7 +154,7 @@ where
 {
     let rx = registry
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .subscribe();
     WatchHandle {
         rx,
@@ -169,7 +169,7 @@ pub fn notify(registry: &SharedRegistry) {
     // A full lock, not try_lock: skipping the notification under contention
     // would mean a committed write never wakes its watchers. notify() is
     // non-blocking (try_send), so holding the lock is cheap.
-    let mut guard = registry.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.notify();
 }
 
@@ -178,7 +178,7 @@ pub fn notify(registry: &SharedRegistry) {
 pub fn generation(registry: &SharedRegistry) -> u64 {
     registry
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .generation()
 }
 

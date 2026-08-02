@@ -80,17 +80,17 @@ pub fn decode_fts_def(bytes: &[u8]) -> Result<FtsDef, postcard::Error> {
 // ---------------------------------------------------------------------------
 
 pub fn fts_table_name(collection: &str, field: &str) -> String {
-    format!("fts::{}::{}", collection, field)
+    format!("fts::{collection}::{field}")
 }
 
 /// Per-document token counts, keyed by ULID.
 pub fn fts_len_table_name(collection: &str, field: &str) -> String {
-    format!("fts_len::{}::{}", collection, field)
+    format!("fts_len::{collection}::{field}")
 }
 
 /// Corpus statistics; holds exactly one record under [`FTS_STATS_KEY`].
 pub fn fts_stats_table_name(collection: &str, field: &str) -> String {
-    format!("fts_stats::{}::{}", collection, field)
+    format!("fts_stats::{collection}::{field}")
 }
 
 /// The only key in a `fts_stats::` table.
@@ -189,7 +189,7 @@ impl<'a> HybridQuery<'a> {
 pub fn tokenize(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() >= 2)
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .collect()
 }
 

@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "TalaDB command-line dev tools (inspect, export, import)"
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "taladb"

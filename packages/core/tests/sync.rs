@@ -157,7 +157,7 @@ fn lww_remote_newer_wins() {
         ("content".into(), s("local version")),
         ("_changed_at".into(), i(1000)),
     ];
-    let _local_id_str = col.insert(local_fields.clone()).unwrap().to_string();
+    let _local_id_str = col.insert(local_fields).unwrap().to_string();
 
     // Remote doc is newer
     let remote_doc = taladb_core::document::Document::new(vec![
@@ -392,7 +392,7 @@ trait ChangeOpExt {
 
 impl ChangeOpExt for ChangeOp {
     fn upsert_title(&self) -> Option<&str> {
-        if let ChangeOp::Upsert(doc) = self {
+        if let Self::Upsert(doc) = self {
             doc.get("title").and_then(|v| v.as_str())
         } else {
             None

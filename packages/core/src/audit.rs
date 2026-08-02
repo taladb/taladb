@@ -53,9 +53,9 @@ pub enum AuditOp {
 impl AuditOp {
     pub fn as_str(&self) -> &'static str {
         match self {
-            AuditOp::Insert => "insert",
-            AuditOp::Update => "update",
-            AuditOp::Delete => "delete",
+            Self::Insert => "insert",
+            Self::Update => "update",
+            Self::Delete => "delete",
         }
     }
 }

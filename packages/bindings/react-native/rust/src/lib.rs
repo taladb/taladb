@@ -13,6 +13,26 @@
 //! JSON is used at every boundary so the C++ HostObject only needs
 //! `JSON.stringify` / `JSON.parse` — no complex serialisation.
 //!
+//! # Error reporting
+//!
+//! A failed call sets a thread-local message readable with
+//! [`taladb_last_error`]. Two rules make that message trustworthy, and both are
+//! load-bearing:
+//!
+//! 1. **Every exported function clears the slot on entry**
+//!    ([`clear_last_error`]). Without this, `taladb_last_error` reports whatever
+//!    the *previous* failing call left behind, so a caller that checks it after
+//!    a success — or after a failure that forgot to set one — reads a stale
+//!    message describing an unrelated operation.
+//! 2. **Every failure path sets a message before returning.** The shared
+//!    argument helpers below (`ptr_to_ref`, `cstr_to_string`, `parse_*_args`,
+//!    `json_to_fields`) set their own, so the common "bad argument" exits are
+//!    covered without each function repeating the check.
+//!
+//! Together these give the documented contract: after any `taladb_*` call,
+//! `taladb_last_error()` describes *that* call — a message if it failed, NULL
+//! if it succeeded.
+//!
 //! # Safety
 //!
 //! All exported functions follow these invariants:
@@ -22,9 +42,18 @@
 //! - `*mut TalaDbHandle` must have been obtained from `taladb_open` /
 //!   `taladb_open_with_config` and not yet passed to `taladb_close`.
 //! - `*mut c_char` return values must be freed with `taladb_free_string`.
+//!
+//! Raw pointers are dereferenced only by the helpers at the bottom of this
+//! file, which are `unsafe fn` and carry their own `# Safety` sections. Every
+//! exported function reaches them through an explicit `unsafe` block —
+//! `unsafe_op_in_unsafe_fn` is denied below so an `unsafe extern "C" fn` body
+//! cannot quietly perform an unchecked dereference.
 
-// Safety contract is documented at the module level above.
+// Safety contract is documented at the module level above; repeating it on all
+// 45 exported functions, which share it verbatim, would be noise. It does not
+// extend to `unsafe fn`s inside the crate — those document themselves.
 #![allow(clippy::missing_safety_doc)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
@@ -51,7 +80,24 @@ fn set_last_error(msg: String) {
     });
 }
 
+/// Drop any message left by an earlier call on this thread.
+///
+/// Called first thing by every exported function except [`taladb_last_error`]
+/// (which reads the slot) and `taladb_free_string` (which a caller may invoke
+/// between a failure and reading its message). See the module-level *Error
+/// reporting* section for why this is required rather than merely tidy.
+fn clear_last_error() {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = None;
+    });
+}
+
 /// Return the last error message as a null-terminated C string, or NULL if no error.
+///
+/// The message always describes the most recent `taladb_*` call on this thread:
+/// every entry point clears the slot before doing any work, so a NULL return
+/// means that call succeeded rather than that it forgot to report.
+///
 /// The returned pointer is valid until the next taladb_* call on this thread.
 /// Do NOT free the returned string.
 #[unsafe(no_mangle)]
@@ -96,13 +142,17 @@ impl TalaDbHandle {
 /// The handle must be freed with `taladb_close`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
+    clear_last_error();
     if path.is_null() {
         set_last_error("database path is null".into());
         return std::ptr::null_mut();
     }
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            set_last_error("database path is not valid UTF-8".into());
+            return std::ptr::null_mut();
+        }
     };
     match Database::open(Path::new(path_str)) {
         Ok(db) => Box::into_raw(Box::new(TalaDbHandle {
@@ -127,13 +177,17 @@ pub unsafe extern "C" fn taladb_open_with_config(
     path: *const c_char,
     config_json: *const c_char,
 ) -> *mut TalaDbHandle {
+    clear_last_error();
     if path.is_null() {
         set_last_error("database path is null".into());
         return std::ptr::null_mut();
     }
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            set_last_error("database path is not valid UTF-8".into());
+            return std::ptr::null_mut();
+        }
     };
 
     let mut passphrase: Option<String> = None;
@@ -195,7 +249,8 @@ pub unsafe extern "C" fn taladb_open_with_config(
 /// HTTP push delivery counters as `{ "dropped": n, "failed": n }`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_sync_status(handle: *mut TalaDbHandle) -> *mut c_char {
-    let Some(h) = ptr_to_ref(handle) else {
+    clear_last_error();
+    let Some(h) = (unsafe { ptr_to_ref(handle) }) else {
         return std::ptr::null_mut();
     };
     let (dropped, failed) = h
@@ -209,7 +264,8 @@ pub unsafe extern "C" fn taladb_sync_status(handle: *mut TalaDbHandle) -> *mut c
 /// Wait for queued HTTP push events. Returns 1 on success, 0 on timeout, -1 on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_sync_flush(handle: *mut TalaDbHandle, timeout_ms: u64) -> i32 {
-    let Some(h) = ptr_to_ref(handle) else {
+    clear_last_error();
+    let Some(h) = (unsafe { ptr_to_ref(handle) }) else {
         return -1;
     };
     match &h.sync_hook {
@@ -223,7 +279,8 @@ pub unsafe extern "C" fn taladb_sync_flush(handle: *mut TalaDbHandle, timeout_ms
 /// No-op on in-memory databases. Returns 1 on success, -1 on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
-    match ptr_to_ref(handle) {
+    clear_last_error();
+    match unsafe { ptr_to_ref(handle) } {
         Some(h) => match h.db.compact() {
             Ok(()) => 1,
             Err(e) => {
@@ -231,6 +288,7 @@ pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
                 -1
             }
         },
+        // Null handle — `ptr_to_ref` has already set the message.
         None => -1,
     }
 }
@@ -238,6 +296,7 @@ pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
 /// Close the database and free the handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_close(handle: *mut TalaDbHandle) {
+    clear_last_error();
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle) });
     }
@@ -264,13 +323,17 @@ pub unsafe extern "C" fn taladb_insert(
     collection: *const c_char,
     doc_json: *const c_char,
 ) -> *mut c_char {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, doc_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, doc_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
     let fields = match json_to_fields(&json) {
         Some(f) => f,
-        None => return std::ptr::null_mut(),
+        None => {
+            set_last_error("insert expects a JSON object".into());
+            return std::ptr::null_mut();
+        }
     };
     let col = match h.collection(&col_name) {
         Ok(c) => c,
@@ -291,24 +354,43 @@ pub unsafe extern "C" fn taladb_insert(
 /// Insert multiple documents (JSON array of objects).
 /// Returns a JSON array of ULID strings, or NULL on error.
 /// Caller must free with `taladb_free_string`.
+///
+/// **All or nothing.** If any element of the array is not an object, the whole
+/// call fails and nothing is written. It previously skipped unparseable
+/// elements and returned a shorter id array, so a caller zipping the returned
+/// ids back onto its input silently mis-associated every document after the
+/// first bad one — and had no way to learn which had been dropped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_insert_many(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
     docs_json: *const c_char,
 ) -> *mut c_char {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, docs_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, docs_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
     let arr = match serde_json::from_str::<Vec<serde_json::Value>>(&json) {
         Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(format!("insertMany expects a JSON array of objects: {e}"));
+            return std::ptr::null_mut();
+        }
     };
-    let items: Vec<Vec<(String, Value)>> = arr
-        .iter()
-        .filter_map(|v| json_to_fields(&v.to_string()))
-        .collect();
+    let mut items: Vec<Vec<(String, Value)>> = Vec::with_capacity(arr.len());
+    for (i, v) in arr.iter().enumerate() {
+        match json_to_fields(&v.to_string()) {
+            Some(fields) => items.push(fields),
+            None => {
+                set_last_error(format!(
+                    "insertMany: document at index {i} is not a JSON object; \
+                     no documents were inserted"
+                ));
+                return std::ptr::null_mut();
+            }
+        }
+    }
     let col = match h.collection(&col_name) {
         Ok(c) => c,
         Err(e) => {
@@ -318,7 +400,7 @@ pub unsafe extern "C" fn taladb_insert_many(
     };
     match col.insert_many(items) {
         Ok(ids) => {
-            let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+            let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
         }
         Err(e) => {
@@ -353,11 +435,12 @@ pub unsafe extern "C" fn taladb_replace_many_with_ids(
     docs_json: *const c_char,
     origin: *const c_char,
 ) -> *mut c_char {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, docs_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, docs_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
-    let origin = match cstr_to_string(origin)
+    let origin = match unsafe { cstr_to_string(origin) }
         .as_deref()
         .and_then(parse_write_origin)
     {
@@ -399,7 +482,7 @@ pub unsafe extern "C" fn taladb_replace_many_with_ids(
     };
     match col.replace_many_with_ids(docs, origin) {
         Ok(ids) => {
-            let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+            let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
         }
         Err(e) => {
@@ -421,11 +504,12 @@ pub unsafe extern "C" fn taladb_delete_many_with_ids(
     ids_json: *const c_char,
     origin: *const c_char,
 ) -> *mut c_char {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, ids_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, ids_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
-    let origin = match cstr_to_string(origin)
+    let origin = match unsafe { cstr_to_string(origin) }
         .as_deref()
         .and_then(parse_write_origin)
     {
@@ -482,7 +566,8 @@ pub unsafe extern "C" fn taladb_find(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
+    clear_last_error();
+    let (db, col_name, json) = match unsafe { parse_db_args(handle, collection, filter_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -520,7 +605,8 @@ pub unsafe extern "C" fn taladb_find_one(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
+    clear_last_error();
+    let (db, col_name, json) = match unsafe { parse_db_args(handle, collection, filter_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -561,10 +647,11 @@ pub unsafe extern "C" fn taladb_update_one(
     filter_json: *const c_char,
     update_json: *const c_char,
 ) -> i32 {
-    let handle = ptr_to_ref(handle);
-    let col_name = cstr_to_string(collection);
-    let filter_str = cstr_to_string(filter_json);
-    let update_str = cstr_to_string(update_json);
+    clear_last_error();
+    let handle = unsafe { ptr_to_ref(handle) };
+    let col_name = unsafe { cstr_to_string(collection) };
+    let filter_str = unsafe { cstr_to_string(filter_json) };
+    let update_str = unsafe { cstr_to_string(update_json) };
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = match parse_filter(&fs) {
@@ -590,9 +677,14 @@ pub unsafe extern "C" fn taladb_update_one(
                         -1
                     }
                 },
-                None => -1,
+                None => {
+                    set_last_error("update document could not be parsed".into());
+                    -1
+                }
             }
         }
+        // One of the pointer arguments was rejected; the helper that rejected
+        // it has already set the message.
         _ => -1,
     }
 }
@@ -606,10 +698,11 @@ pub unsafe extern "C" fn taladb_update_many(
     filter_json: *const c_char,
     update_json: *const c_char,
 ) -> i32 {
-    let handle = ptr_to_ref(handle);
-    let col_name = cstr_to_string(collection);
-    let filter_str = cstr_to_string(filter_json);
-    let update_str = cstr_to_string(update_json);
+    clear_last_error();
+    let handle = unsafe { ptr_to_ref(handle) };
+    let col_name = unsafe { cstr_to_string(collection) };
+    let filter_str = unsafe { cstr_to_string(filter_json) };
+    let update_str = unsafe { cstr_to_string(update_json) };
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = match parse_filter(&fs) {
@@ -634,9 +727,14 @@ pub unsafe extern "C" fn taladb_update_many(
                         -1
                     }
                 },
-                None => -1,
+                None => {
+                    set_last_error("update document could not be parsed".into());
+                    -1
+                }
             }
         }
+        // One of the pointer arguments was rejected; the helper that rejected
+        // it has already set the message.
         _ => -1,
     }
 }
@@ -653,7 +751,8 @@ pub unsafe extern "C" fn taladb_delete_one(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, filter_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, filter_json) } {
         Some(t) => t,
         None => return -1,
     };
@@ -689,7 +788,8 @@ pub unsafe extern "C" fn taladb_delete_many(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (h, col_name, json) = match parse_handle_args(handle, collection, filter_json) {
+    clear_last_error();
+    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, filter_json) } {
         Some(t) => t,
         None => return -1,
     };
@@ -728,7 +828,8 @@ pub unsafe extern "C" fn taladb_count(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
+    clear_last_error();
+    let (db, col_name, json) = match unsafe { parse_db_args(handle, collection, filter_json) } {
         Some(t) => t,
         None => return -1,
     };
@@ -764,7 +865,8 @@ pub unsafe extern "C" fn taladb_aggregate(
     collection: *const c_char,
     pipeline_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_db_args(handle, collection, pipeline_json) {
+    clear_last_error();
+    let (db, col_name, json) = match unsafe { parse_db_args(handle, collection, pipeline_json) } {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -816,11 +918,12 @@ pub unsafe extern "C" fn taladb_export_changes(
     collections_json: *const c_char,
     since_ms: f64,
 ) -> *mut c_char {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
-    let cols_str = match cstr_to_string(collections_json) {
+    let cols_str = match unsafe { cstr_to_string(collections_json) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
@@ -854,11 +957,12 @@ pub unsafe extern "C" fn taladb_import_changes(
     handle: *mut TalaDbHandle,
     changeset_json: *const c_char,
 ) -> i32 {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return -1,
     };
-    let json = match cstr_to_string(changeset_json) {
+    let json = match unsafe { cstr_to_string(changeset_json) } {
         Some(s) => s,
         None => return -1,
     };
@@ -883,7 +987,8 @@ pub unsafe extern "C" fn taladb_import_changes(
 /// NULL on error. Caller must free with `taladb_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_list_collection_names(handle: *mut TalaDbHandle) -> *mut c_char {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
@@ -906,12 +1011,13 @@ pub unsafe extern "C" fn taladb_list_collection_names(handle: *mut TalaDbHandle)
 /// error. Backs the `openDB({ migrations })` runner.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_user_version(handle: *mut TalaDbHandle) -> i64 {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return -1,
     };
     match h.db.user_version() {
-        Ok(v) => v as i64,
+        Ok(v) => i64::from(v),
         Err(e) => {
             set_last_error(e.to_string());
             -1
@@ -922,7 +1028,8 @@ pub unsafe extern "C" fn taladb_user_version(handle: *mut TalaDbHandle) -> i64 {
 /// Persist the application migration version. Returns 0 on success, -1 on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_set_user_version(handle: *mut TalaDbHandle, version: u32) -> i32 {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return -1,
     };
@@ -939,7 +1046,8 @@ pub unsafe extern "C" fn taladb_set_user_version(handle: *mut TalaDbHandle, vers
 /// success, -1 on error. No-op under the default immediate durability.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_flush(handle: *mut TalaDbHandle) -> i32 {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return -1,
     };
@@ -1049,11 +1157,12 @@ pub unsafe extern "C" fn taladb_import_changes_validated(
     changeset_json: *const c_char,
     schemas_json: *const c_char,
 ) -> *mut c_char {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
-    let (Some(cs), Some(sj)) = (cstr_to_string(changeset_json), cstr_to_string(schemas_json))
+    let (Some(cs), Some(sj)) = (unsafe { cstr_to_string(changeset_json) }, unsafe { cstr_to_string(schemas_json) })
     else {
         return std::ptr::null_mut();
     };
@@ -1104,11 +1213,12 @@ pub unsafe extern "C" fn taladb_quarantined(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
 ) -> *mut c_char {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
-    let Some(col) = cstr_to_string(collection) else {
+    let Some(col) = (unsafe { cstr_to_string(collection) }) else {
         return std::ptr::null_mut();
     };
     match h.db.quarantined(&col) {
@@ -1143,10 +1253,11 @@ pub unsafe extern "C" fn taladb_create_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(f)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) && let Ok(c) = h.db.collection(&col)
     {
         let _ = c.create_index(&f);
@@ -1160,10 +1271,11 @@ pub unsafe extern "C" fn taladb_drop_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(f)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) && let Ok(c) = h.db.collection(&col)
     {
         let _ = c.drop_index(&f);
@@ -1177,10 +1289,11 @@ pub unsafe extern "C" fn taladb_create_compound_index(
     collection: *const c_char,
     fields_json: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(fj)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(fields_json),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(fields_json) },
     ) && let Ok(fields) = serde_json::from_str::<Vec<String>>(&fj)
         && let Ok(c) = h.db.collection(&col)
     {
@@ -1198,10 +1311,11 @@ pub unsafe extern "C" fn taladb_drop_compound_index(
     collection: *const c_char,
     fields_json: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(fj)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(fields_json),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(fields_json) },
     ) && let Ok(fields) = serde_json::from_str::<Vec<String>>(&fj)
         && let Ok(c) = h.db.collection(&col)
     {
@@ -1219,10 +1333,11 @@ pub unsafe extern "C" fn taladb_create_fts_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(f)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) && let Ok(c) = h.db.collection(&col)
     {
         let _ = c.create_fts_index(&f);
@@ -1236,10 +1351,11 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
+    clear_last_error();
     if let (Some(h), Some(col), Some(f)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) && let Ok(c) = h.db.collection(&col)
     {
         let _ = c.drop_fts_index(&f);
@@ -1263,11 +1379,12 @@ pub unsafe extern "C" fn taladb_search_text(
     filter_json: *const c_char,
     options_json: *const c_char,
 ) -> *mut c_char {
+    clear_last_error();
     let (Some(h), Some(col), Some(fld), Some(q)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
-        cstr_to_string(query),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
+        unsafe { cstr_to_string(query) },
     ) else {
         return std::ptr::null_mut();
     };
@@ -1279,7 +1396,7 @@ pub unsafe extern "C" fn taladb_search_text(
             return std::ptr::null_mut();
         }
     };
-    let options = cstr_to_string(options_json).and_then(|s| serde_json::from_str(&s).ok());
+    let options = unsafe { cstr_to_string(options_json) }.and_then(|s| serde_json::from_str(&s).ok());
     let bm25 = bm25_from_options(options.as_ref());
 
     let result =
@@ -1328,12 +1445,13 @@ pub unsafe extern "C" fn taladb_hybrid_search(
     filter_json: *const c_char,
     options_json: *const c_char,
 ) -> *mut c_char {
+    clear_last_error();
     let (Some(h), Some(col), Some(tf), Some(t), Some(vf)) = (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(text_field),
-        cstr_to_string(text),
-        cstr_to_string(vector_field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(text_field) },
+        unsafe { cstr_to_string(text) },
+        unsafe { cstr_to_string(vector_field) },
     ) else {
         return std::ptr::null_mut();
     };
@@ -1356,7 +1474,7 @@ pub unsafe extern "C" fn taladb_hybrid_search(
         }
     };
     let options: Option<serde_json::Value> =
-        cstr_to_string(options_json).and_then(|s| serde_json::from_str(&s).ok());
+        unsafe { cstr_to_string(options_json) }.and_then(|s| serde_json::from_str(&s).ok());
 
     let mut query = taladb_core::fts::HybridQuery::new(&tf, &t, &vf, vector, top_k);
     query.filter = pre_filter;
@@ -1365,7 +1483,7 @@ pub unsafe extern "C" fn taladb_hybrid_search(
     query.candidates = options
         .as_ref()
         .and_then(|o| o.get("candidates"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .map(|v| v as usize);
 
     match h.db.collection(&col).and_then(|c| c.hybrid_search(query)) {
@@ -1399,7 +1517,7 @@ pub unsafe extern "C" fn taladb_hybrid_search(
 /// A malformed filter is an error rather than "no filter" — silently
 /// widening a query is how a scoped search turns into a full scan.
 fn optional_filter(filter_json: *const c_char) -> Result<Option<Filter>, String> {
-    let Some(s) = cstr_to_string(filter_json) else {
+    let Some(s) = (unsafe { cstr_to_string(filter_json) }) else {
         return Ok(None);
     };
     if s.is_empty() || s == "null" || s == "{}" {
@@ -1415,10 +1533,10 @@ fn optional_filter(filter_json: *const c_char) -> Result<Option<Filter>, String>
 fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
     let mut params = taladb_core::bm25::Bm25Params::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("k1").and_then(serde_json::Value::as_f64) {
             params.k1 = v as f32;
         }
-        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("b").and_then(serde_json::Value::as_f64) {
             params.b = v as f32;
         }
     }
@@ -1428,35 +1546,66 @@ fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::
 fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
     let mut params = taladb_core::bm25::RrfParams::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("rrfK").and_then(serde_json::Value::as_f64) {
             params.k = v as f32;
         }
-        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("textWeight").and_then(serde_json::Value::as_f64) {
             params.text_weight = v as f32;
         }
-        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("vectorWeight").and_then(serde_json::Value::as_f64) {
             params.vector_weight = v as f32;
         }
     }
     params
 }
 
-fn ptr_to_ref<'a>(handle: *mut TalaDbHandle) -> Option<&'a TalaDbHandle> {
+/// Borrow a handle produced by `taladb_open`, or `None` if it is null.
+///
+/// Sets the last-error message on failure, so callers can return `NULL`/`-1`
+/// directly without reporting separately.
+///
+/// # Safety
+///
+/// - `handle` must be null, or point to a live `TalaDbHandle` obtained from
+///   `taladb_open` / `taladb_open_with_config` and not yet passed to
+///   `taladb_close`.
+/// - The caller chooses the returned lifetime `'a`, which is therefore
+///   unbounded: it must not outlive the `taladb_close` that frees `handle`.
+///   Every caller here is a single exported function that returns before its
+///   handle can be closed by another call on the same thread.
+unsafe fn ptr_to_ref<'a>(handle: *mut TalaDbHandle) -> Option<&'a TalaDbHandle> {
     if handle.is_null() {
-        None
-    } else {
-        Some(unsafe { &*handle })
-    }
-}
-
-fn cstr_to_string(s: *const c_char) -> Option<String> {
-    if s.is_null() {
+        set_last_error("database handle is null".into());
         return None;
     }
-    unsafe { CStr::from_ptr(s) }
-        .to_str()
-        .ok()
-        .map(str::to_owned)
+    // SAFETY: non-null, and the caller guarantees it is a live handle from
+    // `taladb_open` per this function's contract.
+    Some(unsafe { &*handle })
+}
+
+/// Copy a C string argument into an owned `String`.
+///
+/// Sets the last-error message when the pointer is null or the bytes are not
+/// valid UTF-8.
+///
+/// # Safety
+///
+/// `s` must be null, or point to a null-terminated C string that stays valid
+/// and unmodified for the duration of the call.
+unsafe fn cstr_to_string(s: *const c_char) -> Option<String> {
+    if s.is_null() {
+        set_last_error("required string argument is null".into());
+        return None;
+    }
+    // SAFETY: non-null, and the caller guarantees null-termination and validity
+    // for the duration of this call per this function's contract.
+    match unsafe { CStr::from_ptr(s) }.to_str() {
+        Ok(s) => Some(s.to_owned()),
+        Err(_) => {
+            set_last_error("string argument is not valid UTF-8".into());
+            None
+        }
+    }
 }
 
 fn to_cstring(s: String) -> *mut c_char {
@@ -1467,30 +1616,49 @@ fn to_cstring(s: String) -> *mut c_char {
 }
 
 /// Convenience for write-path functions: returns `(&TalaDbHandle, col_name, extra_str)`.
-fn parse_handle_args<'a>(
+///
+/// The underlying helpers set the last-error message, so a `None` here is
+/// already reported.
+///
+/// # Safety
+///
+/// Carries the same requirements as [`ptr_to_ref`] for `handle` and
+/// [`cstr_to_string`] for `collection` and `extra`.
+unsafe fn parse_handle_args<'a>(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
     extra: *const c_char,
 ) -> Option<(&'a TalaDbHandle, String, String)> {
-    Some((
-        ptr_to_ref(handle)?,
-        cstr_to_string(collection)?,
-        cstr_to_string(extra)?,
-    ))
+    // SAFETY: this function's contract is the union of the callees' contracts,
+    // so the caller has already guaranteed exactly what they require.
+    unsafe {
+        Some((
+            ptr_to_ref(handle)?,
+            cstr_to_string(collection)?,
+            cstr_to_string(extra)?,
+        ))
+    }
 }
 
 /// Convenience for read-path functions: returns `(&Database, col_name, extra_str)`.
 /// Read-path operations don't need the sync hook.
-fn parse_db_args<'a>(
+///
+/// # Safety
+///
+/// Carries the same requirements as [`parse_handle_args`].
+unsafe fn parse_db_args<'a>(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
     extra: *const c_char,
 ) -> Option<(&'a taladb_core::Database, String, String)> {
-    Some((
-        &ptr_to_ref(handle)?.db,
-        cstr_to_string(collection)?,
-        cstr_to_string(extra)?,
-    ))
+    // SAFETY: as above — the caller has guaranteed the callees' requirements.
+    unsafe {
+        Some((
+            &ptr_to_ref(handle)?.db,
+            cstr_to_string(collection)?,
+            cstr_to_string(extra)?,
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1574,6 +1742,12 @@ fn json_to_doc(v: &serde_json::Value) -> Option<Document> {
     Some(Document::with_id(id, fields))
 }
 
+/// Parse one document from JSON into engine fields, dropping any `_id` (the
+/// engine mints its own).
+///
+/// Returns `None` for anything that is not a JSON object. Callers that report
+/// per-document context (`taladb_insert_many` names the offending index) set
+/// their own message; the plain document path is covered here.
 fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = v.as_object()?;
@@ -1594,7 +1768,7 @@ fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
 fn parse_filter(json: &str) -> Result<Filter, String> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("invalid filter JSON: {e}"))?;
-    if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) {
+    if v.is_null() || (v.is_object() && v.as_object().is_some_and(serde_json::Map::is_empty)) {
         return Ok(Filter::All);
     }
     json_to_filter(&v).ok_or_else(|| format!("invalid filter: {json}"))
@@ -1705,12 +1879,14 @@ pub unsafe extern "C" fn taladb_create_vector_index(
     metric: *const c_char,
     hnsw_json: *const c_char,
 ) -> i32 {
+    clear_last_error();
     let (h, col, fld) = match (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) {
         (Some(h), Some(c), Some(f)) => (h, c, f),
+        // A helper rejected one of the pointers and set the message.
         _ => return -1,
     };
     let m = parse_vector_metric(metric);
@@ -1738,12 +1914,14 @@ pub unsafe extern "C" fn taladb_drop_vector_index(
     collection: *const c_char,
     field: *const c_char,
 ) -> i32 {
+    clear_last_error();
     let (h, col, fld) = match (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) {
         (Some(h), Some(c), Some(f)) => (h, c, f),
+        // A helper rejected one of the pointers and set the message.
         _ => return -1,
     };
     match h
@@ -1767,12 +1945,14 @@ pub unsafe extern "C" fn taladb_upgrade_vector_index(
     collection: *const c_char,
     field: *const c_char,
 ) -> i32 {
+    clear_last_error();
     let (h, col, fld) = match (
-        ptr_to_ref(handle),
-        cstr_to_string(collection),
-        cstr_to_string(field),
+        unsafe { ptr_to_ref(handle) },
+        unsafe { cstr_to_string(collection) },
+        unsafe { cstr_to_string(field) },
     ) {
         (Some(h), Some(c), Some(f)) => (h, c, f),
+        // A helper rejected one of the pointers and set the message.
         _ => return -1,
     };
     match h
@@ -1845,15 +2025,16 @@ pub unsafe extern "C" fn taladb_find_nearest(
     top_k: usize,
     filter_json: *const c_char,
 ) -> *mut c_char {
-    let h = match ptr_to_ref(handle) {
+    clear_last_error();
+    let h = match unsafe { ptr_to_ref(handle) } {
         Some(h) => h,
         None => return std::ptr::null_mut(),
     };
-    let col = match cstr_to_string(collection) {
+    let col = match unsafe { cstr_to_string(collection) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
-    let fld = match cstr_to_string(field) {
+    let fld = match unsafe { cstr_to_string(field) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
@@ -1871,7 +2052,10 @@ pub unsafe extern "C" fn taladb_find_nearest(
     } else {
         match unsafe { CStr::from_ptr(filter_json) }.to_str() {
             Ok(s) => Some(s),
-            Err(_) => return std::ptr::null_mut(),
+            Err(_) => {
+                set_last_error("filter JSON is not valid UTF-8".into());
+                return std::ptr::null_mut();
+            }
         }
     };
     match run_find_nearest(&h.db, &col, &fld, query, top_k, filter) {
@@ -1907,6 +2091,7 @@ where
     F: FnOnce(&TalaDbHandle) -> Result<String, String> + Send + 'static,
 {
     if handle.is_null() {
+        set_last_error("database handle is null".into());
         return std::ptr::null_mut();
     }
     // Give the worker owned, Arc-backed database state. The opaque FFI handle
@@ -1936,7 +2121,9 @@ where
 /// Non-blocking poll. Returns 1 if the job has finished, 0 if still running.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_poll(job: *mut TalaDbJob) -> i32 {
+    clear_last_error();
     if job.is_null() {
+        set_last_error("job handle is null".into());
         return -1;
     }
     let job = unsafe { &*job };
@@ -1953,7 +2140,9 @@ pub unsafe extern "C" fn taladb_job_poll(job: *mut TalaDbJob) -> i32 {
 /// Caller must free the returned string with `taladb_free_string`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_char {
+    clear_last_error();
     if job.is_null() {
+        set_last_error("job handle is null".into());
         return std::ptr::null_mut();
     }
     let job = unsafe { Box::from_raw(job) };
@@ -1997,6 +2186,7 @@ pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_c
 /// original database handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
+    clear_last_error();
     if job.is_null() {
         return;
     }
@@ -2025,18 +2215,21 @@ pub unsafe extern "C" fn taladb_find_nearest_start(
     top_k: usize,
     filter_json: *const c_char,
 ) -> *mut TalaDbJob {
+    clear_last_error();
     if handle.is_null() {
+        set_last_error("database handle is null".into());
         return std::ptr::null_mut();
     }
-    let col = match cstr_to_string(collection) {
+    let col = match unsafe { cstr_to_string(collection) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
-    let fld = match cstr_to_string(field) {
+    let fld = match unsafe { cstr_to_string(field) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
     if query_ptr.is_null() && query_len != 0 {
+        set_last_error("query vector pointer is null but its length is non-zero".into());
         return std::ptr::null_mut();
     }
     // Copy the query vector so the caller doesn't have to keep it alive.
@@ -2048,7 +2241,7 @@ pub unsafe extern "C" fn taladb_find_nearest_start(
     let filter_owned: Option<String> = if filter_json.is_null() {
         None
     } else {
-        cstr_to_string(filter_json)
+        unsafe { cstr_to_string(filter_json) }
     };
 
     spawn_job(handle, move |h| {
@@ -2072,14 +2265,16 @@ pub unsafe extern "C" fn taladb_find_start(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> *mut TalaDbJob {
+    clear_last_error();
     if handle.is_null() {
+        set_last_error("database handle is null".into());
         return std::ptr::null_mut();
     }
-    let col = match cstr_to_string(collection) {
+    let col = match unsafe { cstr_to_string(collection) } {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
-    let filter_owned = cstr_to_string(filter_json).unwrap_or_else(|| "{}".to_string());
+    let filter_owned = unsafe { cstr_to_string(filter_json) }.unwrap_or_else(|| "{}".to_string());
 
     spawn_job(handle, move |h| {
         let collection = h.db.collection(&col).map_err(|e| e.to_string())?;
@@ -2209,5 +2404,148 @@ mod tests {
         assert!(handle.is_null());
         let error = unsafe { CStr::from_ptr(taladb_last_error()) }.to_string_lossy();
         assert!(error.contains("must start with http:// or https://"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Error-reporting contract
+    // -----------------------------------------------------------------------
+
+    /// Open a scratch database, returning the handle and the tempdir that must
+    /// outlive it.
+    fn open_temp_db() -> (*mut TalaDbHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = CString::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let handle = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!handle.is_null(), "test database should open");
+        (handle, dir)
+    }
+
+    fn last_error() -> Option<String> {
+        let ptr = taladb_last_error();
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        }
+    }
+
+    fn cstr(s: &str) -> CString {
+        CString::new(s).unwrap()
+    }
+
+    /// The bug: `LAST_ERROR` was only ever written, never cleared, so after any
+    /// successful call `taladb_last_error()` still returned the message from
+    /// whatever failed earlier on this thread.
+    #[test]
+    fn success_clears_the_previous_error() {
+        let (handle, _dir) = open_temp_db();
+        let col = cstr("books");
+
+        // Fail once to put a message in the slot.
+        let bad = cstr("not a json object");
+        assert!(unsafe { taladb_insert(handle, col.as_ptr(), bad.as_ptr()) }.is_null());
+        assert!(last_error().is_some(), "failure must report");
+
+        // Now succeed. The stale message must be gone.
+        let doc = cstr(r#"{"title":"Noli Me Tangere"}"#);
+        let id = unsafe { taladb_insert(handle, col.as_ptr(), doc.as_ptr()) };
+        assert!(!id.is_null(), "insert should succeed");
+        assert_eq!(
+            last_error(),
+            None,
+            "a successful call must not leave the previous call's error readable"
+        );
+
+        unsafe {
+            taladb_free_string(id);
+            taladb_close(handle);
+        }
+    }
+
+    /// Reading the error must not itself clear it — JS calls it once and may
+    /// read the pointer twice.
+    #[test]
+    fn reading_the_error_is_idempotent() {
+        let (handle, _dir) = open_temp_db();
+        let col = cstr("books");
+        let bad = cstr("[]");
+        assert!(unsafe { taladb_insert(handle, col.as_ptr(), bad.as_ptr()) }.is_null());
+
+        let first = last_error().expect("error expected");
+        let second = last_error().expect("error must still be readable");
+        assert_eq!(first, second);
+
+        unsafe { taladb_close(handle) };
+    }
+
+    /// Every argument-rejection path used to return NULL/-1 with no message at
+    /// all, so JS saw a failure it could not explain.
+    #[test]
+    fn null_arguments_report_a_message() {
+        let col = cstr("books");
+        let doc = cstr("{}");
+
+        assert!(
+            unsafe { taladb_insert(std::ptr::null_mut(), col.as_ptr(), doc.as_ptr()) }.is_null()
+        );
+        assert!(
+            last_error().unwrap().contains("handle is null"),
+            "a null handle must say so"
+        );
+
+        let (handle, _dir) = open_temp_db();
+        assert!(
+            unsafe { taladb_insert(handle, std::ptr::null(), doc.as_ptr()) }.is_null()
+        );
+        assert!(last_error().unwrap().contains("null"));
+
+        // Integer-returning functions take the same path.
+        assert_eq!(unsafe { taladb_compact(std::ptr::null_mut()) }, -1);
+        assert!(last_error().unwrap().contains("handle is null"));
+
+        unsafe { taladb_close(handle) };
+    }
+
+    /// The bug: `insert_many` used `filter_map`, so a document that failed to
+    /// parse was dropped and the returned id array came back short — with no
+    /// indication which input it corresponded to.
+    #[test]
+    fn insert_many_rejects_the_batch_and_names_the_bad_index() {
+        let (handle, _dir) = open_temp_db();
+        let col = cstr("books");
+        let docs = cstr(r#"[{"title":"a"},"not an object",{"title":"c"}]"#);
+
+        let result = unsafe { taladb_insert_many(handle, col.as_ptr(), docs.as_ptr()) };
+        assert!(result.is_null(), "a bad element must fail the whole call");
+
+        let err = last_error().expect("must report");
+        assert!(err.contains("index 1"), "must name the offending index: {err}");
+
+        // And nothing was written — no partial batch.
+        let filter = cstr("{}");
+        let count = unsafe { taladb_count(handle, col.as_ptr(), filter.as_ptr()) };
+        assert_eq!(count, 0, "a rejected batch must not insert anything");
+
+        unsafe { taladb_close(handle) };
+    }
+
+    /// The all-or-nothing rule must not cost the happy path.
+    #[test]
+    fn insert_many_still_inserts_a_valid_batch() {
+        let (handle, _dir) = open_temp_db();
+        let col = cstr("books");
+        let docs = cstr(r#"[{"title":"a"},{"title":"b"},{"title":"c"}]"#);
+
+        let result = unsafe { taladb_insert_many(handle, col.as_ptr(), docs.as_ptr()) };
+        assert!(!result.is_null());
+        let ids: Vec<String> =
+            serde_json::from_str(&unsafe { CStr::from_ptr(result) }.to_string_lossy()).unwrap();
+        assert_eq!(ids.len(), 3, "every input document gets an id back");
+        assert_eq!(last_error(), None);
+
+        unsafe {
+            taladb_free_string(result);
+            taladb_close(handle);
+        }
     }
 }

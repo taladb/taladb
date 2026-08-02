@@ -182,21 +182,21 @@ pub struct IndexDef {
 }
 
 pub fn meta_key(collection: &str, field: &str) -> String {
-    format!("{}::{}", collection, field)
+    format!("{collection}::{field}")
 }
 
 pub fn index_table_name(collection: &str, field: &str) -> String {
-    format!("idx::{}::{}", collection, field)
+    format!("idx::{collection}::{field}")
 }
 
 pub fn docs_table_name(collection: &str) -> String {
-    format!("docs::{}", collection)
+    format!("docs::{collection}")
 }
 
 /// Table that stores delete tombstones so deletions can propagate via sync.
 /// Key: ULID bytes (16 B).  Value: postcard-encoded `i64` wall-clock timestamp (ms).
 pub fn tomb_table_name(collection: &str) -> String {
-    format!("tomb::{}", collection)
+    format!("tomb::{collection}")
 }
 
 /// Table that holds documents rejected by an import-time validator.
@@ -206,7 +206,7 @@ pub fn tomb_table_name(collection: &str) -> String {
 /// operator (or a later migration) can inspect and recover it.
 /// Key: ULID bytes (16 B).  Value: postcard-encoded [`crate::sync::QuarantineRecord`].
 pub fn quarantine_table_name(collection: &str) -> String {
-    format!("quarantine::{}", collection)
+    format!("quarantine::{collection}")
 }
 
 pub const META_INDEXES_TABLE: &str = "meta::indexes";
