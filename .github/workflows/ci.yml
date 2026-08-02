@@ -1,10 +1,12 @@
 name: CI
 
 on:
-  # Post-merge validation only. Feature/dev branches are covered by the
-  # pull_request event below — running both would double every run.
+  # Post-merge validation on the long-lived branches. Feature branches are
+  # covered by the pull_request event below; a PR *into* dev or main will run
+  # twice once merged (once for the PR, once for the push), which is the point —
+  # the second run validates the merge result, not the branch in isolation.
   push:
-    branches: [main]
+    branches: [main, dev]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -30,14 +32,14 @@ jobs:
   # ---------------------------------------------------------------------------
   # Resolve the cross-platform build matrix.
   #
-  # macOS runners bill at 10x the Linux rate and Windows at 2x, so PRs build
-  # Linux only. The full three-OS matrix runs post-merge on `main` (and on
-  # manual dispatch), which is what gates releases anyway — `release.yml`
-  # rebuilds every platform artifact from the tag.
+  # macOS runners bill at 10x the Linux rate and Windows at 2x, so pull requests
+  # and pushes to `dev` build Linux only. The full three-OS matrix runs
+  # post-merge on `main` (and on manual dispatch), which is what gates releases
+  # anyway — `release.yml` rebuilds every platform artifact from the tag.
   #
   # Trade-off: a Windows- or macOS-only compile break surfaces on `main`
-  # rather than in the PR. Run the workflow manually (Actions → CI → Run
-  # workflow) on a branch touching platform-specific code to check early.
+  # rather than in the PR or on `dev`. Run the workflow manually (Actions → CI →
+  # Run workflow) on a branch touching platform-specific code to check early.
   # ---------------------------------------------------------------------------
   setup:
     name: Setup — resolve build matrix
@@ -49,7 +51,11 @@ jobs:
       - name: Pick matrix for ${{ github.event_name }}
         id: matrix
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # Pull requests and pushes to `dev` build Linux only. `dev` sees far
+          # more pushes than `main`, and the full matrix costs 10x per macOS
+          # minute — the cross-platform check belongs at the `main` merge, which
+          # is what gates a release.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.ref }}" = "refs/heads/dev" ]; then
             node='[{"os":"ubuntu-latest","artifact":"taladb-node-linux"}]'
             cli='[{"os":"ubuntu-latest","artifact":"taladb-linux-x86_64","bin":"taladb"}]'
           else

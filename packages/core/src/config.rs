@@ -48,16 +48,25 @@ const LOCALHOST_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "::1"];
 ///
 /// `host` excludes any port and userinfo, and keeps the brackets on an IPv6
 /// literal, matching what `Url::host_str` returned.
-fn split_http_endpoint(raw: &str) -> Option<(&str, &str)> {
-    let (scheme, rest) = raw.split_once("://")?;
+///
+/// The `Err` is the reason fragment appended to the error message. The two
+/// variants are kept distinct because callers assert on them: a wrong scheme
+/// and a missing host are different mistakes and were reported differently
+/// before this function replaced `url::Url::parse`.
+fn split_http_endpoint(raw: &str) -> Result<(&str, &str), &'static str> {
+    const BAD_SCHEME: &str = "must start with http:// or https://";
+    const MISSING_HOST: &str = "missing host";
+
+    let (scheme, rest) = raw.split_once("://").ok_or(BAD_SCHEME)?;
     if scheme != "http" && scheme != "https" {
-        return None;
+        return Err(BAD_SCHEME);
     }
     // Authority runs up to the first '/', '?' or '#'.
     let authority = rest
         .split(['/', '?', '#'])
         .next()
-        .filter(|a| !a.is_empty())?;
+        .filter(|a| !a.is_empty())
+        .ok_or(MISSING_HOST)?;
     // Drop userinfo (`user:pass@host`); the last '@' wins, as in RFC 3986.
     let hostport = match authority.rsplit_once('@') {
         Some((_, after)) => after,
@@ -66,16 +75,16 @@ fn split_http_endpoint(raw: &str) -> Option<(&str, &str)> {
     // An IPv6 literal is bracketed, and its colons are not port separators.
     let host = if let Some(close) = hostport.find(']') {
         if !hostport.starts_with('[') {
-            return None;
+            return Err(MISSING_HOST);
         }
         &hostport[..=close]
     } else {
-        hostport.split(':').next()?
+        hostport.split(':').next().ok_or(MISSING_HOST)?
     };
     if host.is_empty() || host.contains(char::is_whitespace) {
-        return None;
+        return Err(MISSING_HOST);
     }
-    Some((scheme, host))
+    Ok((scheme, host))
 }
 
 // ---------------------------------------------------------------------------
@@ -178,11 +187,8 @@ impl TalaDbConfig {
         .into_iter()
         .flatten()
         {
-            let (scheme, host) = split_http_endpoint(raw).ok_or_else(|| {
-                TalaDbError::Config(format!(
-                    "invalid endpoint URL \"{raw}\" — must be an absolute \
-                     http:// or https:// URL with a host"
-                ))
+            let (scheme, host) = split_http_endpoint(raw).map_err(|reason| {
+                TalaDbError::Config(format!("invalid endpoint URL \"{raw}\" — {reason}"))
             })?;
             // Warn when a non-localhost HTTP endpoint is used — changesets are
             // transmitted without encryption and are vulnerable to interception.
@@ -403,6 +409,38 @@ unknown_top_level: "ignored"
         assert!(err.to_string().contains("invalid endpoint URL"));
     }
 
+    /// The wording of these two messages is a public contract — the React
+    /// Native binding asserts on the scheme message, and it broke when this
+    /// validation stopped using `url::Url::parse` and collapsed every failure
+    /// into one generic string. Pin both here so core catches it first.
+    #[test]
+    fn endpoint_errors_distinguish_scheme_from_host() {
+        let bad_scheme = TalaDbConfig {
+            sync: SyncConfig {
+                enabled: true,
+                endpoint: Some("file:///not-http".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = bad_scheme.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("must start with http:// or https://"),
+            "got: {err}"
+        );
+
+        let no_host = TalaDbConfig {
+            sync: SyncConfig {
+                enabled: true,
+                endpoint: Some("https:///path-only".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = no_host.validate().unwrap_err().to_string();
+        assert!(err.contains("missing host"), "got: {err}");
+    }
+
     #[test]
     fn validates_per_event_endpoints() {
         let f = write_tmp(
@@ -492,23 +530,30 @@ sync:
             ("http://[::1]:9000/sync", ("http", "[::1]")),
             ("https://api.example.com?q=1", ("https", "api.example.com")),
         ] {
-            assert_eq!(split_http_endpoint(raw), Some(want), "for {raw}");
+            assert_eq!(split_http_endpoint(raw), Ok(want), "for {raw}");
         }
     }
 
     #[test]
     fn endpoint_split_rejects_non_http_and_hostless() {
-        for raw in [
-            "ftp://wrong.example.com",
-            "/relative/path",
-            "not-a-url",
-            "https://",
-            "https:///path-only",
-            "://no-scheme",
-            "https://has space/x",
-            "",
+        // Paired with the reason each one is rejected for, so the two error
+        // messages stay distinguishable — see
+        // `endpoint_errors_distinguish_scheme_from_host`.
+        for (raw, want_reason) in [
+            ("ftp://wrong.example.com", "must start with"),
+            ("/relative/path", "must start with"),
+            ("not-a-url", "must start with"),
+            ("://no-scheme", "must start with"),
+            ("", "must start with"),
+            ("https://", "missing host"),
+            ("https:///path-only", "missing host"),
+            ("https://has space/x", "missing host"),
         ] {
-            assert_eq!(split_http_endpoint(raw), None, "should reject {raw}");
+            let err = split_http_endpoint(raw).unwrap_err();
+            assert!(
+                err.contains(want_reason),
+                "for {raw}: expected {want_reason:?}, got {err:?}"
+            );
         }
     }
 
