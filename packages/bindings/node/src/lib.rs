@@ -11,28 +11,7 @@ use taladb_core::{
 };
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
-    let code = match &e {
-        TalaDbError::Storage(_) => "Storage",
-        TalaDbError::Serialization(_) => "Serialization",
-        TalaDbError::NotFound => "NotFound",
-        TalaDbError::InvalidFilter(_) => "InvalidFilter",
-        TalaDbError::IndexExists(_) => "IndexExists",
-        TalaDbError::IndexNotFound(_) => "IndexNotFound",
-        TalaDbError::Migration(_) => "Migration",
-        TalaDbError::TypeError { .. } => "TypeError",
-        TalaDbError::Encryption(_) => "Encryption",
-        TalaDbError::WatchClosed => "WatchClosed",
-        TalaDbError::WatchBackpressure => "WatchBackpressure",
-        TalaDbError::InvalidSnapshot => "InvalidSnapshot",
-        TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
-        TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
-        TalaDbError::InvalidOperation(_) => "InvalidOperation",
-        TalaDbError::Config(_) => "Config",
-        TalaDbError::InvalidName(_) => "InvalidName",
-        TalaDbError::QueryTimeout => "QueryTimeout",
-        TalaDbError::ChangesetTooLarge => "ChangesetTooLarge",
-    };
-    napi::Error::from_reason(format!("{}: {}", code, e))
+    napi::Error::from_reason(format!("{}: {}", e.code(), e))
 }
 
 // ---------------------------------------------------------------------------
@@ -243,8 +222,7 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
             ),
             _ => {
                 return Err(napi::Error::from_reason(format!(
-                    "unknown operator: {}",
-                    op
+                    "unknown operator: {op}"
                 )));
             }
         };
@@ -456,7 +434,7 @@ impl TalaDBNode {
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
         let db = Database::open_in_memory().map_err(err_to_napi)?;
-        Ok(TalaDBNode {
+        Ok(Self {
             inner: Some(db),
             sync_hook: None,
         })
@@ -486,7 +464,7 @@ impl TalaDBNode {
             db.set_durability(!cfg.durability.flush_every_write);
         }
         let sync_hook = build_sync_hook(config_json)?;
-        Ok(TalaDBNode {
+        Ok(Self {
             inner: Some(db),
             sync_hook,
         })
@@ -675,7 +653,7 @@ impl CollectionNode {
         let items: napi::Result<Vec<Vec<(String, Value)>>> =
             docs.into_iter().map(obj_to_fields).collect();
         let ids = self.inner.insert_many(items?).map_err(err_to_napi)?;
-        Ok(ids.iter().map(|id| id.to_string()).collect())
+        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
     }
 
     /// Upsert many documents **by caller-supplied `_id`**, in one commit.
@@ -699,7 +677,7 @@ impl CollectionNode {
             .inner
             .replace_many_with_ids(items?, parse_write_origin(&origin)?)
             .map_err(err_to_napi)?;
-        Ok(ids.iter().map(|id| id.to_string()).collect())
+        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
     }
 
     /// Delete many documents by id, in one commit. Returns the number removed.
@@ -938,7 +916,7 @@ impl CollectionNode {
         query.candidates = options
             .as_ref()
             .and_then(|o| o.get("candidates"))
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .map(|v| v as usize);
 
         let results = self.inner.hybrid_search(query).map_err(err_to_napi)?;
@@ -1152,10 +1130,10 @@ impl CollectionNode {
 fn parse_bm25_options(options: Option<&JsonValue>) -> taladb_core::bm25::Bm25Params {
     let mut params = taladb_core::bm25::Bm25Params::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("k1").and_then(serde_json::Value::as_f64) {
             params.k1 = v as f32;
         }
-        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("b").and_then(serde_json::Value::as_f64) {
             params.b = v as f32;
         }
     }
@@ -1166,13 +1144,13 @@ fn parse_bm25_options(options: Option<&JsonValue>) -> taladb_core::bm25::Bm25Par
 fn parse_rrf_options(options: Option<&JsonValue>) -> taladb_core::bm25::RrfParams {
     let mut params = taladb_core::bm25::RrfParams::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("rrfK").and_then(serde_json::Value::as_f64) {
             params.k = v as f32;
         }
-        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("textWeight").and_then(serde_json::Value::as_f64) {
             params.text_weight = v as f32;
         }
-        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("vectorWeight").and_then(serde_json::Value::as_f64) {
             params.vector_weight = v as f32;
         }
     }
@@ -1272,7 +1250,7 @@ impl Task for InsertManyTask {
             .take()
             .ok_or_else(|| napi::Error::from_reason("insertMany task already consumed"))?;
         let ids = self.collection.insert_many(items).map_err(err_to_napi)?;
-        Ok(ids.iter().map(|id| id.to_string()).collect())
+        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -1299,7 +1277,7 @@ impl Task for ReplaceManyWithIdsTask {
             .collection
             .replace_many_with_ids(docs, self.origin)
             .map_err(err_to_napi)?;
-        Ok(ids.iter().map(|id| id.to_string()).collect())
+        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

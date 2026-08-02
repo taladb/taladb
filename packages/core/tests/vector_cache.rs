@@ -9,7 +9,7 @@ use taladb_core::Database;
 use taladb_core::document::{Document, Value};
 
 fn vec_val(v: &[f32]) -> Value {
-    Value::Array(v.iter().map(|f| Value::Float(*f as f64)).collect())
+    Value::Array(v.iter().map(|f| Value::Float(f64::from(*f))).collect())
 }
 
 fn insert_vec(col: &taladb_core::Collection, title: &str, v: &[f32]) -> taladb_core::Ulid {

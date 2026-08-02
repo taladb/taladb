@@ -13,6 +13,38 @@ version = "0.10.2"
 edition = "2024"
 authors = ["taladb"]
 license = "Apache-2.0"
+repository = "https://github.com/taladb/taladb"
+homepage = "https://github.com/taladb/taladb"
+# Let-chains (`if let … && let …`) in edition 2024 stabilised in 1.88; the query
+# and collection paths use them throughout, so that is the real floor. Raising
+# this is a breaking change for downstream users — bump it deliberately.
+rust-version = "1.88"
+
+# Lints are declared once here and inherited by every crate via
+# `[lints] workspace = true`, so a rule can't drift between the core engine and
+# the bindings. Only lints the tree is currently clean under are listed: a lint
+# that fires on existing code is a lint people learn to ignore.
+[workspace.lints.rust]
+# An `unsafe fn` body is not implicitly an unsafe block. Denying this is what
+# forces the React Native FFI to mark each pointer dereference at its call site
+# rather than inheriting a blanket exemption from the function signature.
+unsafe_op_in_unsafe_fn = "deny"
+# NOTE: `unreachable_pub` is deliberately absent. `#[wasm_bindgen]` requires the
+# functions it exports to be literally `pub`, but they are not reachable through
+# the crate root, so the lint fires on every binding and its suggested fix
+# (`pub(crate)`) is code wasm-bindgen refuses to compile.
+
+[workspace.lints.clippy]
+uninlined_format_args = "warn"
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+use_self = "warn"
+# Numeric conversions that can silently truncate. `cast_possible_truncation` is
+# deliberately *not* enabled: ~100 of the casts here are provably in range and
+# annotating each would bury the handful that aren't. The ones that mattered —
+# `u64` skip/limit values narrowed to `usize` on 32-bit wasm — now go through
+# `usize::try_from`.
+cast_lossless = "warn"
 
 [profile.release]
 opt-level = 3
@@ -28,3 +60,11 @@ codegen-units = 1
 # controlled by the `wasm-opt` flags in
 # `packages/bindings/web/Cargo.toml` under
 # `[package.metadata.wasm-pack.profile.release]`, which wasm-pack does honour.
+
+# Benchmarks inherit `release` optimisation but keep debug symbols, so a profile
+# shows real function names instead of a wall of inlined addresses.
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true

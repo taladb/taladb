@@ -77,7 +77,7 @@ impl OpfsBackend {
             .expect("opfs: sync access handle has no write method")
             .dyn_into()
             .expect("opfs: write is not a function");
-        OpfsBackend {
+        Self {
             handle,
             read_fn,
             write_fn,
@@ -113,7 +113,7 @@ impl OpfsBackend {
         let result = self
             .read_fn
             .call2(self.handle.as_ref(), &view, opts)
-            .map_err(|e| io_err(&format!("opfs read: {:?}", e)))?;
+            .map_err(|e| io_err(&format!("opfs read: {e:?}")))?;
 
         let n = result
             .as_f64()
@@ -133,7 +133,7 @@ impl OpfsBackend {
         let opts = self.opts_at(offset)?;
         self.write_fn
             .call2(self.handle.as_ref(), &buf, opts)
-            .map_err(|e| io_err(&format!("opfs write: {:?}", e)))?;
+            .map_err(|e| io_err(&format!("opfs write: {e:?}")))?;
 
         Ok(())
     }
@@ -148,7 +148,7 @@ impl redb::StorageBackend for OpfsBackend {
         self.handle
             .get_size()
             .map(|s| s as u64)
-            .map_err(|e| io_err(&format!("opfs get_size: {:?}", e)))
+            .map_err(|e| io_err(&format!("opfs get_size: {e:?}")))
     }
 
     fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
@@ -158,13 +158,13 @@ impl redb::StorageBackend for OpfsBackend {
     fn set_len(&self, new_len: u64) -> Result<(), io::Error> {
         self.handle
             .truncate_with_f64(new_len as f64)
-            .map_err(|e| io_err(&format!("opfs truncate: {:?}", e)))
+            .map_err(|e| io_err(&format!("opfs truncate: {e:?}")))
     }
 
     fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
         self.handle
             .flush()
-            .map_err(|e| io_err(&format!("opfs flush: {:?}", e)))
+            .map_err(|e| io_err(&format!("opfs flush: {e:?}")))
     }
 
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {

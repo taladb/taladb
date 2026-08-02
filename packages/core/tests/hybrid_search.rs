@@ -38,7 +38,7 @@ fn db_with(rows: &[(&str, &str, [f32; 4], &str)]) -> Database {
             ("locale".into(), Value::Str((*locale).into())),
             (
                 "embedding".into(),
-                Value::Array(vec.iter().map(|f| Value::Float(*f as f64)).collect()),
+                Value::Array(vec.iter().map(|f| Value::Float(f64::from(*f))).collect()),
             ),
         ])
         .unwrap();

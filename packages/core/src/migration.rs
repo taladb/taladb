@@ -149,7 +149,7 @@ pub fn rebuild_compound_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErro
     }
 
     for def in &defs {
-        let fields: Vec<&str> = def.fields.iter().map(|s| s.as_str()).collect();
+        let fields: Vec<&str> = def.fields.iter().map(std::string::String::as_str).collect();
         let ctable = compound_table_name(&def.collection, &fields);
 
         let old_keys = txn.range(&ctable, Bound::Unbounded, Bound::Unbounded)?;

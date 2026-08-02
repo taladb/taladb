@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "TalaDB C FFI layer for React Native JSI"
+
+[lints]
+workspace = true
 
 [lib]
 name = "taladb_ffi"
@@ -15,3 +21,6 @@ crate-type = ["staticlib", "cdylib"]
 [dependencies]
 taladb-core = { path = "../../../core", features = ["sync-http", "encryption"] }
 serde_json   = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"

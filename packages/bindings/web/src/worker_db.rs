@@ -376,9 +376,9 @@ impl WorkerDB {
 
     /// Open an in-memory database (for tests and OPFS-unavailable fallback).
     #[wasm_bindgen(js_name = openInMemory)]
-    pub fn open_in_memory() -> Result<WorkerDB, JsValue> {
+    pub fn open_in_memory() -> Result<Self, JsValue> {
         let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(WorkerDB {
+        Ok(Self {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
@@ -396,13 +396,13 @@ impl WorkerDB {
     /// const workerDb = WorkerDB.openWithSnapshot(bytes);
     /// ```
     #[wasm_bindgen(js_name = openWithSnapshot)]
-    pub fn open_with_snapshot(data: Option<Vec<u8>>) -> Result<WorkerDB, JsValue> {
+    pub fn open_with_snapshot(data: Option<Vec<u8>>) -> Result<Self, JsValue> {
         let db = match data {
             Some(ref bytes) if !bytes.is_empty() => Database::restore_from_snapshot(bytes)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
-        Ok(WorkerDB {
+        Ok(Self {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
@@ -493,13 +493,13 @@ impl WorkerDB {
     /// ```
     #[cfg(not(feature = "cf-workers"))]
     #[wasm_bindgen(js_name = openWithOpfs)]
-    pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<WorkerDB, JsValue> {
+    pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<Self, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let db = Database::open_with_backend(Box::new(redb_backend))
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
-        Ok(WorkerDB {
+        Ok(Self {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
@@ -619,7 +619,7 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))?
             .insert_many(items?)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+        let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -648,7 +648,7 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))?
             .replace_many_with_ids(docs?, parse_write_origin(origin)?)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+        let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -932,7 +932,7 @@ impl WorkerDB {
         query.candidates = options
             .as_ref()
             .and_then(|o| o.get("candidates"))
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .map(|v| v as usize);
 
         let results = self
@@ -1158,7 +1158,7 @@ impl WorkerDB {
     ) -> Result<String, JsValue> {
         let collections: Vec<String> = serde_json::from_str(collections_json)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let col_refs: Vec<&str> = collections.iter().map(|s| s.as_str()).collect();
+        let col_refs: Vec<&str> = collections.iter().map(std::string::String::as_str).collect();
         let changeset = LastWriteWins::new()
             .export_changes(&self.db, &col_refs, since_ms as u64)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1356,10 +1356,10 @@ fn parse_options(json: &str) -> Result<Option<serde_json::Value>, JsValue> {
 fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
     let mut params = taladb_core::bm25::Bm25Params::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("k1").and_then(serde_json::Value::as_f64) {
             params.k1 = v as f32;
         }
-        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("b").and_then(serde_json::Value::as_f64) {
             params.b = v as f32;
         }
     }
@@ -1369,13 +1369,13 @@ fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::
 fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
     let mut params = taladb_core::bm25::RrfParams::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("rrfK").and_then(serde_json::Value::as_f64) {
             params.k = v as f32;
         }
-        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("textWeight").and_then(serde_json::Value::as_f64) {
             params.text_weight = v as f32;
         }
-        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("vectorWeight").and_then(serde_json::Value::as_f64) {
             params.vector_weight = v as f32;
         }
     }

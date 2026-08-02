@@ -80,14 +80,14 @@ pub struct FieldClock {
 
 impl FieldClock {
     pub fn new(ts_ms: u64, node_id: impl Into<String>) -> Self {
-        FieldClock {
+        Self {
             ts_ms,
             node_id: node_id.into(),
         }
     }
 
     /// Returns `true` if this clock causally dominates `other` (wins the merge).
-    pub fn dominates(&self, other: &FieldClock) -> bool {
+    pub fn dominates(&self, other: &Self) -> bool {
         self.ts_ms > other.ts_ms || (self.ts_ms == other.ts_ms && self.node_id > other.node_id)
     }
 }
@@ -167,7 +167,7 @@ pub struct CrdtSyncAdapter {
 
 impl CrdtSyncAdapter {
     pub fn new(node_id: impl Into<String>) -> Self {
-        CrdtSyncAdapter {
+        Self {
             node_id: node_id.into(),
             g_set_fields: HashSet::new(),
             allowed_collections: None,

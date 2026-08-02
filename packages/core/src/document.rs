@@ -31,7 +31,7 @@ fn new_ulid() -> Ulid {
         } else {
             (ms, 0u16)
         };
-        let packed = (next_ms << 16) | (next_seq as u64);
+        let packed = (next_ms << 16) | u64::from(next_seq);
         if ULID_STATE
             .compare_exchange_weak(cur, packed, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
@@ -48,7 +48,7 @@ fn new_ulid() -> Ulid {
         .expect("taladb: system entropy source failed while generating a ULID");
     // Upper 16 bits of the random field = monotonic sequence; lower 64 bits = random.
     let rand_lo = u64::from_le_bytes(buf[..8].try_into().unwrap());
-    let random = ((seq as u128) << 64) | (rand_lo as u128);
+    let random = (u128::from(seq) << 64) | u128::from(rand_lo);
     Ulid::from_parts(ms, random)
 }
 
@@ -62,26 +62,26 @@ pub enum Value {
     Float(f64),
     Str(String),
     Bytes(Vec<u8>),
-    Array(Vec<Value>),
-    Object(Vec<(String, Value)>),
+    Array(Vec<Self>),
+    Object(Vec<(String, Self)>),
 }
 
 impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Bytes(_) => "bytes",
-            Value::Array(_) => "array",
-            Value::Object(_) => "object",
+            Self::Null => "null",
+            Self::Bool(_) => "bool",
+            Self::Int(_) => "int",
+            Self::Float(_) => "float",
+            Self::Str(_) => "string",
+            Self::Bytes(_) => "bytes",
+            Self::Array(_) => "array",
+            Self::Object(_) => "object",
         }
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self {
+        if let Self::Bool(b) = self {
             Some(*b)
         } else {
             None
@@ -89,7 +89,7 @@ impl Value {
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        if let Value::Int(n) = self {
+        if let Self::Int(n) = self {
             Some(*n)
         } else {
             None
@@ -97,7 +97,7 @@ impl Value {
     }
 
     pub fn as_float(&self) -> Option<f64> {
-        if let Value::Float(f) = self {
+        if let Self::Float(f) = self {
             Some(*f)
         } else {
             None
@@ -105,25 +105,213 @@ impl Value {
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::Str(s) = self {
+        if let Self::Str(s) = self {
             Some(s.as_str())
         } else {
             None
         }
     }
 
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        if let Self::Bytes(b) = self {
+            Some(b.as_slice())
+        } else {
+            None
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&[Self]> {
+        if let Self::Array(a) = self {
+            Some(a.as_slice())
+        } else {
+            None
+        }
+    }
+
+    /// The fields of an object value, in insertion order.
+    pub fn as_object(&self) -> Option<&[(String, Self)]> {
+        if let Self::Object(o) = self {
+            Some(o.as_slice())
+        } else {
+            None
+        }
+    }
+
+    /// Look up a key in an object value.
+    ///
+    /// Returns `None` if this is not an object, or has no such key. Objects are
+    /// a `Vec` of pairs rather than a map (to keep serialization
+    /// deterministic), so this is a linear scan — fine for the document-shaped
+    /// objects it exists for, not for large ones.
+    pub fn get(&self, key: &str) -> Option<&Self> {
+        self.as_object()?
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    }
+
+    /// True for [`Value::Null`].
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
     /// Compare two Values for ordering (used by query engine range ops).
     /// Returns None if the values are not comparable (different types).
-    pub fn partial_cmp_numeric(&self, other: &Value) -> Option<std::cmp::Ordering> {
+    pub fn partial_cmp_numeric(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
-            (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-            (Value::Int(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
-            (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
-            (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
-            (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(b),
+            (Self::Int(a), Self::Int(b)) => a.partial_cmp(b),
+            (Self::Float(a), Self::Float(b)) => a.partial_cmp(b),
+            (Self::Int(a), Self::Float(b)) => cmp_i64_f64(*a, *b),
+            (Self::Float(a), Self::Int(b)) => cmp_i64_f64(*b, *a).map(std::cmp::Ordering::reverse),
+            (Self::Str(a), Self::Str(b)) => a.partial_cmp(b),
+            (Self::Bool(a), Self::Bool(b)) => a.partial_cmp(b),
             _ => None,
         }
+    }
+}
+
+/// Build a `Value` from the Rust type that maps onto it.
+///
+/// Constructing a document meant naming the variant for every field —
+/// `("year".into(), Value::Int(1887))` — which is noise at every call site and
+/// gets worse the more fields a document has. With these, `1887.into()` works,
+/// and so does collecting an iterator of anything convertible.
+macro_rules! value_from {
+    ($($ty:ty => $variant:ident $(as $cast:ty)?),* $(,)?) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(v: $ty) -> Self {
+                    Value::$variant(v $(as $cast)?)
+                }
+            }
+        )*
+    };
+}
+
+value_from! {
+    bool => Bool,
+    i8 => Int as i64,
+    i16 => Int as i64,
+    i32 => Int as i64,
+    i64 => Int,
+    u8 => Int as i64,
+    u16 => Int as i64,
+    u32 => Int as i64,
+    f32 => Float as f64,
+    f64 => Float,
+    String => Str,
+    Vec<u8> => Bytes,
+    Vec<Value> => Array,
+    Vec<(String, Value)> => Object,
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Self::Str(v.to_owned())
+    }
+}
+
+impl From<&[u8]> for Value {
+    fn from(v: &[u8]) -> Self {
+        Self::Bytes(v.to_vec())
+    }
+}
+
+/// `None` becomes [`Value::Null`] — the document model has no notion of an
+/// absent-but-present field, so an optional field is either null or omitted.
+impl<T: Into<Self>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Self::Null, Into::into)
+    }
+}
+
+impl<T: Into<Self>> FromIterator<T> for Value {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::Array(iter.into_iter().map(Into::into).collect())
+    }
+}
+
+/// Human-readable rendering, for logs, error messages, and `{}` in tests.
+///
+/// This is **not** a serialization format — it is lossy on purpose (`Bytes`
+/// renders as a length, not its contents) and must not be parsed. Use serde for
+/// round-tripping.
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => f.write_str("null"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Int(n) => write!(f, "{n}"),
+            Self::Float(x) => write!(f, "{x}"),
+            Self::Str(s) => f.write_str(s),
+            Self::Bytes(b) => write!(f, "<{} bytes>", b.len()),
+            Self::Array(items) => {
+                f.write_str("[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str("]")
+            }
+            Self::Object(fields) => {
+                f.write_str("{")?;
+                for (i, (key, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{key}: {value}")?;
+                }
+                f.write_str("}")
+            }
+        }
+    }
+}
+
+/// Order an `i64` against an `f64` exactly, without routing either through the
+/// other's type.
+///
+/// `i64 as f64` silently rounds above 2^53, which made `$gt`/`$lt` return the
+/// wrong answer for large integers: `Int(9007199254740993)` rounds to
+/// `9007199254740992.0` and compared `Equal` to that float instead of
+/// `Greater`. `f64 as i64` is worse — it saturates, so every float past
+/// `i64::MAX` collapsed onto the same integer.
+///
+/// Instead: reject NaN, handle the out-of-i64-range floats by sign, then split
+/// the remaining float into its integer and fractional parts and compare in the
+/// integer domain. Every step is exact.
+fn cmp_i64_f64(a: i64, b: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+
+    if b.is_nan() {
+        return None;
+    }
+    // 2^63 — the first f64 above `i64::MAX`. Both bounds are exactly
+    // representable, so these comparisons are themselves exact.
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    if b >= TWO_POW_63 {
+        return Some(Ordering::Less);
+    }
+    if b < -TWO_POW_63 {
+        return Some(Ordering::Greater);
+    }
+
+    // `b` now sits in [i64::MIN, i64::MAX], so truncation is lossless.
+    let truncated = b.trunc();
+    let whole = truncated as i64;
+    match a.cmp(&whole) {
+        // Equal integer parts — the fraction breaks the tie. `trunc` rounds
+        // toward zero, so a positive fraction makes `b` larger and a negative
+        // one makes it smaller.
+        Ordering::Equal => Some(if b > truncated {
+            Ordering::Less
+        } else if b < truncated {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }),
+        ord => Some(ord),
     }
 }
 
@@ -168,7 +356,7 @@ pub fn derive_doc_id(collection: &str, key: &str) -> Ulid {
         .chain(SEPARATOR.iter())
         .chain(key.as_bytes().iter())
     {
-        hash ^= byte as u128;
+        hash ^= u128::from(byte);
         hash = hash.wrapping_mul(FNV1A128_PRIME);
     }
     Ulid::from_bytes(hash.to_be_bytes())
@@ -183,14 +371,14 @@ pub struct Document {
 
 impl Document {
     pub fn new(fields: Vec<(String, Value)>) -> Self {
-        Document {
+        Self {
             id: new_ulid(),
             fields: dedupe_fields(fields),
         }
     }
 
     pub fn with_id(id: Ulid, fields: Vec<(String, Value)>) -> Self {
-        Document {
+        Self {
             id,
             fields: dedupe_fields(fields),
         }
@@ -293,6 +481,136 @@ fn value_get_nested_depth<'a>(val: &'a Value, path: &str, depth: u8) -> Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cmp::Ordering;
+
+    /// Integers past 2^53 have no exact `f64`, so the old `a as f64` cast made
+    /// range queries answer `Equal` where the true answer is `Greater`/`Less`.
+    #[test]
+    fn int_float_comparison_is_exact_beyond_2_pow_53() {
+        // 2^53 + 1 — the first integer f64 cannot represent. It rounds down to
+        // 2^53, which is the float we compare it against.
+        let big = Value::Int(9_007_199_254_740_993);
+        let as_float = Value::Float(9_007_199_254_740_992.0);
+        assert_eq!(big.partial_cmp_numeric(&as_float), Some(Ordering::Greater));
+        assert_eq!(as_float.partial_cmp_numeric(&big), Some(Ordering::Less));
+
+        // Same story at the bottom of the range.
+        let small = Value::Int(-9_007_199_254_740_993);
+        let small_float = Value::Float(-9_007_199_254_740_992.0);
+        assert_eq!(small.partial_cmp_numeric(&small_float), Some(Ordering::Less));
+        assert_eq!(
+            small_float.partial_cmp_numeric(&small),
+            Some(Ordering::Greater)
+        );
+    }
+
+    /// `f64 as i64` saturates, so floats beyond the integer range must be
+    /// handled by sign rather than by casting.
+    #[test]
+    fn int_float_comparison_handles_out_of_range_floats() {
+        let max = Value::Int(i64::MAX);
+        let min = Value::Int(i64::MIN);
+
+        assert_eq!(max.partial_cmp_numeric(&Value::Float(1e300)), Some(Ordering::Less));
+        assert_eq!(
+            min.partial_cmp_numeric(&Value::Float(-1e300)),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            max.partial_cmp_numeric(&Value::Float(f64::INFINITY)),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            min.partial_cmp_numeric(&Value::Float(f64::NEG_INFINITY)),
+            Some(Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn int_float_comparison_handles_fractions_and_nan() {
+        // Fractions break ties on equal integer parts, in both sign directions.
+        assert_eq!(
+            Value::Int(3).partial_cmp_numeric(&Value::Float(3.5)),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            Value::Int(-3).partial_cmp_numeric(&Value::Float(-3.5)),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            Value::Int(3).partial_cmp_numeric(&Value::Float(3.0)),
+            Some(Ordering::Equal)
+        );
+
+        // NaN stays incomparable, as it was before.
+        assert_eq!(Value::Int(1).partial_cmp_numeric(&Value::Float(f64::NAN)), None);
+        assert_eq!(Value::Float(f64::NAN).partial_cmp_numeric(&Value::Int(1)), None);
+    }
+
+    #[test]
+    fn value_from_impls_cover_the_rust_types_that_map_onto_it() {
+        assert_eq!(Value::from(true), Value::Bool(true));
+        assert_eq!(Value::from(42i32), Value::Int(42));
+        assert_eq!(Value::from(42u8), Value::Int(42));
+        assert_eq!(Value::from(1.5f32), Value::Float(1.5));
+        assert_eq!(Value::from("hi"), Value::Str("hi".into()));
+        assert_eq!(Value::from(String::from("hi")), Value::Str("hi".into()));
+        assert_eq!(Value::from(vec![1u8, 2]), Value::Bytes(vec![1, 2]));
+
+        // Optionals collapse to null rather than being dropped.
+        assert_eq!(Value::from(None::<i64>), Value::Null);
+        assert_eq!(Value::from(Some(7i64)), Value::Int(7));
+
+        // Collecting builds an array without naming the variant.
+        let arr: Value = [1i64, 2, 3].into_iter().collect();
+        assert_eq!(
+            arr,
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn value_accessors_cover_every_variant() {
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Int(1).as_int(), Some(1));
+        assert_eq!(Value::Float(1.5).as_float(), Some(1.5));
+        assert_eq!(Value::Str("s".into()).as_str(), Some("s"));
+        assert_eq!(Value::Bytes(vec![1, 2]).as_bytes(), Some(&[1u8, 2][..]));
+        assert_eq!(Value::Array(vec![Value::Int(1)]).as_array().unwrap().len(), 1);
+        assert!(Value::Null.is_null());
+
+        let obj = Value::Object(vec![("a".into(), Value::Int(1))]);
+        assert_eq!(obj.as_object().unwrap().len(), 1);
+        assert_eq!(obj.get("a"), Some(&Value::Int(1)));
+        assert_eq!(obj.get("missing"), None);
+
+        // Accessors are type-checked, not coercing.
+        assert_eq!(Value::Int(1).as_str(), None);
+        assert_eq!(Value::Str("1".into()).as_int(), None);
+        assert_eq!(Value::Int(1).get("a"), None);
+    }
+
+    #[test]
+    fn value_display_is_readable_and_hides_byte_contents() {
+        assert_eq!(Value::Null.to_string(), "null");
+        assert_eq!(Value::Int(1887).to_string(), "1887");
+        assert_eq!(Value::Str("Rizal".into()).to_string(), "Rizal");
+        // Bytes render as a length: dumping a blob into a log line is never
+        // what the caller wanted.
+        assert_eq!(Value::Bytes(vec![0; 500]).to_string(), "<500 bytes>");
+        assert_eq!(
+            Value::Array(vec![Value::Int(1), Value::Str("a".into())]).to_string(),
+            "[1, a]"
+        );
+        assert_eq!(
+            Value::Object(vec![
+                ("a".into(), Value::Int(1)),
+                ("b".into(), Value::Bool(false))
+            ])
+            .to_string(),
+            "{a: 1, b: false}"
+        );
+    }
 
     #[test]
     fn round_trip_postcard() {

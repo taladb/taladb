@@ -451,7 +451,7 @@ fn field_encryption_multiple_docs() {
         if let Value::Str(p) = pin {
             assert!(p.starts_with("pin-"), "pin must decrypt correctly: {p}");
         } else {
-            panic!("pin field must decrypt to a string, got {:?}", pin);
+            panic!("pin field must decrypt to a string, got {pin:?}");
         }
     }
 }

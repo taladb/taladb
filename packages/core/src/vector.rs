@@ -66,7 +66,7 @@ pub const META_VECTOR_TABLE: &str = "meta::vector_indexes";
 pub const META_HNSW_TABLE: &str = "meta::hnsw_indexes";
 /// HNSW graph blob table: `hnsw::{collection}::{field}`, single key = `b"graph"`.
 pub fn hnsw_table_name(collection: &str, field: &str) -> String {
-    format!("hnsw::{}::{}", collection, field)
+    format!("hnsw::{collection}::{field}")
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ pub fn hnsw_table_name(collection: &str, field: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Similarity metric used when searching a vector index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VectorMetric {
     /// Cosine similarity — angle between vectors, range [-1, 1].
     /// Best for text embeddings where magnitude is not meaningful.
@@ -123,7 +123,7 @@ pub struct HnswOptions {
 
 impl Default for HnswOptions {
     fn default() -> Self {
-        HnswOptions {
+        Self {
             m: 16,
             ef_construction: 200,
         }
@@ -172,7 +172,7 @@ mod hnsw_impl {
     pub type HnswGraph = HnswMap<HnswPoint, ()>;
 
     /// Graph entry keyed by `"{collection}::{field}"`.
-    pub type HnswCacheMap = HashMap<String, Arc<HnswGraph>>;
+    pub(super) type HnswCacheMap = HashMap<String, Arc<HnswGraph>>;
     /// Thread-safe, reference-counted cache shared by all Collection handles
     /// belonging to the same Database.
     pub type SharedHnswCache = Arc<Mutex<HnswCacheMap>>;
@@ -190,7 +190,7 @@ mod hnsw_impl {
         static ACTIVE_METRIC: Cell<u8> = const { Cell::new(0) };
     }
 
-    pub fn set_metric(metric: &VectorMetric) {
+    pub(super) fn set_metric(metric: &VectorMetric) {
         let code: u8 = match metric {
             VectorMetric::Cosine => 0,
             VectorMetric::Dot => 1,
@@ -199,7 +199,7 @@ mod hnsw_impl {
         ACTIVE_METRIC.with(|m| m.set(code));
     }
 
-    pub fn distance_to_similarity(metric: &VectorMetric, distance: f32) -> f32 {
+    pub(super) fn distance_to_similarity(metric: &VectorMetric, distance: f32) -> f32 {
         match metric {
             VectorMetric::Cosine => 1.0 - distance,
             VectorMetric::Dot => -distance,
@@ -319,11 +319,11 @@ pub use hnsw_impl::{
 // ---------------------------------------------------------------------------
 
 pub fn vec_meta_key(collection: &str, field: &str) -> String {
-    format!("{}::{}", collection, field)
+    format!("{collection}::{field}")
 }
 
 pub fn vec_table_name(collection: &str, field: &str) -> String {
-    format!("vec::{}::{}", collection, field)
+    format!("vec::{collection}::{field}")
 }
 
 // ---------------------------------------------------------------------------
@@ -386,19 +386,40 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 pub fn dot_similarity(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    // Lane-parallel for the same reason as `dot_and_norm_sq` — see `LANES`.
+    let mut acc = [0.0f32; LANES];
+    let mut a_chunks = a.chunks_exact(LANES);
+    let mut b_chunks = b.chunks_exact(LANES);
+    for (x, y) in a_chunks.by_ref().zip(b_chunks.by_ref()) {
+        for i in 0..LANES {
+            acc[i] += x[i] * y[i];
+        }
+    }
+    let mut total: f32 = acc.iter().sum();
+    for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
+        total += x * y;
+    }
+    total
 }
 
 /// Converts Euclidean distance to a similarity score in `(0, 1]`.
 /// Identical vectors → 1.0; the further apart, the closer to 0.
 pub fn euclidean_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dist: f32 = a
-        .iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f32>()
-        .sqrt();
-    1.0 / (1.0 + dist)
+    let mut acc = [0.0f32; LANES];
+    let mut a_chunks = a.chunks_exact(LANES);
+    let mut b_chunks = b.chunks_exact(LANES);
+    for (x, y) in a_chunks.by_ref().zip(b_chunks.by_ref()) {
+        for i in 0..LANES {
+            let d = x[i] - y[i];
+            acc[i] += d * d;
+        }
+    }
+    let mut dist_sq: f32 = acc.iter().sum();
+    for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
+        let d = x - y;
+        dist_sq += d * d;
+    }
+    1.0 / (1.0 + dist_sq.sqrt())
 }
 
 pub fn compute_similarity(metric: &VectorMetric, a: &[f32], b: &[f32]) -> f32 {
@@ -424,6 +445,12 @@ pub fn l2_norm(a: &[f32]) -> f32 {
 /// whole table, so computing it once at the top of the loop removes a dot
 /// product and a square root per stored vector. `query_norm` is ignored for
 /// metrics other than [`VectorMetric::Cosine`].
+///
+/// `query` and `stored` are expected to have the same length. They are walked
+/// in lockstep and the shorter one ends the reduction, so a mismatch yields a
+/// score computed over the common prefix rather than an error — callers that
+/// can encounter untrusted or corrupt vectors should length-check first, as
+/// `Collection::find_nearest` does.
 #[inline]
 pub fn score_with_query_norm(
     metric: &VectorMetric,
@@ -433,13 +460,8 @@ pub fn score_with_query_norm(
 ) -> f32 {
     match metric {
         VectorMetric::Cosine => {
-            let mut dot = 0.0f32;
-            let mut norm_b = 0.0f32;
-            for (q, s) in query.iter().zip(stored) {
-                dot += q * s;
-                norm_b += s * s;
-            }
-            let norm_b = norm_b.sqrt();
+            let (dot, norm_sq) = dot_and_norm_sq(query, stored);
+            let norm_b = norm_sq.sqrt();
             if query_norm == 0.0 || norm_b == 0.0 {
                 0.0
             } else {
@@ -451,62 +473,56 @@ pub fn score_with_query_norm(
     }
 }
 
-/// Score a query against a stored vector held as raw little-endian f32 bytes,
-/// without decoding it into an intermediate `Vec<f32>` first. In a flat scan
-/// this removes one heap allocation per stored vector per query.
+/// Number of independent accumulators used by the scoring reductions.
 ///
-/// `query_norm` is the query's precomputed L2 norm ([`l2_norm`]); it is only
-/// read for [`VectorMetric::Cosine`], so pass `0.0` for the other metrics.
-/// Returns `None` when `bytes` is not exactly `query.len() * 4` bytes (a
-/// dimension mismatch or a truncated/corrupt entry), which the caller skips.
+/// Floating-point addition is not associative, so LLVM may not reorder a `+=`
+/// chain into vector lanes: every element waits on the previous partial sum.
+/// Splitting the reduction into `LANES` independent accumulators authorises
+/// that reordering *in the source*, which is both portable — x86 AVX, aarch64
+/// NEON, and the wasm128 SIMD every shipping browser has — and free of
+/// `core::arch` intrinsics, `unsafe`, and nightly features.
 ///
-/// The per-metric branch is hoisted out of the element loop so each variant
-/// compiles to a tight reduction the optimiser can vectorise.
+/// Eight covers a 256-bit vector of `f32` and splits cleanly into two 128-bit
+/// operations where that is all the target has. Embedding dimensions are
+/// multiples of 8 in practice (384, 768, 1536), so the scalar remainder loop is
+/// usually empty.
+const LANES: usize = 8;
+
+/// Dot product and the stored vector's squared L2 norm, in one pass.
+///
+/// Cosine needs both, and reading each element once keeps the pass
+/// memory-bound rather than doing two walks over the same data.
 #[inline]
-pub fn score_from_bytes(
-    metric: &VectorMetric,
-    query: &[f32],
-    query_norm: f32,
-    bytes: &[u8],
-) -> Option<f32> {
-    if bytes.len() != query.len() * 4 {
-        return None;
+fn dot_and_norm_sq(query: &[f32], stored: &[f32]) -> (f32, f32) {
+    let mut dot = [0.0f32; LANES];
+    let mut norm_sq = [0.0f32; LANES];
+
+    let mut q_chunks = query.chunks_exact(LANES);
+    let mut s_chunks = stored.chunks_exact(LANES);
+    for (q, s) in q_chunks.by_ref().zip(s_chunks.by_ref()) {
+        for i in 0..LANES {
+            dot[i] += q[i] * s[i];
+            norm_sq[i] += s[i] * s[i];
+        }
     }
-    let chunks = bytes.chunks_exact(4);
-    let score = match metric {
-        VectorMetric::Dot => {
-            let mut dot = 0.0f32;
-            for (q, c) in query.iter().zip(chunks) {
-                dot += q * f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-            }
-            dot
-        }
-        VectorMetric::Cosine => {
-            let mut dot = 0.0f32;
-            let mut norm_b = 0.0f32;
-            for (q, c) in query.iter().zip(chunks) {
-                let b = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                dot += q * b;
-                norm_b += b * b;
-            }
-            let norm_b = norm_b.sqrt();
-            if query_norm == 0.0 || norm_b == 0.0 {
-                0.0
-            } else {
-                dot / (query_norm * norm_b)
-            }
-        }
-        VectorMetric::Euclidean => {
-            let mut dist_sq = 0.0f32;
-            for (q, c) in query.iter().zip(chunks) {
-                let d = q - f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                dist_sq += d * d;
-            }
-            1.0 / (1.0 + dist_sq.sqrt())
-        }
-    };
-    Some(score)
+
+    let mut dot_total: f32 = dot.iter().sum();
+    let mut norm_total: f32 = norm_sq.iter().sum();
+    for (q, s) in q_chunks.remainder().iter().zip(s_chunks.remainder()) {
+        dot_total += q * s;
+        norm_total += s * s;
+    }
+    (dot_total, norm_total)
 }
+
+// NOTE: a `score_from_bytes` variant that scored directly against the stored
+// little-endian bytes used to live here. It had no callers: `find_nearest`
+// decodes the whole vector table once into a generation-keyed cache
+// (`Collection::find_nearest`, step 3b) and scores against `&[f32]` via
+// `score_with_query_norm`, so nothing ever reaches the raw bytes in the hot
+// loop. It was removed rather than wired up — its own doc comment claimed to be
+// the flat scan's fast path, which sent at least one reviewer optimising a
+// function that never ran.
 
 // ---------------------------------------------------------------------------
 // Search result
@@ -582,5 +598,73 @@ mod tests {
     #[test]
     fn value_extraction_rejects_non_array() {
         assert!(value_to_f32_vec(&Value::Str("vec".into())).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Lane-parallel reductions
+    //
+    // The scoring loops split their sums across `LANES` independent
+    // accumulators so the compiler can vectorise them. That changes the order
+    // of floating-point additions, so these tests pin the results against a
+    // straightforward scalar reference — including at lengths that are not a
+    // multiple of `LANES`, where the remainder loop has to pick up the tail.
+    // -----------------------------------------------------------------------
+
+    fn scalar_dot(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| x * y).sum()
+    }
+
+    fn scalar_euclidean(a: &[f32], b: &[f32]) -> f32 {
+        let d: f32 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
+        1.0 / (1.0 + d.sqrt())
+    }
+
+    fn ramp(len: usize, offset: f32) -> Vec<f32> {
+        (0..len).map(|i| (i as f32).mul_add(0.125, offset)).collect()
+    }
+
+    #[test]
+    fn lane_reductions_match_scalar_at_every_remainder_length() {
+        // 0 and 1..=17 covers empty, sub-LANES, exactly LANES, and two full
+        // chunks plus a tail.
+        for len in std::iter::once(0).chain(1..=17) {
+            let a = ramp(len, 0.5);
+            let b = ramp(len, -0.25);
+
+            let dot = dot_similarity(&a, &b);
+            assert!(
+                (dot - scalar_dot(&a, &b)).abs() < 1e-4,
+                "dot mismatch at len {len}: {dot} vs {}",
+                scalar_dot(&a, &b)
+            );
+
+            let euc = euclidean_similarity(&a, &b);
+            assert!(
+                (euc - scalar_euclidean(&a, &b)).abs() < 1e-6,
+                "euclidean mismatch at len {len}"
+            );
+
+            // Cosine goes through the fused dot + norm pass.
+            let norm = l2_norm(&a);
+            let cos = score_with_query_norm(&VectorMetric::Cosine, &a, norm, &b);
+            let expected = cosine_similarity(&a, &b);
+            assert!(
+                (cos - expected).abs() < 1e-5,
+                "cosine mismatch at len {len}: {cos} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn identical_vectors_still_score_perfectly_after_lane_split() {
+        // A reassociated sum must not drift far enough to break the invariant
+        // callers rely on: a vector is maximally similar to itself.
+        for len in [4usize, 8, 12, 384] {
+            let v = ramp(len, 1.0);
+            let cos = score_with_query_norm(&VectorMetric::Cosine, &v, l2_norm(&v), &v);
+            assert!((cos - 1.0).abs() < 1e-5, "cosine self-similarity at len {len}: {cos}");
+            let euc = euclidean_similarity(&v, &v);
+            assert!((euc - 1.0).abs() < 1e-6, "euclidean self-similarity at len {len}");
+        }
     }
 }

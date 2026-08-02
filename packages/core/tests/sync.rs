@@ -157,7 +157,7 @@ fn lww_remote_newer_wins() {
         ("content".into(), s("local version")),
         ("_changed_at".into(), i(1000)),
     ];
-    let _local_id_str = col.insert(local_fields.clone()).unwrap().to_string();
+    let _local_id_str = col.insert(local_fields).unwrap().to_string();
 
     // Remote doc is newer
     let remote_doc = taladb_core::document::Document::new(vec![
@@ -392,7 +392,7 @@ trait ChangeOpExt {
 
 impl ChangeOpExt for ChangeOp {
     fn upsert_title(&self) -> Option<&str> {
-        if let ChangeOp::Upsert(doc) = self {
+        if let Self::Upsert(doc) = self {
             doc.get("title").and_then(|v| v.as_str())
         } else {
             None
@@ -1032,4 +1032,148 @@ fn structural_schema_renames_field_on_upgrade() {
         "old field removed after rename"
     );
     assert_eq!(stored[0].get("_v"), Some(&Value::Int(2)));
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp bounds — a remote peer must not be able to mint an unbeatable
+// ordering token
+// ---------------------------------------------------------------------------
+//
+// `changed_at` decides which version of a document survives, and it arrives
+// from a peer. Two separate holes let one change win *permanently* rather than
+// merely win once:
+//
+//   1. `changed_at` was compared unbounded, so `u64::MAX` outranked every
+//      timestamp the local clock can ever produce.
+//   2. `_changed_at` is stored as `Value::Int(i64)` but compared as `u64`, and
+//      a plain `as u64` mapped `-1` onto `u64::MAX` — the same outcome, but
+//      persisted in the document and re-exported to every other replica.
+//
+// Either one meant a poisoned document could never be edited again, on any
+// device in the fleet.
+
+use taladb_core::sync::MAX_CLOCK_SKEW_MS;
+
+fn poisoned_change(id: Ulid, changed_at: u64, stored_ts: i64) -> Changeset {
+    let mut doc = Document::new(vec![
+        ("name".into(), s("poisoned")),
+        ("_changed_at".into(), i(stored_ts)),
+    ]);
+    doc.id = id;
+    vec![Change {
+        collection: "users".into(),
+        id,
+        op: ChangeOp::Upsert(doc),
+        changed_at,
+    }]
+}
+
+#[test]
+fn implausibly_future_changed_at_is_skipped_not_applied() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("users").unwrap();
+    let id = col.insert(vec![("name".into(), s("local"))]).unwrap();
+
+    let lww = LastWriteWins::new();
+    let report = lww
+        .import_report(&db, poisoned_change(id, u64::MAX, -1))
+        .unwrap();
+
+    assert_eq!(report.applied, 0, "an unusable timestamp must not apply");
+    assert_eq!(report.skipped, 1, "and must be reported as skipped");
+    assert_eq!(
+        col.find_by_id(id).unwrap().unwrap().get("name"),
+        Some(&s("local")),
+        "the local document must be untouched"
+    );
+}
+
+#[test]
+fn negative_stored_changed_at_does_not_freeze_the_document() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("users").unwrap();
+
+    // A document already carrying a negative `_changed_at` — however it got
+    // there: an earlier import, a hand-written field, a bad migration.
+    let id = Ulid::new();
+    let mut doc = Document::new(vec![("name".into(), s("frozen")), ("_changed_at".into(), i(-1))]);
+    doc.id = id;
+    col.insert_with_id(doc).unwrap();
+
+    // Before the fix `-1` read back as `u64::MAX`, so *no* incoming change
+    // could ever be newer and the document was permanently unwritable by sync.
+    let report = LastWriteWins::new()
+        .import_report(
+            &db,
+            poisoned_change(id, taladb_core::sync::now_ms(), taladb_core::sync::now_ms() as i64),
+        )
+        .unwrap();
+
+    assert_eq!(report.applied, 1, "a newer remote change must be able to win");
+    assert_eq!(
+        col.find_by_id(id).unwrap().unwrap().get("name"),
+        Some(&s("poisoned")),
+        "a document with an unorderable _changed_at must not be frozen against sync"
+    );
+}
+
+#[test]
+fn negative_changed_at_is_not_exported_as_the_newest_change() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("users").unwrap();
+    let mut doc = Document::new(vec![("name".into(), s("x")), ("_changed_at".into(), i(-1))]);
+    doc.id = Ulid::new();
+    col.insert_with_id(doc).unwrap();
+
+    // Exporting must not turn -1 into u64::MAX and hand every peer a change
+    // they can never overwrite.
+    let changes = LastWriteWins::new()
+        .export_changes(&db, &["users"], 0)
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        changes[0].changed_at, 0,
+        "an unorderable timestamp must floor to the epoch, not saturate to u64::MAX"
+    );
+}
+
+#[test]
+fn ordinary_clock_skew_is_still_accepted() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("users").unwrap();
+    let id = col.insert(vec![("name".into(), s("local"))]).unwrap();
+
+    // A peer an hour ahead of us is normal and must still replicate.
+    let ahead = taladb_core::sync::now_ms() + MAX_CLOCK_SKEW_MS / 24;
+    let report = LastWriteWins::new()
+        .import_report(&db, poisoned_change(id, ahead, ahead as i64))
+        .unwrap();
+
+    assert_eq!(report.applied, 1, "plausible skew must not be rejected");
+    assert_eq!(report.skipped, 0);
+}
+
+#[test]
+fn implausible_delete_leaves_the_document_intact() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("items").unwrap();
+    let id = col.insert(vec![("x".into(), i(1))]).unwrap();
+
+    let report = LastWriteWins::new()
+        .import_report(
+            &db,
+            vec![Change {
+                collection: "items".into(),
+                id,
+                op: ChangeOp::Delete,
+                changed_at: u64::MAX,
+            }],
+        )
+        .unwrap();
+
+    assert_eq!(report.skipped, 1);
+    assert!(
+        col.find_by_id(id).unwrap().is_some(),
+        "a delete with an unusable timestamp must not destroy a live document"
+    );
 }

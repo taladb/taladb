@@ -92,13 +92,13 @@ fn index_and_agrees_with_unindexed_result() {
         .find(filter.clone())
         .unwrap()
         .iter()
-        .filter_map(|d| d.get("x").and_then(|v| v.as_int()))
+        .filter_map(|d| d.get("x").and_then(taladb_core::Value::as_int))
         .collect();
     let mut want: Vec<i64> = b
         .find(filter)
         .unwrap()
         .iter()
-        .filter_map(|d| d.get("x").and_then(|v| v.as_int()))
+        .filter_map(|d| d.get("x").and_then(taladb_core::Value::as_int))
         .collect();
     got.sort_unstable();
     want.sort_unstable();
@@ -425,7 +425,7 @@ fn sorted_limit_still_sees_every_candidate() {
         .unwrap();
     let got: Vec<i64> = top
         .iter()
-        .filter_map(|d| d.get("n").and_then(|v| v.as_int()))
+        .filter_map(|d| d.get("n").and_then(taladb_core::Value::as_int))
         .collect();
     assert_eq!(got, vec![199, 198, 197]);
 }

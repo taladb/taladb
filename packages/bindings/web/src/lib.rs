@@ -32,27 +32,7 @@ pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snaps
 
 fn err_to_js(e: TalaDbError) -> JsValue {
     let msg = e.to_string();
-    let code = match &e {
-        TalaDbError::Storage(_) => "Storage",
-        TalaDbError::Serialization(_) => "Serialization",
-        TalaDbError::NotFound => "NotFound",
-        TalaDbError::InvalidFilter(_) => "InvalidFilter",
-        TalaDbError::IndexExists(_) => "IndexExists",
-        TalaDbError::IndexNotFound(_) => "IndexNotFound",
-        TalaDbError::Migration(_) => "Migration",
-        TalaDbError::TypeError { .. } => "TypeError",
-        TalaDbError::Encryption(_) => "Encryption",
-        TalaDbError::WatchClosed => "WatchClosed",
-        TalaDbError::WatchBackpressure => "WatchBackpressure",
-        TalaDbError::InvalidSnapshot => "InvalidSnapshot",
-        TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
-        TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
-        TalaDbError::InvalidOperation(_) => "InvalidOperation",
-        TalaDbError::Config(_) => "Config",
-        TalaDbError::InvalidName(_) => "InvalidName",
-        TalaDbError::QueryTimeout => "QueryTimeout",
-        TalaDbError::ChangesetTooLarge => "ChangesetTooLarge",
-    };
+    let code = e.code();
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&msg));
     let _ = js_sys::Reflect::set(&obj, &"code".into(), &JsValue::from_str(code));
@@ -78,9 +58,9 @@ pub struct TalaDBWasm {
 impl TalaDBWasm {
     /// Open an in-memory database (suitable for tests and environments without OPFS).
     #[wasm_bindgen(js_name = openInMemory)]
-    pub fn open_in_memory() -> Result<TalaDBWasm, JsValue> {
+    pub fn open_in_memory() -> Result<Self, JsValue> {
         let db = Database::open_in_memory().map_err(err_to_js)?;
-        Ok(TalaDBWasm {
+        Ok(Self {
             inner: Arc::new(db),
         })
     }
@@ -98,14 +78,14 @@ impl TalaDBWasm {
     /// await opfs_flush_snapshot('myapp.db', db.exportSnapshot());
     /// ```
     #[wasm_bindgen(js_name = openWithSnapshot)]
-    pub fn open_with_snapshot(snapshot: Option<Vec<u8>>) -> Result<TalaDBWasm, JsValue> {
+    pub fn open_with_snapshot(snapshot: Option<Vec<u8>>) -> Result<Self, JsValue> {
         let db = match snapshot {
             Some(ref data) if !data.is_empty() => {
                 Database::restore_from_snapshot(data).map_err(err_to_js)?
             }
             _ => Database::open_in_memory().map_err(err_to_js)?,
         };
-        Ok(TalaDBWasm {
+        Ok(Self {
             inner: Arc::new(db),
         })
     }
@@ -200,7 +180,7 @@ impl CollectionWasm {
         let items: Result<Vec<Vec<(String, Value)>>, JsValue> =
             arr.iter().map(js_object_to_fields).collect();
         let ids = self.inner.insert_many(items?).map_err(err_to_js)?;
-        let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        let id_strings: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -221,7 +201,7 @@ impl CollectionWasm {
             .inner
             .replace_many_with_ids(items?, parse_write_origin(origin)?)
             .map_err(err_to_js)?;
-        let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        let id_strings: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -459,7 +439,7 @@ impl CollectionWasm {
         query.candidates = opts
             .as_ref()
             .and_then(|o| o.get("candidates"))
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .map(|v| v as usize);
 
         let results = self.inner.hybrid_search(query).map_err(err_to_js)?;
@@ -734,10 +714,10 @@ fn js_options_to_json(options: JsValue) -> Option<serde_json::Value> {
 fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
     let mut params = taladb_core::bm25::Bm25Params::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("k1").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("k1").and_then(serde_json::Value::as_f64) {
             params.k1 = v as f32;
         }
-        if let Some(v) = o.get("b").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("b").and_then(serde_json::Value::as_f64) {
             params.b = v as f32;
         }
     }
@@ -747,13 +727,13 @@ fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::
 fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::RrfParams {
     let mut params = taladb_core::bm25::RrfParams::default();
     if let Some(o) = options {
-        if let Some(v) = o.get("rrfK").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("rrfK").and_then(serde_json::Value::as_f64) {
             params.k = v as f32;
         }
-        if let Some(v) = o.get("textWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("textWeight").and_then(serde_json::Value::as_f64) {
             params.text_weight = v as f32;
         }
-        if let Some(v) = o.get("vectorWeight").and_then(|v| v.as_f64()) {
+        if let Some(v) = o.get("vectorWeight").and_then(serde_json::Value::as_f64) {
             params.vector_weight = v as f32;
         }
     }

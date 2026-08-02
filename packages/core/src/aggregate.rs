@@ -37,6 +37,7 @@
 
 use std::collections::HashMap;
 
+use crate::clamp_to_usize;
 use crate::document::{Document, Value};
 use crate::error::TalaDbError;
 use crate::query::options::{SortSpec, partial_sort_documents, sort_documents};
@@ -358,14 +359,14 @@ pub(crate) fn reachable_after_sort(rest: &[Stage]) -> Option<usize> {
     for stage in rest {
         match stage {
             Stage::Skip(n) => {
-                let n = *n as usize;
+                let n = clamp_to_usize(*n);
                 start = start.saturating_add(n);
                 if let Some(e) = end {
                     end = Some(e.saturating_add(n));
                 }
             }
             Stage::Limit(n) => {
-                let cap = start.saturating_add(*n as usize);
+                let cap = start.saturating_add(clamp_to_usize(*n));
                 end = Some(end.map_or(cap, |e| e.min(cap)));
             }
             // `$project` reshapes documents but preserves both their count and
@@ -392,6 +393,22 @@ pub fn execute_pipeline(
     mut docs: Vec<Document>,
     pipeline: &[Stage],
 ) -> Result<Vec<Document>, TalaDbError> {
+    // Compile every regex in every `$match` stage once, up front — the same
+    // thing the query executor does via `Matcher::new`.
+    //
+    // Going through `Filter::matches` instead rebuilt the automaton for every
+    // document, and swallowed compile failures into `unwrap_or(false)`. That
+    // second half is the real bug: an invalid or over-size-limit pattern
+    // silently matched nothing here while the identical filter through `find()`
+    // returned `InvalidFilter`. Same query, two answers, one of them a silent
+    // empty result.
+    let mut regex_cache = HashMap::new();
+    for stage in pipeline {
+        if let Stage::Match(filter) = stage {
+            regex_cache.extend(filter.compile_regex_cache()?);
+        }
+    }
+
     let mut i = 0;
     while i < pipeline.len() {
         if let Stage::Sort(specs) = &pipeline[i]
@@ -403,15 +420,22 @@ pub fn execute_pipeline(
             i += 1;
             continue;
         }
-        docs = apply_stage(docs, &pipeline[i])?;
+        docs = apply_stage(docs, &pipeline[i], &regex_cache)?;
         i += 1;
     }
     Ok(docs)
 }
 
-fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, TalaDbError> {
+fn apply_stage(
+    docs: Vec<Document>,
+    stage: &Stage,
+    regex_cache: &HashMap<String, regex::Regex>,
+) -> Result<Vec<Document>, TalaDbError> {
     match stage {
-        Stage::Match(filter) => Ok(docs.into_iter().filter(|d| filter.matches(d)).collect()),
+        Stage::Match(filter) => Ok(docs
+            .into_iter()
+            .filter(|d| filter.matches_with_cache(d, regex_cache))
+            .collect()),
 
         Stage::Group { key, accumulators } => apply_group(docs, key, accumulators),
 
@@ -422,7 +446,7 @@ fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, Tala
         }
 
         Stage::Skip(n) => {
-            let n = *n as usize;
+            let n = clamp_to_usize(*n);
             if n >= docs.len() {
                 Ok(vec![])
             } else {
@@ -430,7 +454,7 @@ fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, Tala
             }
         }
 
-        Stage::Limit(n) => Ok(docs.into_iter().take(*n as usize).collect()),
+        Stage::Limit(n) => Ok(docs.into_iter().take(clamp_to_usize(*n)).collect()),
 
         Stage::Project {
             fields,
@@ -493,7 +517,7 @@ fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
         (AccState::Sum { int, float }, Accumulator::Sum(f)) => {
             if let Some(v) = doc.get(f) {
                 match v {
-                    Value::Int(n) if float.is_none() => *int += *n as i128,
+                    Value::Int(n) if float.is_none() => *int += i128::from(*n),
                     Value::Int(n) => *float = Some(float.unwrap() + *n as f64),
                     Value::Float(n) => *float = Some(float.unwrap_or(*int as f64) + n),
                     _ => {}
@@ -563,7 +587,7 @@ fn finalize_state(state: AccState) -> Value {
     match state {
         AccState::Sum { int, float } => match float {
             Some(n) => float_or_int(n),
-            None if int <= i64::MAX as i128 && int >= i64::MIN as i128 => Value::Int(int as i64),
+            None if int <= i128::from(i64::MAX) && int >= i128::from(i64::MIN) => Value::Int(int as i64),
             None => Value::Float(int as f64),
         },
         AccState::AvgState { sum, count } => {
@@ -651,12 +675,12 @@ fn value_lt(a: &Value, b: &Value) -> bool {
 fn value_to_key_string(v: &Value) -> String {
     match v {
         Value::Null => "\x00null".into(),
-        Value::Bool(b) => format!("\x01{}", b),
-        Value::Int(n) => format!("\x02{:020}", (*n as i128) - (i64::MIN as i128)),
-        Value::Float(f) => format!("\x03{:e}", f),
-        Value::Str(s) => format!("\x04{}", s),
-        Value::Bytes(b) => format!("\x05{:?}", b),
-        Value::Array(_) | Value::Object(_) => format!("\x06{:?}", v),
+        Value::Bool(b) => format!("\x01{b}"),
+        Value::Int(n) => format!("\x02{:020}", i128::from(*n) - i128::from(i64::MIN)),
+        Value::Float(f) => format!("\x03{f:e}"),
+        Value::Str(s) => format!("\x04{s}"),
+        Value::Bytes(b) => format!("\x05{b:?}"),
+        Value::Array(_) | Value::Object(_) => format!("\x06{v:?}"),
     }
 }
 

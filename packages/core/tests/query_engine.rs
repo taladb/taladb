@@ -1520,3 +1520,70 @@ fn id_eq_inside_and_combines_with_other_filters() {
         .unwrap();
     assert!(miss.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Oversized pagination
+//
+// `skip` and `limit` are `u64` in the API but index into a `Vec`. On wasm32 —
+// the primary target — `usize` is 32 bits, so `as usize` wrapped: a `skip` of
+// 2^32 + 5 became 5 and quietly returned the *first* page. They now saturate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn absurd_skip_returns_nothing_rather_than_wrapping() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs").unwrap();
+    for i in 0..5i64 {
+        col.insert(vec![("n".into(), Value::Int(i))]).unwrap();
+    }
+
+    // 2^32 + 5: truncating to 32 bits yields 5, saturating yields "past the
+    // end". Only the latter is a correct answer.
+    let docs = col
+        .find_with_options(
+            Filter::All,
+            FindOptions {
+                skip: (1u64 << 32) + 5,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(docs.is_empty(), "a skip past the end returns no documents");
+
+    // Same value again with a sort, which takes the partial-sort path.
+    let docs = col
+        .find_with_options(
+            Filter::All,
+            FindOptions {
+                skip: (1u64 << 32) + 5,
+                limit: Some(3),
+                sort: vec![SortSpec {
+                    field: "n".into(),
+                    direction: SortDirection::Asc,
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(docs.is_empty());
+}
+
+#[test]
+fn absurd_limit_returns_everything_rather_than_wrapping() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs").unwrap();
+    for i in 0..5i64 {
+        col.insert(vec![("n".into(), Value::Int(i))]).unwrap();
+    }
+
+    let docs = col
+        .find_with_options(
+            Filter::All,
+            FindOptions {
+                limit: Some(u64::MAX),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(docs.len(), 5, "a limit past the end keeps every document");
+}

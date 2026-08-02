@@ -251,7 +251,7 @@ fn watch_closed_after_registry_dropped() {
         Err(taladb_core::TalaDbError::WatchClosed) => {}
         // Channel may still appear empty if not yet noticed — that's also valid
         Ok(None) => {}
-        other => panic!("expected WatchClosed or None, got: {:?}", other),
+        other => panic!("expected WatchClosed or None, got: {other:?}"),
     }
 }
 

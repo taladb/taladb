@@ -215,7 +215,7 @@ pub fn execute_limited(
             }
             // Intersect all sets — documents must contain every token. Start
             // from the smallest so the probes run against the fewest elements.
-            ulid_sets.sort_by_key(|s| s.len());
+            ulid_sets.sort_by_key(std::collections::HashSet::len);
             let intersection = ulid_sets
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
@@ -233,7 +233,7 @@ pub fn execute_limited(
         }
 
         QueryPlan::CompoundIndexEq { fields, start, end } => {
-            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let field_refs: Vec<&str> = fields.iter().map(std::string::String::as_str).collect();
             let table = compound_table_name(collection, &field_refs);
             let ulids = table_range_scan(
                 txn,
@@ -292,7 +292,7 @@ pub fn execute_limited(
                 }
                 sets.push(set);
             }
-            sets.sort_by_key(|s| s.len());
+            sets.sort_by_key(std::collections::HashSet::len);
             let intersection = sets
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
@@ -378,10 +378,10 @@ fn fetch_filtered(
     out: &mut Vec<Document>,
 ) -> Result<(), TalaDbError> {
     let table = docs_table_name(collection);
-    let key_store: Vec<[u8; 16]> = ulids.iter().map(|u| u.to_bytes()).collect();
+    let key_store: Vec<[u8; 16]> = ulids.iter().map(ulid::Ulid::to_bytes).collect();
     for chunk in key_store.chunks(FETCH_CHUNK) {
         check_deadline(deadline)?;
-        let keys: Vec<&[u8]> = chunk.iter().map(|k| k.as_slice()).collect();
+        let keys: Vec<&[u8]> = chunk.iter().map(<[u8; 16]>::as_slice).collect();
         for bytes in txn.get_many(&table, &keys)?.into_iter().flatten() {
             let doc: Document = postcard::from_bytes(&bytes)?;
             if matcher.matches(&doc) {
@@ -404,7 +404,7 @@ fn collect_ulids(
     deadline: Option<Instant>,
 ) -> Result<Vec<[u8; 16]>, TalaDbError> {
     match plan {
-        QueryPlan::ById { ids } => Ok(ids.iter().map(|u| u.to_bytes()).collect()),
+        QueryPlan::ById { ids } => Ok(ids.iter().map(ulid::Ulid::to_bytes).collect()),
 
         QueryPlan::IndexEq { field, start, end } => {
             let ulids = index_range_scan(
@@ -439,7 +439,7 @@ fn collect_ulids(
             Ok(result)
         }
         QueryPlan::CompoundIndexEq { fields, start, end } => {
-            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let field_refs: Vec<&str> = fields.iter().map(std::string::String::as_str).collect();
             let table = compound_table_name(collection, &field_refs);
             let ulids = table_range_scan(
                 txn,
@@ -662,10 +662,10 @@ pub(crate) fn fetch_by_ulids(
     ulids: &[Ulid],
 ) -> Result<Vec<Document>, TalaDbError> {
     let table = docs_table_name(collection);
-    let key_store: Vec<[u8; 16]> = ulids.iter().map(|u| u.to_bytes()).collect();
+    let key_store: Vec<[u8; 16]> = ulids.iter().map(ulid::Ulid::to_bytes).collect();
     let mut docs = Vec::with_capacity(ulids.len());
     for chunk in key_store.chunks(FETCH_CHUNK) {
-        let keys: Vec<&[u8]> = chunk.iter().map(|k| k.as_slice()).collect();
+        let keys: Vec<&[u8]> = chunk.iter().map(<[u8; 16]>::as_slice).collect();
         for bytes in txn.get_many(&table, &keys)?.into_iter().flatten() {
             docs.push(postcard::from_bytes(&bytes)?);
         }

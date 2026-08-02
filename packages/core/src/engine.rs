@@ -157,7 +157,7 @@ pub struct RedbBackend {
 impl RedbBackend {
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let db = Database::create(path)?;
-        Ok(RedbBackend {
+        Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),
         })
@@ -165,7 +165,7 @@ impl RedbBackend {
 
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
-        Ok(RedbBackend {
+        Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),
         })
@@ -176,7 +176,7 @@ impl RedbBackend {
         backend: B,
     ) -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(backend)?;
-        Ok(RedbBackend {
+        Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),
         })
@@ -188,7 +188,7 @@ impl StorageBackend for RedbBackend {
         let mut txn = self
             .db
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .begin_write()?;
         txn.set_durability(if self.eventual.load(Ordering::Relaxed) {
             Durability::Eventual
@@ -202,7 +202,7 @@ impl StorageBackend for RedbBackend {
         let txn = self
             .db
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .begin_read()?;
         Ok(Box::new(RedbReadTxn {
             txn,
@@ -213,7 +213,7 @@ impl StorageBackend for RedbBackend {
     fn compact(&self) -> Result<(), TalaDbError> {
         self.db
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .compact()
             .map_err(|e| TalaDbError::Storage(e.to_string()))?;
         Ok(())
@@ -230,7 +230,7 @@ impl StorageBackend for RedbBackend {
         let mut txn = self
             .db
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .begin_write()?;
         txn.set_durability(Durability::Immediate);
         txn.commit()?;
