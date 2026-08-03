@@ -374,10 +374,6 @@ Open an issue before large features or architectural changes. See [CONTRIBUTING.
 
 Reach out: [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev)
 
-## Support TalaDB
-
-TalaDB is free and open-source, maintained by one person. If it saves you time, [sponsoring on GitHub](https://github.com/sponsors/taladb) directly funds continued development: new runtimes, query operators, and performance work.
-
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
