@@ -104,7 +104,15 @@ pub fn execute_limited(
         // Primary-key point lookups; the post-filter still applies (covers
         // `_id` filters nested inside And/Or expressions).
         QueryPlan::ById { ids } => {
-            fetch_filtered(txn, collection, ids, &matcher, deadline, limit, &mut results)?;
+            fetch_filtered(
+                txn,
+                collection,
+                ids,
+                &matcher,
+                deadline,
+                limit,
+                &mut results,
+            )?;
         }
 
         QueryPlan::IndexEq { field, start, end } => {
@@ -141,7 +149,13 @@ pub fn execute_limited(
         QueryPlan::IndexRange { field, start, end } => {
             let start_ref = bound_as_ref(start);
             let end_ref = bound_as_ref(end);
-            let ulids = index_range_scan(txn, collection, field, start_ref, end_ref, None)?;
+            let mut ulids = index_range_scan(txn, collection, field, start_ref, end_ref, None)?;
+            // An array field is indexed once per element, so a document whose
+            // list has several values inside the range appears once per value.
+            // Without this the same document comes back two or three times from
+            // an ordinary `$gte`.
+            let mut seen: HashSet<Ulid> = HashSet::with_capacity(ulids.len());
+            ulids.retain(|u| seen.insert(*u));
             check_deadline(deadline)?;
             fetch_filtered(
                 txn,

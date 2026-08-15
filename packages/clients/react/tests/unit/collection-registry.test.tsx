@@ -2,10 +2,10 @@
  * The provider's `collections` registry is what stops the hooks from silently
  * bypassing collection configuration.
  *
- * `useCollection` (and therefore `useFind`/`useQuery`/`useMutation`) used to call
+ * `useCollection` (and therefore `useFind`/`useQuery`/`useWrite`) used to call
  * `db.collection(name)` with no options, so the `schema` and `syncSchema` an app
  * declared via `db.collection(name, { … })` never applied on the hook path: an
- * invalid document written through `useMutation` was accepted, and no `_v` shape
+ * invalid document written through `useWrite` was accepted, and no `_v` shape
  * version was stamped on it.
  */
 import { describe, it, expect, vi } from 'vitest'

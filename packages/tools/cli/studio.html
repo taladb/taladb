@@ -37,8 +37,23 @@ header {
   background: var(--surface); border-bottom: 1px solid var(--border);
   flex-shrink: 0; user-select: none;
 }
-.logo { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: -0.3px; flex-shrink: 0; }
+.logo { display: flex; align-items: center; gap: 9px; flex-shrink: 0; color: var(--accent); }
 .logo svg { flex-shrink: 0; }
+/* Stacked wordmark: the name reads first, the tool name sits under it. Line
+   heights are pinned so the two lines fit the 44px header without stretching. */
+.wordmark { display: flex; flex-direction: column; justify-content: center; }
+.wordmark .name {
+  font-size: 15px; font-weight: 800; letter-spacing: 1.4px; line-height: 1.05;
+}
+.wordmark .sub {
+  font-size: 8.5px; font-weight: 600; letter-spacing: 3.2px; line-height: 1.1;
+  color: color-mix(in srgb, var(--accent) 62%, var(--muted));
+}
+.ver {
+  font-size: 10px; font-family: var(--mono); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 20px; padding: 1px 7px;
+  flex-shrink: 0;
+}
 .db-badge {
   font-size: 11px; font-family: var(--mono); color: var(--muted);
   background: var(--surface2); border: 1px solid var(--border);
@@ -197,13 +212,17 @@ tr:hover .row-del { opacity: 1; pointer-events: auto; }
 <div id="app">
   <header>
     <div class="logo">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <ellipse cx="12" cy="5" rx="9" ry="3"/>
         <path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/>
         <path d="M3 12c0 1.657 4.03 3 9 3s9-1.343 9-3"/>
       </svg>
-      TalaDB Studio
+      <span class="wordmark">
+        <span class="name">TALADB</span>
+        <span class="sub">STUDIO</span>
+      </span>
     </div>
+    <span class="ver" id="ver" title="TalaDB version">—</span>
     <div class="db-badge" id="db-badge">—</div>
     <div class="spacer"></div>
     <button class="hdr-btn" id="refresh-all" title="Refresh">
@@ -303,6 +322,7 @@ const searchEl    = $('search');
 const detail      = $('detail');
 const detailJson  = $('detail-json');
 const dbBadge     = $('db-badge');
+const verBadge    = $('ver');
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function api(method, path) {
@@ -328,6 +348,12 @@ async function loadCollections() {
     S.collections = data.collections || [];
     dbBadge.textContent = data.db || '';
     dbBadge.title = data.db || '';
+    // Served by the same endpoint, so the header cannot show a version from a
+    // different process than the data.
+    if (data.version) {
+      verBadge.textContent = 'v' + data.version;
+      verBadge.title = 'TalaDB v' + data.version;
+    }
     renderSidebar();
   } catch (e) {
     toast('Failed to load collections: ' + e.message, 'err');

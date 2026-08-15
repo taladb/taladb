@@ -5,6 +5,259 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - Unreleased
+
+0.11.0 narrows TalaDB to its core: an embedded document + vector database, and
+the work to harden it. Dropping replication is the first step — it frees the
+surface area that hardening has to cover.
+
+### Removed — BREAKING
+
+All sync and replication, across every layer: the changeset APIs, conflict
+resolution, the replication coordinator and its React hooks, the sync-backend
+adapter packages, and the CLI's sync command.
+
+A half-built sync engine is worse than none. It put TalaDB on the most crowded
+shelf in the ecosystem while taking time from the vector core, where it is the
+only embedded database serving browser, React Native, and Node.js from one API.
+
+**Migrating:** use the change webhook for the push direction. There is no
+replacement for the pull direction — a database that does not replicate cannot
+pull. Hydrating from a server is now ordinary application code: fetch, then
+`insertMany`. In React, use `useFind` / `useFindOne` / `useAggregate`;
+`useWrite` (formerly `useMutation`) remains as a plain local-write hook.
+
+### Added
+
+**Change webhook.** Every committed mutation fires one HTTP request — `POST` on
+insert, `PUT` on update, `DELETE` on delete.
+
+```ts
+const db = await openDB('app.db', {
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${token}` },
+    exclude_fields: ['embedding'],
+  },
+})
+```
+
+Per-document ordering is preserved, the bounded queue drops rather than blocking
+the writer, and failures retry with backoff on 5xx and network errors but never
+on 4xx. Delivery is best effort: retries reuse an `event_id` / `Idempotency-Key`
+so receivers can deduplicate, while a crash can still lose queued events. Adds
+`db.webhookStats()` and `db.flushWebhook()`; `db.close()` drains.
+
+`document` is the stored post-image on insert/update and the last pre-image on
+delete — `_changed_at` and `_v` included — and the key exists on all verbs.
+`timestamp` is captured immediately when the commit returns, before payload
+reads, so a backlog or retry does not move it. Each mutating call costs one extra
+batched document read, not one read per affected document.
+
+It replaces the previous Rust implementation, which existed in three variants
+across the runtimes and was entirely absent from the browser's in-memory
+fallback. The new one is a single `fetch`-based implementation in the TypeScript
+client, so all three runtimes behave identically. See [/api/webhook](https://taladb.dev/api/webhook).
+
+**Array fields are queryable.** `$push` and `$pull` have always maintained
+arrays, but nothing could look inside one — a comparison ran against the array as
+a single value, so a field holding `['rust', 'db']` matched nothing but an
+identical list, silently.
+
+```ts
+await posts.find({ tags: 'rust' })                     // any element matches
+await posts.find({ tags: { $in: ['rust', 'swift'] } }) // any element, any candidate
+await posts.find({ scores: { $gte: 90 } })             // any element ≥ 90
+await posts.find({ tags: ['rust', 'db'] })             // exact list, as before
+```
+
+Every operator reaches into the list — `$eq`, `$in`, `$ne`, `$nin`, the range
+comparisons, and `$regex` — and a document is returned once however many of its
+elements match. `createIndex('tags')` now writes one entry per element, so these
+are point lookups rather than scans; an indexed and an unindexed collection are
+required to answer identically, which is what the new `array_containment` suite
+tests. Nested arrays are not flattened, and a compound index covers at most one
+array field (two would put the product of the lists in the index, so the write is
+refused). See [/api/filters](https://taladb.dev/api/filters#array-fields).
+
+**`insert` accepts an `_id`.** It used to be discarded — the web and React Native
+bindings filtered it out, Node passed it through as a field the read path then
+overwrote. A document inserted as `{ _id: … }` came back under a fresh ULID and
+`find({ _id: … })` matched nothing.
+
+This matters for the hydration path this release recommends in place of
+replication: fetch, then `insertMany`. Without a caller-controlled id that code
+duplicates every row on a second run.
+
+```ts
+const rows = await fetch('/api/products').then((r) => r.json())
+await products.insertMany(
+  rows.map((row) => ({ ...row, _id: deriveDocId('products', row.sku) })),
+)
+```
+
+The id must be a ULID — ids are 16 raw bytes on disk and every index key ends
+with one — so `deriveDocId(collection, key)` maps a natural key to a stable ULID,
+and a non-ULID `_id` is refused with a message pointing there. Inserting an id
+that already exists is a `DuplicateId` error, never an overwrite: re-running a
+seed cannot clobber what the application has since written.
+
+**`db.isPrimary()`** — whether this tab's writes land authoritatively, or are
+forwarded to the tab that owns the storage.
+
+```ts
+if (await db.isPrimary?.() ?? true) {
+  await drainOutbox();
+}
+```
+
+The primary/secondary split already governed every browser write; there was no
+way to ask which side you were on. Anything that must run in exactly one tab, or
+that needs to read its own writes back immediately — a queue drainer, a cleanup
+pass, an outbound sync loop — had no way to tell whether it was safe to run. On a
+secondary tab both assumptions fail: other tabs' writes arrive up to ~500 ms
+late, and its own writes are only visible to everyone once the primary applies
+them.
+
+Returns `true` on Node.js and React Native, and on the in-memory Safari fallback
+where each tab holds an isolated database. Primary status changes when the owning
+tab closes, so re-check it rather than caching. See
+[Web › Multi-tab behaviour](https://taladb.dev/guide/web).
+
+### Changed — BREAKING
+
+- **`insert` and `insertMany` accept an optional `_id` in their types.** The
+  runtime has honoured a caller-supplied id since this release, but the
+  parameter was typed `Omit<T, '_id'>`, so the `deriveDocId` hydration pattern
+  the documentation recommends did not compile. Both now take
+  `InsertDoc<T>` (`Omit<T, '_id'> & { _id?: string }`), which is exported.
+  Widening only — no call site breaks.
+- **`@taladb/react`: `useMutation` is now `useWrite`.** The hook is unchanged
+  apart from its name and the two callbacks it returns — `mutate` → `write`,
+  `mutateAsync` → `writeAsync`. Types follow: `UseMutationOptions` →
+  `UseWriteOptions`, `MutationResult` → `WriteResult`; `WriteOp` is unchanged.
+
+  ```diff
+  -const { mutate, mutateAsync } = useMutation<Order>({ collection: 'orders' })
+  -mutate({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+  +const { write, writeAsync } = useWrite<Order>({ collection: 'orders' })
+  +write({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+  ```
+
+  No deprecated alias is kept. `useMutation` promises a network round-trip that
+  this hook does not perform, and an alias would leave the misleading name in
+  scope for exactly as long as it took someone to depend on it. The hook is also
+  documented for the first time, under
+  [React › useWrite](https://taladb.dev/guide/react).
+- **`_changed_at` is no longer auto-indexed.** The index was created behind the
+  caller's back to serve changeset exports. The field is still stamped; the index
+  is now opt-in via `createIndex('_changed_at')`. Create it explicitly if you
+  filter or sort on that field.
+- **Config: the `sync` block is now `webhook`,** read by the TypeScript client
+  rather than the engine. On browser and React Native, pass `openDB({ webhook })`.
+- **React Native:** webhook settings move from `TalaDBModule.initialize` to
+  `openDB(name, { webhook })`.
+- **`taladb-core`: `WriteTxn` gains `list_tables` and `delete_table`.** Required
+  methods, so an out-of-tree implementation of the trait must add them. Both are
+  thin passthroughs on the two in-tree backends; `delete_table` reclaims a
+  table's storage rather than emptying it, which is what the v1 → v2 migration
+  needs to actually free the space.
+- **Browser multi-tab:** cross-tab write propagation no longer goes through
+  changesets. A tab without the OPFS lock forwards its writes to the tab that
+  holds it, which applies them by id. Behaviour is unchanged for callers;
+  concurrent edits now resolve by arrival order rather than timestamp, which is
+  strictly safer between tabs sharing one clock.
+
+### Fixed
+
+**The browser binding did not compile.** `Arc` was used but never imported on
+the encrypted OPFS open path. The path is `wasm32`-only, so the workspace
+`cargo check` CI runs on Linux never reached it and `@taladb/web` could not be
+built at all.
+
+**Multi-tab: single-document inserts from a non-primary tab were lost.** A tab
+that does not hold the OPFS lock forwards every write to the tab that does. The
+forwarding code parsed the write's result as JSON — correct for `insertMany`,
+which returns a JSON array, but `insert` returns a bare ULID, so the parse threw
+and the handler swallowed it. The document lived in that tab's memory until its
+next snapshot reload and then vanished. `insertMany`, `update*` and `delete*`
+were unaffected.
+
+**Multi-tab: live queries in a non-primary tab went permanently silent.** Live
+queries skip re-running when the collection's write generation is unchanged. The
+generation belongs to the in-memory `Database`, so reloading the IndexedDB
+snapshot — which happens precisely *because* another tab wrote — reset it to
+zero, and the poller read the value it had already seen. The first snapshot was
+delivered and nothing after it. The generation is now continuous across the
+instance swaps a reload performs.
+
+**Multi-tab: closing the tab that owned the file silently stopped persistence.**
+Tabs that lost the OPFS lock never asked for it again, so once the owner closed,
+the survivors kept accepting writes that nothing would ever persist — and
+reported success for every one. A tab that loses the lock now queues for it in
+the background and takes over when it frees: it opens the OPFS file, adopts it
+as authoritative, and replays its own writes that the departed owner never
+acknowledged. Acknowledgement is what makes the replay safe — a write that *was*
+applied is never replayed, so a forwarded `$inc` cannot double-count.
+
+**A vector whose length disagreed with its index was silently dropped from it.**
+The write path skipped the index entry and kept the document, so the row existed,
+matched ordinary queries, and could never be returned by `findNearest` — a result
+set with a hole in it and nothing to indicate one. Such a write is now rejected
+with `VectorDimensionMismatch`. A missing field and an explicit `null` are still
+legal: "not embedded yet" is an ordinary state. Backfill at `createVectorIndex`
+stays lenient, since documents written before the index existed are not a caller
+error.
+
+**`findNearest(field, query, 0)` returned the entire collection.** A `top_k` of
+zero fell past the top-k partition untouched. `searchText` and `hybridSearch`
+already guarded this.
+
+### Testing
+
+A browser end-to-end suite lives in `packages/bindings/web/e2e` and runs with
+`pnpm --filter @taladb/web test:e2e`. It drives real Chrome against the built
+WASM over OPFS, through the worker — including two and three tabs on one
+database, which is where every multi-tab bug above was found and where the Node
+tests, which mock the browser, cannot reach.
+
+### Performance
+
+One fewer table write per delete, and — on databases created by this release —
+one fewer index maintained per write, both reclaimed from bookkeeping that
+existed only for replication.
+
+**Updates no longer rewrite indexes on fields they did not touch.** Index
+maintenance emitted a delete and a put of the same key for every index on the
+collection, whether or not the update changed that index's field. The cost was
+carried by whatever else the collection was indexed for: a `$set` of one boolean
+re-tokenized a full-text field, read back each document's recorded length from
+storage, and rewrote every embedding. Unchanged fields are now skipped —
+`updateMany` over 2500 documents in a browser collection carrying a BM25 index
+went from **2216 ms to 134 ms (16×)**, and the saving grows with the width of the
+document rather than the size of the change.
+
+### Migrating an existing database
+
+Opening a database written by an earlier release runs a **v1 → v2 schema
+migration** that drops the tombstone and quarantine tables replication left
+behind. On a delete-heavy collection the tombstone table can rival the documents
+it shadows, so this is space, not tidiness. It runs once, at open, and needs no
+configuration.
+
+The `_changed_at` index is deliberately **not** dropped. Earlier releases created
+it behind the caller's back, but by now an application may equally have created
+it on purpose, and the two are indistinguishable on disk — dropping an index
+somebody's queries depend on is the worse failure. Run
+`dropIndex('_changed_at')` if you do not want it.
+
+### Security & supply chain
+
+`reqwest` is gone from the dependency tree, and with it `rustls`, `hyper`, and
+the blocking HTTP stack — the engine makes no network calls at all. Nothing
+remains that accepts, validates, or merges data from a remote peer.
+
 ## [0.10.2] - 2026-08-02
 
 ### Fixed

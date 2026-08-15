@@ -16,7 +16,7 @@ const TalaDBContext = createContext<TalaDB | null>(null)
  * collection name.
  *
  * Register them once on the provider and every hook below it — `useCollection`,
- * and therefore `useFind`, `useQuery` and `useMutation` — resolves a *configured*
+ * and therefore `useFind`, `useFindOne` and `useWrite` — resolves a *configured*
  * collection. Without this, those hooks call `db.collection(name)` with no
  * options, so a hook-driven write silently skips the strict `schema` validation
  * and the `_v` stamp that `db.collection(name, { … })` would have applied.
@@ -30,10 +30,21 @@ export type CollectionRegistry = Record<string, CollectionOptions<any>>
 /** Resolves the registered options for a collection. Stable across renders. */
 export interface CollectionResolver {
   get<T extends Document>(name: string): CollectionOptions<T> | undefined
+  /**
+   * Every registered collection name, or `[]` when the provider declared none.
+   *
+   * `get` alone cannot tell "this name is not registered" from "nothing is
+   * registered at all", and that distinction is the difference between an error
+   * and a warning for anything validating a name it inferred rather than was
+   * given — see `@taladb/react/query`'s collection resolution, which refuses to
+   * guess against a populated registry but must stay usable without one.
+   */
+  names(): string[]
 }
 
 const CollectionOptionsContext = createContext<CollectionResolver>({
   get: () => undefined,
+  names: () => [],
 })
 
 export function useCollectionOptions(): CollectionResolver {
@@ -107,6 +118,9 @@ function CollectionOptionsProvider({
     () => ({
       get: <T extends Document>(name: string) =>
         latest.current?.[name] as CollectionOptions<T> | undefined,
+      // Read through the same ref as `get`, so a registry passed as an inline
+      // object stays current without giving the resolver a new identity.
+      names: () => Object.keys(latest.current ?? {}),
     }),
     [],
   )

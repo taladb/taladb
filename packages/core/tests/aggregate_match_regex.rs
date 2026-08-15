@@ -110,5 +110,8 @@ fn invalid_regex_in_a_later_match_stage_still_errors() {
         Stage::Match(Filter::Regex("email".into(), "(unbalanced".into())),
     ]);
 
-    assert!(result.is_err(), "a bad pattern anywhere must fail the pipeline");
+    assert!(
+        result.is_err(),
+        "a bad pattern anywhere must fail the pipeline"
+    );
 }

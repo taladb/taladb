@@ -122,16 +122,6 @@ export type Value =
 
 export type Document = { _id?: string; [key: string]: Value | undefined };
 
-/**
- * Who authored a write, and therefore whether it replicates outward.
- *
- * - `'local'` *(default)* — an ordinary user write. Replicates to peers as usual.
- * - `'remote'` — a row replicated **in** from an authoritative origin. The origin
- *   already has it, so it must never go back out: rows written this way fire no
- *   sync events and never appear in `exportChanges()`, and deletes made this way
- *   leave no tombstone. Enforced in the engine, not by convention.
- */
-export type WriteOrigin = 'local' | 'remote';
 
 // --------------- Filter DSL ---------------
 
@@ -405,42 +395,18 @@ export type AggregatePipeline<T extends Document = Document> = AggregateStage<T>
 
 // --------------- Collection interface ---------------
 
+/**
+ * A document on its way in: `_id` is optional, not forbidden.
+ *
+ * The engine mints a ULID when none is given, and honours one when it is — that
+ * is what makes `deriveDocId` hydration idempotent. Typing these parameters as
+ * `Omit<T, '_id'>` rejected the very pattern the documentation recommends.
+ */
+export type InsertDoc<T extends Document> = Omit<T, '_id'> & { _id?: string };
+
 export interface Collection<T extends Document = Document> {
-  insert(doc: Omit<T, '_id'>): Promise<string>;
-  insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
-  /**
-   * Upsert many documents **by `_id`**, in a single commit. Existing rows are
-   * replaced in place, absent rows are created, and rows not named in `docs` are
-   * left alone — so writing page 2 never disturbs page 1.
-   *
-   * Unlike {@link insertMany}, which discards `_id` and mints a fresh ULID, this
-   * *honours* the id you supply. That is the whole point: for a row replicated
-   * from a remote origin, pass `_id: deriveDocId(collection, remoteKey)` and every
-   * later fetch of that row converges on the same document instead of duplicating
-   * it. Idempotent, and safe to run concurrently from a background hydration walk
-   * and an on-demand fetch.
-   *
-   * `origin: 'remote'` marks the rows as replicated in from an authoritative
-   * origin, which means they are **never replicated back out** — they will not
-   * fire sync events and will not appear in `exportChanges()`. Use it for anything
-   * the origin already knows about. Defaults to `'local'`.
-   *
-   * @example
-   * await products.replaceManyWithIds(
-   *   rows.map((r) => ({ ...r, _id: deriveDocId('products', r.id) })),
-   *   'remote',
-   * );
-   */
-  replaceManyWithIds(docs: T[], origin?: WriteOrigin): Promise<string[]>;
-  /**
-   * Delete many documents by `_id`, in a single commit. Returns how many were
-   * present and removed; unknown ids are skipped.
-   *
-   * `origin: 'remote'` deletes **without a tombstone**, so the deletion is not
-   * replicated outward — correct when the origin is the one that told you the row
-   * was deleted. Defaults to `'local'`, which tombstones as usual.
-   */
-  deleteManyWithIds(ids: string[], origin?: WriteOrigin): Promise<number>;
+  insert(doc: InsertDoc<T>): Promise<string>;
+  insertMany(docs: InsertDoc<T>[]): Promise<string[]>;
   find(filter?: Filter<T>): Promise<T[]>;
   findOne(filter: Filter<T>): Promise<T | null>;
   updateOne(filter: Filter<T>, update: Update<T>): Promise<boolean>;
@@ -640,181 +606,23 @@ export interface Collection<T extends Document = Document> {
 
 // --------------- Sync ---------------
 
-/**
- * A JSON-encoded changeset — the opaque payload exchanged between peers. Produced
- * by {@link TalaDB.exportChanges}, transported by a {@link SyncAdapter}, and
- * consumed by {@link TalaDB.importChanges}. Treat it as an opaque string.
- */
-export type SerializedChangeset = string;
-
-/** Direction of a sync pass. `'both'` (default) is fully bidirectional. */
-export type SyncDirection = 'push' | 'pull' | 'both';
-
-/**
- * A transport for {@link TalaDB.sync}. Implement `push` to send local changes to
- * a remote, `pull` to fetch remote changes — or both for bidirectional sync.
- * The changeset is an opaque JSON string; move it over any wire you like.
- */
-export interface SyncAdapter {
-  /** Send a local changeset to the remote. Required for `'push'` / `'both'`. */
-  push?(changeset: SerializedChangeset): Promise<void>;
-  /**
-   * Fetch remote changes with `changed_at` after `sinceMs` (ms epoch), as a
-   * serialized changeset. Return `'[]'` when there is nothing new. Required for
-   * `'pull'` / `'both'`.
-   *
-   * @deprecated in spirit, not in support — wall-clock timestamps are not safe
-   * cursors (see {@link CursorSyncAdapter}), which is why every pass built on this
-   * method replays the whole collection from zero. Implement
-   * {@link CursorSyncAdapter.pullWithCursor} instead when your origin can issue a
-   * cursor. Adapters that only implement `pull` keep working unchanged.
-   */
-  pull?(sinceMs: number): Promise<SerializedChangeset>;
-}
-
-/** One page of remote changes, plus where to resume from. */
-export interface PullResult {
-  /** The changes themselves. `'[]'` when there is nothing new. */
-  changeset: SerializedChangeset;
-  /**
-   * Opaque resume token, issued by the origin. **Never parse this.** It may be a
-   * timestamp, a sequence number, an LSN, a snapshot id — that is the origin's
-   * business, and treating it as a number is how clients reintroduce the
-   * clock-skew bug this type exists to kill.
-   */
-  cursor: string;
-  /** `true` when more pages remain; call again with the returned `cursor`. */
-  hasMore: boolean;
-}
-
-/**
- * A {@link SyncAdapter} whose origin can issue a resume cursor.
- *
- * ## Why this exists
- *
- * The original contract is `pull(sinceMs)`, and it cannot be made correct. Author
- * wall-clock timestamps are not safe cursors: a write can commit *after* an export
- * yet carry an *earlier* timestamp, so resuming from "the newest timestamp I saw"
- * silently drops rows. TalaDB's answer was to give up on cursors entirely and
- * replay from zero on every pass — correct, but it re-downloads the whole
- * collection forever, which makes a full local replica of a real catalog
- * unaffordable.
- *
- * The fix is to stop inventing the cursor on the client. The origin issues an
- * opaque token; we store it and hand it back. Whatever ordering guarantee the
- * origin has (a sequence, an LSN, a snapshot) travels with the token, and the
- * client never has to reason about clocks at all.
- *
- * `runSync` feature-detects `pullWithCursor` and prefers it. Adapters that only
- * implement `pull(sinceMs)` are untouched and keep their replay-from-zero
- * behavior.
- */
-export interface CursorSyncAdapter extends SyncAdapter {
-  /**
-   * Fetch changes after `cursor`, or from the beginning when it is `null`.
-   * Returns the changes plus the token to resume from next time.
-   */
-  pullWithCursor(cursor: string | null): Promise<PullResult>;
-}
-
-export interface SyncOptions {
-  /**
-   * Collections to sync. Omit to sync **all** user collections (reserved
-   * `_`-prefixed collections are always skipped). Provide an array to sync only
-   * those.
-   */
-  collections?: string[];
-  /**
-   * Collections to skip. Applied after `collections` (or after the
-   * all-collections default), so `{ exclude: ['logs'] }` means "sync everything
-   * except logs".
-   */
-  exclude?: string[];
-  /** Direction of the pass. Default `'both'` (bidirectional). */
-  direction?: SyncDirection;
-  /**
-   * Names this sync target. Reserved cursor state remains isolated per target
-   * for forward compatibility with monotonic server cursors. Default
-   * `'default'`.
-   */
-  target?: string;
-}
-
-export interface SyncResult {
-  /** Number of local changes pushed to the remote. */
-  pushed: number;
-  /** Number of documents changed locally by the pulled remote changeset. */
-  pulled: number;
-  /**
-   * Documents in the pulled changeset skipped by an import validator (a
-   * collection this client does not model). Always `0` when no `syncSchema`
-   * applied to the pass.
-   */
-  skipped?: number;
-  /**
-   * Documents in the pulled changeset set aside by an import validator because
-   * they failed structural validation. Recoverable via {@link TalaDB.quarantined}.
-   * Always `0` when no `syncSchema` applied to the pass.
-   */
-  quarantined?: number;
-  /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
-  cursor: number;
-}
-
-/** A document set aside during a validated sync import, with its rejection reason. */
-export interface QuarantinedDocument<T extends Document = Document> {
-  /** The rejected document, retained verbatim. */
-  document: T;
-  /** Human-readable reason the document was quarantined. */
-  reason: string;
-  /** The `changed_at` (ms epoch) the rejected change carried. */
-  changedAt: number;
-}
+import type { WebhookStats } from './webhook';
 
 // --------------- TalaDB interface ---------------
 
 export interface TalaDB {
   collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
   /**
-   * Run one bidirectional sync pass against `adapter`: pull remote changes and
-   * merge them (Last-Write-Wins), then push local changes since the last cursor.
-   * The cursor is persisted per `target`, so successive calls sync incrementally.
-   * Set `direction` to `'push'` or `'pull'` to make it one-way.
-   *
-   * @example
-   * await db.sync(httpAdapter, { collections: ['notes'] });          // bidirectional
-   * await db.sync(httpAdapter, { collections: ['logs'], direction: 'push' });
-   */
-  sync(adapter: SyncAdapter, options: SyncOptions): Promise<SyncResult>;
-  /**
-   * Low-level: export changes to `collections` with `changed_at` after `sinceMs`
-   * (exclusive) as a serialized changeset. Most apps use {@link TalaDB.sync}.
-   */
-  exportChanges(collections: string[], sinceMs: number): Promise<SerializedChangeset>;
-  /**
-   * Low-level: merge a serialized changeset into the local database via
-   * Last-Write-Wins. Returns the number of documents changed. Idempotent —
-   * re-importing the same changeset is a no-op.
-   */
-  importChanges(changeset: SerializedChangeset): Promise<number>;
-  /**
    * Compact the underlying storage file, reclaiming space freed by deletes
    * and updates.
    *
-   * Call during idle periods — e.g. once on startup after `compactTombstones`.
-   * No-op on in-memory (IndexedDB-fallback) databases.
+   * Call during idle periods — e.g. once on startup. No-op on in-memory
+   * (IndexedDB-fallback) databases.
    *
    * @example
    * await db.compact();
    */
   compact(): Promise<void>;
-  /**
-   * Return the documents set aside in `collection`'s quarantine table by a
-   * validated sync import (see {@link SyncSchema}). Empty when nothing was
-   * quarantined. Wired on browser and Node.js; resolves to `[]` on runtimes
-   * without support.
-   */
-  quarantined?<T extends Document = Document>(collection: string): Promise<QuarantinedDocument<T>[]>;
   /**
    * Force any batched (eventual-durability) writes to durable storage, and on
    * the browser also write the IndexedDB fallback snapshot immediately. A
@@ -822,9 +630,44 @@ export interface TalaDB {
    * "save now" moments (before checkout, on `visibilitychange`).
    */
   flush?(): Promise<void>;
-  /** Browser HTTP-push queue health, when supported by the active binding. */
-  syncStatus?(): Promise<{ pending: number; dropped: number; failed: number }>;
-  /** Wait for accepted browser HTTP-push events, returning false on timeout. */
-  flushSync?(timeoutMs?: number): Promise<boolean>;
+  /**
+   * Whether this tab's writes land authoritatively, without being forwarded to
+   * another tab.
+   *
+   * **Browser only.** The first tab to open a database becomes the primary and
+   * owns the storage; later tabs run an in-memory copy and forward their writes
+   * to it over BroadcastChannel. Both the OPFS owner and — where OPFS is
+   * unavailable — the tab that publishes the IndexedDB snapshot report `true`.
+   *
+   * Use it for work that must not run in more than one tab at a time, or that
+   * depends on reading its own writes back immediately: a background queue
+   * drainer, a scheduled cleanup pass, an outbound sync loop. A secondary tab
+   * sees other tabs' writes up to ~500 ms late, and its own writes only once
+   * the primary has applied them.
+   *
+   * Primary status changes during a session — closing the owning tab promotes
+   * another — so re-check it rather than caching the answer.
+   *
+   * Always `true` on Node.js and React Native, where a single process owns the
+   * database. May be absent on older `@taladb/web` builds — treat absence as
+   * `true`.
+   *
+   * @example
+   * if (await db.isPrimary?.() ?? true) {
+   *   await drainOutbox();
+   * }
+   */
+  isPrimary?(): Promise<boolean>;
+  /**
+   * Change-webhook delivery counters, when the webhook is enabled. All zero
+   * (and `pending: 0`) when it is not.
+   */
+  webhookStats?(): WebhookStats;
+  /**
+   * Wait for queued change-webhook events to drain. Resolves `true` when the
+   * queue emptied, `false` on timeout. Resolves `true` immediately when the
+   * webhook is disabled.
+   */
+  flushWebhook?(timeoutMs?: number): Promise<boolean>;
   close(): Promise<void>;
 }

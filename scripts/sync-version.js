@@ -15,9 +15,6 @@ const packages = [
   "packages/bindings/node",
   "packages/bindings/react-native",
   "packages/clients/react",
-  "packages/integrations/cloudflare",
-  "packages/adapters/mongodb",
-  "packages/integrations/next",
 ];
 
 for (const pkg of packages) {

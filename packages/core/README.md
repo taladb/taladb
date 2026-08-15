@@ -64,15 +64,6 @@ The browser and React Native are the primary targets; native and Node are
 supported but are not what the design optimises for. Anything that would bloat a
 WASM bundle is feature-gated.
 
-## Benchmarks
-
-```
-cargo bench -p taladb-core
-```
-
-Covers vector scoring, query filtering, and insert throughput. See
-[`benches/`](benches/).
-
 ## License
 
 Apache-2.0

@@ -75,12 +75,6 @@ taladb/
 │   │   ├── taladb/                 #   Unified meta-package        → taladb
 │   │   └── react/                  #   React hooks                 → @taladb/react
 │   │
-│   ├── adapters/                   # Sync adapters (pure TS)
-│   │   └── mongodb/                #   MongoDB bidirectional sync  → @taladb/sync-mongodb
-│   │
-│   ├── integrations/
-│   │   └── cloudflare/             #   Cloudflare Workers deploy   → @taladb/cloudflare
-│   │
 │   └── tools/
 │       └── cli/                    #   Dev CLI (crate: taladb-cli)
 │
@@ -90,7 +84,7 @@ taladb/
     └── node-script/                # Node.js script demo
 ```
 
-**core** is the engine; **bindings** are the runtime wrappers over it; **clients**, **adapters**, and **integrations** consume it. npm package names (right column) are unchanged by this layout — only their folders are grouped.
+**core** is the engine; **bindings** are the runtime wrappers over it; **clients** and **integrations** consume it. npm package names (right column) are unchanged by this layout — only their folders are grouped.
 
 ## Packages
 
@@ -143,7 +137,7 @@ The `taladb` package lists the platform packages as `optionalDependencies`, whic
 
 The one-line rule: **TalaDB is where one device's data lives; Recached is how many devices agree.** Reach for TalaDB when you need queryable structured data and semantic search on-device. Reach for Recached when many users or devices need to see the same live state.
 
-They meet where an app needs both — locally queryable data that also syncs across users. TalaDB's [`SyncAdapter`](/roadmap) interface is designed to plug into a sync backbone, and Recached is a natural one: TalaDB owns the on-device query and vector engine, Recached owns the cross-device agreement.
+They meet where an app needs both — locally queryable data that must also reach other users. TalaDB deliberately does not replicate: it owns the on-device query and vector engine and reports its writes outward through a [change webhook](/api/webhook), leaving cross-device agreement to a layer built for it. Recached is a natural one.
 
 ## Status
 

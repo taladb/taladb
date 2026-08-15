@@ -7,7 +7,7 @@ Documents + similarity search built in Rust — browser, Node.js, and React Nati
 
 [![npm](https://img.shields.io/npm/v/taladb?label=npm)](https://www.npmjs.com/package/taladb)
 [![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/taladb/taladb)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/taladb/taladb)
@@ -59,35 +59,6 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 \+ encryption at rest, schema migrations, snapshot export/import, CLI tools.
 
-## Performance
-
-Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web` for the browser, `pnpm bench` for Node.js) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. Node.js results are from TalaDB v0.10.2; browser vector results are from v0.9.4 and have not yet been re-run against the v0.10.2 engine, so they understate current performance. File-backed / OPFS, medians after warmup.
-
-**Browser (WASM + OPFS)** — the flagship runtime, measured in headless Chrome (every timing includes the worker round-trip):
-
-| Operation | Scale | Result |
-|---|---|---|
-| `findNearest` (384-dim, exact k-NN) | 10k vectors | **17 ms** |
-| `findNearest` (384-dim, exact k-NN) | 50k vectors | **85 ms** |
-| Filtered vector search (metadata + rank) | 50k vectors | **123 ms** |
-| `findOne` by `_id` | 100k docs | **100 µs** |
-| `find` on indexed field | 100k docs | **300 µs** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
-
-**Node.js (native)** — file-backed, `fsync`-durable per write:
-
-| Operation | Scale | Result |
-|---|---|---|
-| `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **7.7 ms / 65 ms** |
-| Filtered vector search (metadata + rank) | 100k vectors | **171 ms** |
-| `findOne` by `_id` | 100k docs | **25 µs** |
-| `find` on indexed field | 100k docs | **174 µs** |
-| `find`, two-sided range (`$gte`+`$lt`) | 100k docs | **1.4 ms** |
-| `find`, unindexed field (full scan) | 100k docs | **317 ms** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~39k docs/s** |
-
-Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js. **0.10.2 cut exact vector search by ~63%** at 100k vectors (174 ms → 65 ms) by scoring each candidate in a single pass with the query norm hoisted out of the loop, and made the query engine resolve a storage table once per batch instead of once per key — worth **−30% on full scans**, **−32% on unindexed `count`**, and **+17% on bulk ingest**. `findOne` and bounded `find` no longer materialise the whole result set before discarding it, so an unindexed `findOne` is now microseconds rather than a full scan. Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
-
 ## Usage
 
 ### Install
@@ -112,7 +83,6 @@ pnpm add @taladb/react               # optional — the same hooks work in React
 
 ```bash
 pnpm add taladb @taladb/node                 # required
-pnpm add @taladb/sync-mongodb mongodb        # optional — sync to MongoDB (server-side only)
 ```
 
 | Package | Web | Mobile (RN) | Node | Role |
@@ -122,10 +92,6 @@ pnpm add @taladb/sync-mongodb mongodb        # optional — sync to MongoDB (ser
 | `@taladb/react-native` | — | ✅ required | — | React Native (JSI) binding |
 | `@taladb/node` | — | — | ✅ required | Node.js native binding |
 | `@taladb/react` | ⭕ optional | ⭕ optional | — | React / React Native hooks |
-| `@taladb/sync-mongodb` | — | — | ⭕ optional | MongoDB sync ([server-side only](https://taladb.dev/guide/bidirectional-sync#mongodb-adapter)) |
-| `@taladb/cloudflare` | — | — | ⭕ optional | Cloudflare Workers deploy target |
-
-Bidirectional HTTP sync (`HttpSyncAdapter`) ships inside `taladb` — no extra install. Database sync adapters like `@taladb/sync-mongodb` hold DB credentials and run **server-side only**; a web or mobile app syncs through your own API, never a direct database connection.
 
 ### Quick start
 
@@ -295,6 +261,26 @@ const unsub = articles.subscribe({ category: 'support' }, (docs) => {
 unsub()
 ```
 
+### Change webhook
+
+TalaDB does not replicate. When a backend needs to know about local writes, every
+committed mutation can fire one HTTP request — `POST` on insert, `PUT` on update,
+`DELETE` on delete:
+
+```ts
+const db = await openDB('app.db', {
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${token}` },
+    exclude_fields: ['embedding'],   // keep 768-float vectors out of the payload
+  },
+})
+```
+
+Identical on all three runtimes. Delivery is at most once — it is a notification
+channel, not a replication log. See [/api/webhook](https://taladb.dev/api/webhook).
+
 ## Documentation
 
 Full documentation is at **[taladb.dev](https://taladb.dev)**.
@@ -304,7 +290,6 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 | Introduction & architecture | [/introduction](https://taladb.dev/introduction) |
 | Core concepts | [/concepts](https://taladb.dev/concepts) |
 | Feature overview | [/features](https://taladb.dev/features) |
-| Benchmarks | [/benchmarks](https://taladb.dev/benchmarks) |
 | Web (Browser / WASM) guide | [/guide/web](https://taladb.dev/guide/web) |
 | Node.js guide | [/guide/node](https://taladb.dev/guide/node) |
 | React Native guide | [/guide/react-native](https://taladb.dev/guide/react-native) |
@@ -314,6 +299,7 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 | Migrations | [/api/migrations](https://taladb.dev/api/migrations) |
 | Encryption | [/api/encryption](https://taladb.dev/api/encryption) |
 | Live queries | [/api/live-queries](https://taladb.dev/api/live-queries) |
+| Change webhook | [/api/webhook](https://taladb.dev/api/webhook) |
 
 ## Development
 
@@ -372,11 +358,19 @@ Bug reports, PRs, and feedback are all welcome.
 
 Open an issue before large features or architectural changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
-Reach out: [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev)
-
 ## License
 
-Apache License 2.0 — © 2026 ThinkGrid Labs
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option — the Rust ecosystem's convention, so downstream crates can
+depend on TalaDB without a licence-compatibility review.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this project shall be dual-licensed as above, without any
+additional terms or conditions.
 
 ---
 

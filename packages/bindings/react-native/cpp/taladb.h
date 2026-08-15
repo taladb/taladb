@@ -38,9 +38,9 @@ typedef struct TalaDbHandle TalaDbHandle;
 TalaDbHandle *taladb_open(const char *path);
 
 /**
- * Open (or create) a database with HTTP push sync configuration.
+ * Open (or create) a database with durability/encryption configuration.
  *
- * config_json — JSON-serialised TalaDbConfig, or NULL to open without sync.
+ * config_json — JSON-serialised TalaDbConfig, or NULL for defaults.
  * Returns an opaque handle (same semantics as taladb_open), or NULL on failure.
  */
 TalaDbHandle *taladb_open_with_config(const char *path, const char *config_json);
@@ -78,39 +78,6 @@ char *taladb_insert(TalaDbHandle *handle,
 char *taladb_insert_many(TalaDbHandle *handle,
                          const char   *collection,
                          const char   *docs_json);
-
-/* -------------------------------------------------------------------------
- * Replication writes — id-addressed upsert / delete
- * ---------------------------------------------------------------------- */
-
-/**
- * Upsert many documents by caller-supplied `_id`, in one commit.
- *
- * Unlike taladb_insert_many(), which discards `_id` and mints a fresh ULID, this
- * honours the id on each document — which is what makes a replication upsert
- * idempotent across repeated fetches of the same remote row.
- *
- * `origin` is "remote" (authoritative rows replicated in from an origin) or
- * "local" (ordinary user writes). Remote rows are marked so they never replicate
- * back out.
- *
- * Returns a JSON array of ULID strings, or NULL on error.
- * Caller must free with taladb_free_string().
- */
-char *taladb_replace_many_with_ids(TalaDbHandle *handle,
-                                   const char   *collection,
-                                   const char   *docs_json,
-                                   const char   *origin);
-
-/**
- * Delete many documents by id, in one commit.
- * Returns a JSON number (the count removed), or NULL on error.
- * Caller must free with taladb_free_string().
- */
-char *taladb_delete_many_with_ids(TalaDbHandle *handle,
-                                  const char   *collection,
-                                  const char   *ids_json,
-                                  const char   *origin);
 
 /* -------------------------------------------------------------------------
  * Find
@@ -187,48 +154,11 @@ char *taladb_aggregate(TalaDbHandle *handle,
                        const char   *collection,
                        const char   *pipeline_json);
 
-/* -------------------------------------------------------------------------
- * Bidirectional sync — changeset export / import (backs JS db.sync())
- * ---------------------------------------------------------------------- */
-
-/**
- * Export a changeset for the collections in collections_json (a JSON array of
- * names) with changed_at > since_ms. Returns a JSON string, or NULL on error.
- * Caller must free with taladb_free_string().
- */
-char *taladb_export_changes(TalaDbHandle *handle,
-                            const char   *collections_json,
-                            double        since_ms);
-
-/**
- * Merge a JSON changeset (from a remote peer) via Last-Write-Wins.
- * Returns the number of documents changed, or -1 on error.
- */
-int32_t taladb_import_changes(TalaDbHandle *handle,
-                              const char   *changeset_json);
-
 /**
  * User collection names (reserved names excluded) as a JSON array string.
  * Returns NULL on error. Caller must free with taladb_free_string().
  */
 char *taladb_list_collection_names(TalaDbHandle *handle);
-
-/**
- * Merge a JSON changeset through a tolerant structural validator built from
- * schemas_json ({ "<collection>": { version, required, types, defaults,
- * renames } }). Returns a JSON "{ applied, skipped, quarantined }" string, or
- * NULL on error. Caller must free with taladb_free_string().
- */
-char *taladb_import_changes_validated(TalaDbHandle *handle,
-                                      const char   *changeset_json,
-                                      const char   *schemas_json);
-
-/**
- * Documents set aside in a collection's quarantine table by a validated import,
- * as a JSON array of { document, reason, changedAt }. NULL on error. Caller
- * must free with taladb_free_string().
- */
-char *taladb_quarantined(TalaDbHandle *handle, const char *collection);
 
 /**
  * Read / write the application migration version (backs openDB({ migrations })).
@@ -319,9 +249,6 @@ char *taladb_hybrid_search(TalaDbHandle *handle,
                            size_t        top_k,
                            const char   *filter_json,
                            const char   *options_json);
-
-char *taladb_sync_status(TalaDbHandle *handle);
-int32_t taladb_sync_flush(TalaDbHandle *handle, uint64_t timeout_ms);
 
 /* -------------------------------------------------------------------------
  * Async job API — run heavy queries on a background thread.

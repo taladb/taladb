@@ -4,18 +4,18 @@ import type {
   CollectionOptions,
   Document,
   TalaDB,
-  SyncAdapter,
-  SyncOptions,
-  SyncSchema,
-  QuarantinedDocument,
   AggregatePipeline,
   Update,
   Filter,
-  WriteOrigin,
 } from './types';
 import { loadConfig, validateConfig } from './config';
-import type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
-import { runSync, unsupportedSync, type SyncHandle } from './sync';
+import type { TalaDbConfig, DurabilityConfig } from './config';
+import {
+  createWebhookDispatcher,
+  wrapCollectionWithWebhook,
+  type WebhookConfig,
+  type WebhookDispatcher,
+} from './webhook';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
 export type {
@@ -37,46 +37,20 @@ export type {
   HybridSearchOptions,
   AggregateStage,
   AggregatePipeline,
-  SyncAdapter,
-  SyncOptions,
-  SyncResult,
-  SyncDirection,
-  SerializedChangeset,
-  WriteOrigin,
-  CursorSyncAdapter,
-  PullResult,
+  InsertDoc,
 } from './types';
 
-export { HttpSyncAdapter } from './http-adapter';
 export { deriveDocId } from './derive-id';
 
-// --------------- Replication (coverage-first) ---------------
 export {
-  ReplicationCoordinator,
-  REPLICA_SCOPE_FIELD,
-  REPLICA_REVISION_FIELD,
-  type CoordinatorOptions,
-  type BridgeResult,
-} from './replication/coordinator';
-export {
-  CoverageStore,
-  COVERAGE_COLLECTION,
-  coverageKey,
-  isAuthoritative,
-  progress,
-  rowsApplied,
-  type CoverageKey,
-  type CoverageState,
-} from './replication/coverage';
-export { createRestSource, type RestSourceOptions } from './replication/rest';
-export type {
-  BootstrapPage,
-  BootstrapRequest,
-  BridgeQuery,
-  DeltaPage,
-  RemoteKey,
-  ReplicationSource,
-} from './replication/source';
+  createWebhookDispatcher,
+  validateWebhookConfig,
+  type WebhookConfig,
+  type WebhookDispatcher,
+  type WebhookEvent,
+  type WebhookOp,
+  type WebhookStats,
+} from './webhook';
 
 // ============================================================
 // Validation
@@ -190,7 +164,7 @@ export function applySchema<T extends Document>(
    */
   const retired = new Set<string>(retiredFields);
   const engineOwned = new Set([
-    '_id', '_v', '_changed_at', '_remote', '_remote_rev', '_replica_scope',
+    '_id', '_v', '_changed_at',
   ]);
   const downcastViews = new WeakSet<object>();
 
@@ -263,12 +237,6 @@ export function applySchema<T extends Document>(
 
   /** Stamp the current shape version, unless the caller set `_v` explicitly. */
   function stamp(doc: Omit<T, '_id'>): Omit<T, '_id'> {
-    if (!stampVersion || (doc as Document)._v !== undefined) return doc;
-    return { ...doc, _v: targetVersion };
-  }
-
-  /** As {@link stamp}, but for writes that carry their own `_id` (replication). */
-  function stampDoc(doc: T): T {
     if (!stampVersion || (doc as Document)._v !== undefined) return doc;
     return { ...doc, _v: targetVersion };
   }
@@ -429,44 +397,6 @@ export function applySchema<T extends Document>(
           return col.insertMany(docs.map(stamp));
         }
       : col.insertMany.bind(col),
-    // Rows arriving from a remote origin are validated like any other write. This
-    // is the "parse, don't assert" boundary: the compile-time generic and the
-    // runtime schema check have to be the same seam, or a malformed server
-    // response walks straight into a typed collection.
-    replaceManyWithIds: wrapWrites
-      ? async (docs, origin) => {
-          if (origin !== 'remote') {
-            docs.forEach((doc, i) => assertWritableDocument(doc, `replaceManyWithIds[${i}]`));
-            if (targetVersion > 0) {
-              throw new Error(
-                'local replaceManyWithIds is disabled on versioned collections; ' +
-                  'use updateOne/updateMany so schema-version guards are atomic',
-              );
-            }
-          }
-          if (schema) docs.forEach((doc, i) => {
-            const { _replica_scope, _remote_rev, ...schemaDoc } = doc as T & {
-              _replica_scope?: unknown;
-              _remote_rev?: unknown;
-            };
-            void _replica_scope;
-            void _remote_rev;
-            parseWrite(schemaDoc, `replaceManyWithIds[${i}]`);
-          });
-          return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
-        }
-      : col.replaceManyWithIds.bind(col),
-    deleteManyWithIds: stampVersion
-      ? async (ids, origin) => {
-          if (origin !== 'remote') {
-            throw new Error(
-              'local deleteManyWithIds is disabled on versioned collections; ' +
-                'use deleteOne/deleteMany so schema-version guards are atomic',
-            );
-          }
-          return col.deleteManyWithIds(ids, origin);
-        }
-      : col.deleteManyWithIds.bind(col),
     updateOne: wrapWrites
       ? async (filter, update) => {
           assertSafeUpdate(update);
@@ -557,7 +487,37 @@ export function applySchema<T extends Document>(
   };
 }
 
-export type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
+/**
+ * Assemble the decorators that sit between an application and a platform
+ * adapter's raw collection. **Order is load-bearing:** webhook reporting goes
+ * innermost, schema handling outermost.
+ *
+ * Schema-outermost means the webhook wrapper sees writes exactly as the engine
+ * will run them — filters already narrowed by `writableFilter`, documents
+ * already `_v`-stamped — so what gets reported is what actually happened. It
+ * also keeps webhook id-resolution reads off the schema read path, where
+ * `validateOnRead` could otherwise fail a delete and `persistMigrations` could
+ * turn one into a write.
+ *
+ * Every adapter routes through here so that ordering cannot drift between
+ * runtimes, which is the same reason the dispatcher itself is one shared
+ * implementation rather than one per binding.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ */
+export function decorateCollection<T extends Document>(
+  raw: Collection<T>,
+  name: string,
+  opts: CollectionOptions<T> | undefined,
+  webhook: WebhookDispatcher | null,
+): Collection<T> {
+  const reported = webhook
+    ? (wrapCollectionWithWebhook(raw, name, webhook) as Collection<T>)
+    : raw;
+  return opts ? applySchema(reported, opts) : reported;
+}
+
+export type { TalaDbConfig, DurabilityConfig } from './config';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -691,7 +651,10 @@ function makePoller<T extends Document>(
  * In-memory fallback for browsers that don't support SharedWorker (e.g. Safari iOS).
  * Data is not persisted across page reloads; all writes live in WASM memory only.
  */
-async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
+async function createInMemoryBrowserDB(
+  _dbName: string,
+  webhook: WebhookDispatcher | null,
+): Promise<TalaDB> {
   const wasmUrl = new URL('@taladb/web/pkg/taladb_web.js', import.meta.url);
   const wasm = await import(/* @vite-ignore */ wasmUrl.href);
   await wasm.default();
@@ -702,8 +665,6 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
     const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc),
       insertMany: async (docs) => col.insertMany(docs),
-      replaceManyWithIds: async (docs, origin = 'local') => col.replaceManyWithIds(docs, origin),
-      deleteManyWithIds: async (ids, origin = 'local') => col.deleteManyWithIds(ids, origin),
       find: async (filter?) => col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
@@ -749,27 +710,24 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         onError?: (error: unknown) => void,
       ) => makePoller(async () => wrapped.aggregate<R>(pipeline), callback, onError),
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
 
-  // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
-  // internal SyncHandle, not part of the public interface) doesn't trip the
-  // excess-property check. Structurally still a TalaDB.
-  const handle = {
+  const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => {},
     close: async () => {},
-    exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections) as string,
-    importChanges: async (changeset: string) => db.importChanges(changeset) as number,
-    listCollectionNames: async () => db.listCollectionNames() as string[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options),
+    // Each tab holds its own isolated in-memory database and forwards nothing,
+    // so every tab is authoritative for the only data it can see. Two tabs both
+    // reporting `true` is correct here — they share no state to duplicate.
+    isPrimary: async () => true,
   };
-  return handle satisfies TalaDB;
+  return handle;
 }
 
 async function createBrowserDB(
   dbName: string,
+  webhook: WebhookDispatcher | null,
   config?: TalaDbConfig,
   passphrase?: string,
   migrations?: Migration[],
@@ -787,7 +745,7 @@ async function createBrowserDB(
   };
 
   // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
-  // Pass configJson so the worker can wire up HTTP push sync from the first write.
+  // Pass configJson so the worker applies durability settings from the first write.
   const configJson = config !== undefined ? JSON.stringify(config) : undefined;
   try {
     await proxy.send('init', { dbName, configJson, passphrase });
@@ -815,12 +773,7 @@ async function createBrowserDB(
     };
   }
 
-  // Per-collection sync schemas, registered as collections are opened, so
-  // `db.sync()` validates pulled documents in the worker ("validate, never cast").
-  const syncSchemas: Record<string, SyncSchema> = {};
-
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const s = JSON.stringify;
     const wrapped: Collection<T> = {
       insert: (doc) =>
@@ -833,17 +786,6 @@ async function createBrowserDB(
         return JSON.parse(json) as string[];
       },
 
-      replaceManyWithIds: async (docs, origin = 'local') => {
-        const json = await proxy.send<string>('replaceManyWithIds', {
-          collection: name, docsJson: s(docs), origin,
-        });
-        return JSON.parse(json) as string[];
-      },
-
-      deleteManyWithIds: (ids, origin = 'local') =>
-        proxy.send<number>('deleteManyWithIds', {
-          collection: name, idsJson: s(ids), origin,
-        }),
 
       find: async (filter?) => {
         const json = await proxy.send<string>('find', {
@@ -990,7 +932,7 @@ async function createBrowserDB(
           onError,
         ),
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
 
   /**
@@ -1079,15 +1021,14 @@ async function createBrowserDB(
     };
   }
 
-  // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
-  // internal SyncHandle, not part of the public interface) doesn't trip the
-  // excess-property check. Structurally still a TalaDB.
+  // Not annotated `: TalaDB` so the extra `listCollectionNames` (not part of
+  // the public interface) doesn't trip the excess-property check. Structurally
+  // still a TalaDB.
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
     flush: async () => { await proxy.send<void>('flush'); },
-    syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
-    flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
+    isPrimary: () => proxy.send<boolean>('isPrimary'),
     close: async () => {
       channel?.close();
       try {
@@ -1097,24 +1038,8 @@ async function createBrowserDB(
         proxy.abort(new Error('taladb worker closed'));
       }
     },
-    // All engine work (export scan, LWW merge) runs inside the worker, off the
-    // main thread — a sync pass never blocks rendering, whatever its size.
-    exportChanges: (collections: string[], sinceMs: number) =>
-      proxy.send<string>('exportChangeset', { collectionsJson: JSON.stringify(collections), sinceMs }),
-    importChanges: (changeset: string) =>
-      proxy.send<number>('importChangeset', { changesetJson: changeset }),
-    importChangesValidated: async (changeset: string, schemasJson: string) =>
-      JSON.parse(await proxy.send<string>('importChangesetValidated', { changesetJson: changeset, schemasJson })) as {
-        applied: number;
-        skipped: number;
-        quarantined: number;
-      },
     listCollectionNames: async () =>
       JSON.parse(await proxy.send<string>('listCollections')) as string[],
-    quarantined: async <T extends Document = Document>(collection: string) =>
-      JSON.parse(await proxy.send<string>('quarantined', { collection })) as QuarantinedDocument<T>[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
   if (migrations?.length) {
     // Version accessors run inside the worker, alongside the engine, so the
@@ -1137,6 +1062,7 @@ async function createBrowserDB(
 
 async function createNodeDB(
   dbName: string,
+  webhook: WebhookDispatcher | null,
   config?: TalaDbConfig,
   passphrase?: string,
   migrations?: Migration[],
@@ -1152,12 +1078,7 @@ async function createNodeDB(
   const configJson = config !== undefined ? JSON.stringify(config) : null;
   const db = TalaDBNode.open(dbName, configJson, passphrase ?? null);
 
-  // Per-collection sync schemas, registered as collections are opened, so
-  // `db.sync()` can validate pulled documents ("validate, never cast").
-  const syncSchemas: Record<string, SyncSchema> = {};
-
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const col = db.collection(name);
     // Prefer the *Async native variants (added in 0.8.1): they run on the
     // libuv thread pool instead of blocking the JS event loop. Fall back to
@@ -1167,14 +1088,6 @@ async function createNodeDB(
         col.insertAsync ? col.insertAsync(doc as Record<string, unknown>) : col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) =>
         col.insertManyAsync ? col.insertManyAsync(docs as Record<string, unknown>[]) : col.insertMany(docs as Record<string, unknown>[]),
-      replaceManyWithIds: async (docs, origin = 'local') =>
-        col.replaceManyWithIdsAsync
-          ? col.replaceManyWithIdsAsync(docs as Record<string, unknown>[], origin)
-          : col.replaceManyWithIds(docs as Record<string, unknown>[], origin),
-      deleteManyWithIds: async (ids, origin = 'local') =>
-        col.deleteManyWithIdsAsync
-          ? col.deleteManyWithIdsAsync(ids, origin)
-          : col.deleteManyWithIds(ids, origin),
       find: async (filter?) =>
         col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
@@ -1221,35 +1134,21 @@ async function createNodeDB(
         onError?: (error: unknown) => void,
       ) => makePoller(async () => wrapped.aggregate<R>(pipeline), callback, onError),
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
 
-  // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
-  // internal SyncHandle, not part of the public interface) doesn't trip the
-  // excess-property check. Structurally still a TalaDB.
+  // Not annotated `: TalaDB` so the extra `listCollectionNames` (not part of
+  // the public interface) doesn't trip the excess-property check. Structurally
+  // still a TalaDB.
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => db.compact(),
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
     flush: db.flush ? async () => { db.flush(); } : undefined,
-    exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections),
-    importChanges: async (changeset: string) => db.importChanges(changeset),
-    // Feature-detected: only present when the loaded .node binary supports it,
-    // so older prebuilt binaries fall back to plain importChanges.
-    importChangesValidated: db.importChangesValidated
-      ? async (changeset: string, schemasJson: string) =>
-          db.importChangesValidated(changeset, schemasJson) as {
-            applied: number;
-            skipped: number;
-            quarantined: number;
-          }
-      : undefined,
+    // One process owns the file — there is no other tab to defer to.
+    isPrimary: async () => true,
     listCollectionNames: async () => db.listCollectionNames(),
-    quarantined: async <T extends Document = Document>(collection: string) =>
-      (db.quarantined ? db.quarantined(collection) : []) as QuarantinedDocument<T>[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
   if (migrations?.length) {
     if (typeof db.userVersion !== 'function' || typeof db.setUserVersion !== 'function') {
@@ -1274,8 +1173,6 @@ async function createNodeDB(
 interface NativeDB {
   insert(collection: string, doc: Record<string, unknown>): string;
   insertMany(collection: string, docs: Record<string, unknown>[]): string[];
-  replaceManyWithIds(collection: string, docs: Record<string, unknown>[], origin: WriteOrigin): string[];
-  deleteManyWithIds(collection: string, ids: string[], origin: WriteOrigin): number;
   find(collection: string, filter: Record<string, unknown>): Record<string, unknown>[];
   findOne(collection: string, filter: Record<string, unknown>): Record<string, unknown> | null;
   updateOne(collection: string, filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
@@ -1301,21 +1198,7 @@ interface NativeDB {
   hybridSearch?(collection: string, textField: string, text: string, vectorField: string, vector: number[], topK: number, filter: Record<string, unknown> | null, options: Record<string, unknown> | null): { document: Record<string, unknown>; score: number; textRank: number | null; vectorRank: number | null }[];
   compact(): void;
   close(): void;
-  // Bidirectional-sync primitives. Optional: only present on binaries built
-  // with the sync HostObject methods (added in 0.9.x). Absent on older
-  // prebuilt native modules, in which case db.sync() falls back to a clear
-  // "not available" error rather than crashing.
-  exportChanges?(collectionsJson: string[], sinceMs: number): string;
-  importChanges?(changeset: string): number;
   listCollectionNames?(): string[];
-  // Validate-on-import (JSI HostObject 0.9.2+). Feature-detected so `db.sync()`
-  // falls back to unvalidated import on native modules that predate them.
-  importChangesValidated?(changeset: string, schemasJson: string): {
-    applied: number;
-    skipped: number;
-    quarantined: number;
-  };
-  quarantined?(collection: string): unknown[];
   // Migration version accessors (openDB({ migrations })). Present once the JSI
   // HostObject exposes them; feature-detected so older binaries throw a clear
   // "not available" error instead of silently skipping migrations.
@@ -1325,7 +1208,11 @@ interface NativeDB {
   flush?(): void;
 }
 
-async function createNativeDB(_dbName: string, migrations?: Migration[]): Promise<TalaDB> {
+async function createNativeDB(
+  _dbName: string,
+  webhook: WebhookDispatcher | null,
+  migrations?: Migration[],
+): Promise<TalaDB> {
   // The JSI HostObject is installed by @taladb/react-native's TurboModule
   // at app startup via TalaDBModule.initialize(dbName).
   // After that, it is available at globalThis.__TalaDB__.
@@ -1338,19 +1225,10 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
   }
   const native: NativeDB = maybeNative;
 
-  // Per-collection sync schemas, registered as collections are opened, so
-  // `db.sync()` validates pulled documents ("validate, never cast").
-  const syncSchemas: Record<string, SyncSchema> = {};
-
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const wrapped: Collection<T> = {
       insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
       insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
-      replaceManyWithIds: async (docs, origin = 'local') =>
-        native.replaceManyWithIds(name, docs as Record<string, unknown>[], origin),
-      deleteManyWithIds: async (ids, origin = 'local') =>
-        native.deleteManyWithIds(name, ids, origin),
       find: async (filter?) => native.find(name, filter ?? {}) as T[],
       findOne: async (filter) => native.findOne(name, filter ?? {}) as T | null,
       updateOne: async (filter, update) => native.updateOne(name, filter, update),
@@ -1403,48 +1281,16 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
         onError?: (error: unknown) => void,
       ) => makePoller(async () => native.aggregate(name, pipeline as unknown[]) as R[], callback, onError),
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
-
-  // Bidirectional sync is available only when the native module exposes the
-  // changeset primitives (0.9.x+ JSI HostObject). Feature-detect so an older
-  // prebuilt binary degrades to a clear error instead of a hard crash.
-  const syncSurface =
-    typeof native.exportChanges === 'function' &&
-    typeof native.importChanges === 'function' &&
-    typeof native.listCollectionNames === 'function'
-      ? (() => {
-          const handle = {
-            collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
-            exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
-            importChanges: async (changeset: string) => native.importChanges!(changeset),
-            // Feature-detected: present on 0.9.2+ JSI HostObjects; when absent,
-            // runSync falls back to unvalidated importChanges.
-            importChangesValidated: native.importChangesValidated
-              ? async (changeset: string, schemasJson: string) => native.importChangesValidated!(changeset, schemasJson)
-              : undefined,
-            listCollectionNames: async () => native.listCollectionNames!(),
-            sync: (adapter: SyncAdapter, options: SyncOptions) =>
-              runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
-          };
-          return {
-            exportChanges: handle.exportChanges,
-            importChanges: handle.importChanges,
-            sync: handle.sync,
-          };
-        })()
-      : unsupportedSync('react-native');
 
   const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
     flush: native.flush ? async () => { native.flush!(); } : undefined,
-    quarantined: native.quarantined
-      ? async <T extends Document = Document>(collection: string) =>
-          native.quarantined!(collection) as QuarantinedDocument<T>[]
-      : undefined,
-    ...syncSurface,
+    // One process owns the file — there is no other tab to defer to.
+    isPrimary: async () => true,
   };
   if (migrations?.length) {
     // Feature-detected: the JSI HostObject exposes these once the native glue
@@ -1555,6 +1401,26 @@ export interface OpenDBOptions {
    */
   config?: TalaDbConfig;
   /**
+   * Outbound change webhook. Every committed mutation fires one HTTP request:
+   * `POST` on insert, `PUT` on update, `DELETE` on delete.
+   *
+   * Takes precedence over `config.webhook`. This is the only way to enable the
+   * webhook on the browser and React Native, where there is no config file to
+   * discover. Delivery is best effort with stable idempotency keys across
+   * retries — see `webhook.ts`.
+   *
+   * @example
+   * const db = await openDB('app.db', {
+   *   webhook: {
+   *     enabled: true,
+   *     endpoint: 'https://api.example.com/taladb',
+   *     headers: { Authorization: `Bearer ${token}` },
+   *     exclude_fields: ['embedding'],
+   *   },
+   * });
+   */
+  webhook?: WebhookConfig;
+  /**
    * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
    * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
    * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
@@ -1568,15 +1434,15 @@ export interface OpenDBOptions {
  * Open a TalaDB database.
  *
  * @param dbName   Name of the database file (used for OPFS and native file paths).
- * @param options  Optional config. Pass `{ config }` for inline sync settings or
- *                 `{ configPath }` to load from a specific file.
+ * @param options  Optional config. Pass `{ config }` to supply settings inline
+ *                 or `{ configPath }` to load them from a specific file.
  *
  * @example
  * const db = await openDB('myapp.db');
  *
- * @example with inline sync config
+ * @example with an inline change webhook
  * const db = await openDB('myapp.db', {
- *   config: { sync: { enabled: true, endpoint: 'https://api.example.com/events' } },
+ *   webhook: { enabled: true, endpoint: 'https://api.example.com/taladb' },
  * });
  */
 export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Promise<TalaDB> {
@@ -1599,19 +1465,54 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
     };
   }
 
+  // One dispatcher per database, built before the platform split so every
+  // runtime gets identical webhook behaviour from identical code.
+  const webhook = createWebhookDispatcher(options?.webhook ?? resolvedConfig?.webhook);
+
   const platform = detectPlatform();
   const migrations = options?.migrations;
+  let db: TalaDB;
   switch (platform) {
     case 'browser':
       // Browser encryption is applied inside the OPFS worker (AES-GCM-256, salt
       // in an OPFS sidecar). The worker fails closed if OPFS is unavailable, so
       // an encrypted DB is never silently downgraded to a plaintext fallback.
-      return createBrowserDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createBrowserDB(dbName, webhook, resolvedConfig, options?.passphrase, migrations);
+      break;
     case 'react-native':
       if (options?.passphrase !== undefined) {
         throw new Error('On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted');
       }
-      return createNativeDB(dbName, migrations);
-    case 'node':         return createNodeDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createNativeDB(dbName, webhook, migrations);
+      break;
+    case 'node':
+      db = await createNodeDB(dbName, webhook, resolvedConfig, options?.passphrase, migrations);
+      break;
   }
+  return webhook ? attachWebhook(db, webhook) : db;
+}
+
+/**
+ * Add the database-level webhook surface: the counters, a manual drain, and a
+ * best-effort drain on `close()`.
+ *
+ * Per-collection reporting is *not* wired here. It goes in via
+ * {@link decorateCollection}, underneath each adapter's schema layer, because
+ * wrapping a collection the adapter has already decorated puts the webhook
+ * outside `applySchema` — where it sees unguarded filters and unstamped
+ * documents. Behaviour still cannot drift between runtimes, since every adapter
+ * calls the same `decorateCollection` with the same dispatcher.
+ */
+function attachWebhook(db: TalaDB, webhook: WebhookDispatcher): TalaDB {
+  return {
+    ...db,
+    webhookStats: () => webhook.stats(),
+    flushWebhook: (timeoutMs?: number) => webhook.flush(timeoutMs),
+    async close() {
+      // Best-effort drain before teardown: an event queued by the last write
+      // has nowhere to go once the handle is gone.
+      await webhook.flush();
+      await db.close();
+    },
+  };
 }

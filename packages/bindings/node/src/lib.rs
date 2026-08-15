@@ -2,12 +2,10 @@ use napi::bindgen_prelude::{AsyncTask, Float32Array};
 use napi::{Env, Task};
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
 use std::sync::Arc;
 use taladb_core::{
-    Collection, Database, Document, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
-    StructuralSchema, TalaDbConfig, TalaDbError, Ulid, Update, Value, VectorMetric,
-    VectorSearchResult, WriteOrigin,
+    Collection, Database, Filter, HnswOptions, TalaDbConfig, TalaDbError, Update, Value,
+    VectorMetric, VectorSearchResult,
 };
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
@@ -75,56 +73,6 @@ fn obj_to_fields(json: JsonValue) -> napi::Result<Vec<(String, Value)>> {
             .collect()),
         _ => Err(napi::Error::from_reason("document must be a plain object")),
     }
-}
-
-fn parse_ulid(s: &str) -> napi::Result<Ulid> {
-    Ulid::from_string(s).map_err(|_| {
-        napi::Error::from_reason(format!(
-            "\"{s}\" is not a valid ULID. Ids for replicated rows come from \
-             deriveDocId(collection, remoteKey)."
-        ))
-    })
-}
-
-fn parse_write_origin(origin: &str) -> napi::Result<WriteOrigin> {
-    match origin {
-        "local" => Ok(WriteOrigin::Local),
-        "remote" => Ok(WriteOrigin::AuthoritativeRemote),
-        other => Err(napi::Error::from_reason(format!(
-            "unknown write origin \"{other}\"; expected \"local\" or \"remote\""
-        ))),
-    }
-}
-
-/// Parse a JS object into a [`Document`], **honouring `_id`**.
-///
-/// [`obj_to_fields`] keeps `_id` only as an ordinary field — the engine mints its
-/// own ULID on insert. Replication needs the id to *be* the primary key, since that
-/// is what makes an upsert idempotent across a bootstrap walk and an on-demand
-/// fetch. A missing or malformed `_id` is therefore a hard error here, not a
-/// silently-generated new row.
-fn obj_to_doc(json: JsonValue) -> napi::Result<Document> {
-    let JsonValue::Object(map) = json else {
-        return Err(napi::Error::from_reason("document must be a plain object"));
-    };
-    let id = match map.get("_id") {
-        Some(JsonValue::String(s)) => parse_ulid(s)?,
-        _ => {
-            return Err(napi::Error::from_reason(
-                "replaceManyWithIds requires a string `_id` on every document",
-            ));
-        }
-    };
-    let fields = map
-        .into_iter()
-        .filter(|(k, _)| k.as_str() != "_id")
-        .map(|(k, v)| (k, json_to_value(v)))
-        .collect();
-    Ok(Document::with_id(id, fields))
-}
-
-fn parse_ulids(ids: Vec<String>) -> napi::Result<Vec<Ulid>> {
-    ids.iter().map(|s| parse_ulid(s)).collect()
 }
 
 fn json_to_filter(json: &JsonValue) -> napi::Result<Filter> {
@@ -221,9 +169,7 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
                     .to_string(),
             ),
             _ => {
-                return Err(napi::Error::from_reason(format!(
-                    "unknown operator: {op}"
-                )));
+                return Err(napi::Error::from_reason(format!("unknown operator: {op}")));
             }
         };
         filters.push(f);
@@ -329,94 +275,6 @@ fn parse_hnsw_opts(
 }
 
 // ---------------------------------------------------------------------------
-// Import-validation schema helpers
-// ---------------------------------------------------------------------------
-
-fn parse_field_type(name: &str) -> napi::Result<FieldType> {
-    Ok(match name {
-        "bool" => FieldType::Bool,
-        "int" => FieldType::Int,
-        "float" => FieldType::Float,
-        "str" => FieldType::Str,
-        "bytes" => FieldType::Bytes,
-        "array" => FieldType::Array,
-        "object" => FieldType::Object,
-        "any" => FieldType::Any,
-        other => {
-            return Err(napi::Error::from_reason(format!(
-                "unknown field type \"{other}\" (expected bool|int|float|str|bytes|array|object|any)"
-            )));
-        }
-    })
-}
-
-fn parse_schema_desc(desc: &JsonValue) -> napi::Result<StructuralSchema> {
-    let version = desc.get("version").and_then(JsonValue::as_i64).unwrap_or(0);
-    let required = desc
-        .get("required")
-        .and_then(JsonValue::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|s| s.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let types = match desc.get("types").and_then(JsonValue::as_object) {
-        Some(map) => {
-            let mut out = HashMap::with_capacity(map.len());
-            for (k, v) in map {
-                let name = v.as_str().ok_or_else(|| {
-                    napi::Error::from_reason(format!("schema type for `{k}` must be a string"))
-                })?;
-                out.insert(k.clone(), parse_field_type(name)?);
-            }
-            out
-        }
-        None => HashMap::new(),
-    };
-    let defaults = desc
-        .get("defaults")
-        .and_then(JsonValue::as_object)
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-                .collect()
-        })
-        .unwrap_or_default();
-    let renames = desc
-        .get("renames")
-        .and_then(JsonValue::as_object)
-        .map(|m| {
-            m.iter()
-                .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(StructuralSchema {
-        version,
-        required,
-        types,
-        defaults,
-        renames,
-    })
-}
-
-/// Parse a `{ "<collection>": <descriptor>, ... }` JSON object into the
-/// per-collection schema map backing [`SchemaValidator`].
-fn build_schemas(schemas_json: &str) -> napi::Result<HashMap<String, StructuralSchema>> {
-    let root: JsonValue = serde_json::from_str(schemas_json)
-        .map_err(|e| napi::Error::from_reason(format!("schema descriptor parse failed: {e}")))?;
-    let obj = root
-        .as_object()
-        .ok_or_else(|| napi::Error::from_reason("schema descriptor must be a JSON object"))?;
-    let mut out = HashMap::with_capacity(obj.len());
-    for (col, desc) in obj {
-        out.insert(col.clone(), parse_schema_desc(desc)?);
-    }
-    Ok(out)
-}
-
-// ---------------------------------------------------------------------------
 // napi bindings
 // ---------------------------------------------------------------------------
 
@@ -425,7 +283,6 @@ pub struct TalaDBNode {
     /// `None` after `close()` — methods then return an error instead of
     /// touching freed state.
     inner: Option<Database>,
-    sync_hook: Option<Arc<dyn taladb_core::SyncHook>>,
 }
 
 #[napi]
@@ -434,18 +291,14 @@ impl TalaDBNode {
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
         let db = Database::open_in_memory().map_err(err_to_napi)?;
-        Ok(Self {
-            inner: Some(db),
-            sync_hook: None,
-        })
+        Ok(Self { inner: Some(db) })
     }
 
     /// Open a file-backed database at the given path.
     ///
-    /// Pass an optional JSON-serialised `TalaDbConfig` as `config_json` to
-    /// activate HTTP push sync. When `sync.enabled` is `true` and the
-    /// `sync-http` feature is compiled in, an `HttpSyncHook` is attached to
-    /// every collection returned by `collection()`.
+    /// `config_json` is an optional JSON-serialised `TalaDbConfig`; only its
+    /// `durability` block is read here. Change webhooks are delivered by the
+    /// `taladb` TypeScript client, not by this binding.
     #[napi(factory)]
     pub fn open(
         path: String,
@@ -463,11 +316,7 @@ impl TalaDBNode {
         {
             db.set_durability(!cfg.durability.flush_every_write);
         }
-        let sync_hook = build_sync_hook(config_json)?;
-        Ok(Self {
-            inner: Some(db),
-            sync_hook,
-        })
+        Ok(Self { inner: Some(db) })
     }
 
     /// Force any batched (eventual-durability) writes to disk. No-op under the
@@ -478,8 +327,8 @@ impl TalaDBNode {
     }
 
     /// Compact the underlying storage file, reclaiming space freed by deletes
-    /// and updates. Call during idle periods after large bulk deletes or
-    /// tombstone compaction. Returns the number of bytes reclaimed (may be 0).
+    /// and updates. Call during idle periods after large bulk deletes.
+    /// Returns the number of bytes reclaimed (may be 0).
     #[napi]
     pub fn compact(&self) -> napi::Result<()> {
         self.db()?.compact().map_err(err_to_napi)
@@ -502,80 +351,10 @@ impl TalaDBNode {
             .ok_or_else(|| napi::Error::from_reason("database is closed"))
     }
 
-    /// List user collection names (excludes reserved `_`-prefixed collections
-    /// such as the sync cursor store). Backs "sync all collections".
+    /// List user collection names (excludes reserved `_`-prefixed collections).
     #[napi(js_name = "listCollectionNames")]
     pub fn list_collection_names(&self) -> napi::Result<Vec<String>> {
         self.db()?.list_collection_names().map_err(err_to_napi)
-    }
-
-    /// Export changes to `collections` after `sinceMs` (exclusive) as a JSON
-    /// changeset string, for the bidirectional sync orchestration. `sinceMs`
-    /// is a millisecond epoch timestamp (the persisted sync cursor).
-    #[napi(js_name = "exportChanges")]
-    pub fn export_changes(&self, since_ms: f64, collections: Vec<String>) -> napi::Result<String> {
-        let refs: Vec<&str> = collections.iter().map(String::as_str).collect();
-        let changeset = self
-            .db()?
-            .export_changes(&refs, since_ms as u64)
-            .map_err(err_to_napi)?;
-        serde_json::to_string(&changeset)
-            .map_err(|e| napi::Error::from_reason(format!("changeset serialize failed: {e}")))
-    }
-
-    /// Merge a JSON changeset string (from a remote peer) into the local
-    /// database via Last-Write-Wins. Returns the number of documents changed.
-    #[napi(js_name = "importChanges")]
-    pub fn import_changes(&self, changeset_json: String) -> napi::Result<u32> {
-        let changeset: taladb_core::Changeset = serde_json::from_str(&changeset_json)
-            .map_err(|e| napi::Error::from_reason(format!("changeset parse failed: {e}")))?;
-        let n = self.db()?.import_changes(changeset).map_err(err_to_napi)?;
-        Ok(n as u32)
-    }
-
-    /// Merge a JSON changeset through a tolerant structural validator built from
-    /// `schemas_json` — a `{ "<collection>": { version, required, types,
-    /// defaults } }` object. Every imported upsert is normalized, skipped, or
-    /// quarantined per its collection schema before Last-Write-Wins; a rejected
-    /// document is set aside (see `quarantined`), never dropped, and never
-    /// aborts the batch. Returns `{ applied, skipped, quarantined }`.
-    #[napi(js_name = "importChangesValidated")]
-    pub fn import_changes_validated(
-        &self,
-        changeset_json: String,
-        schemas_json: String,
-    ) -> napi::Result<JsonValue> {
-        let changeset: taladb_core::Changeset = serde_json::from_str(&changeset_json)
-            .map_err(|e| napi::Error::from_reason(format!("changeset parse failed: {e}")))?;
-        let schemas = build_schemas(&schemas_json)?;
-        let validator = Arc::new(SchemaValidator::try_new(schemas).map_err(err_to_napi)?);
-        let report = self
-            .db()?
-            .import_changes_validated(changeset, validator)
-            .map_err(err_to_napi)?;
-        Ok(serde_json::json!({
-            "applied": report.applied,
-            "skipped": report.skipped,
-            "quarantined": report.quarantined,
-        }))
-    }
-
-    /// Return every document currently held in `collection`'s quarantine table,
-    /// each as `{ document, reason, changedAt }`. Empty when nothing has been
-    /// set aside. For operator inspection and recovery tooling.
-    #[napi(js_name = "quarantined")]
-    pub fn quarantined(&self, collection: String) -> napi::Result<Vec<JsonValue>> {
-        let recs = self.db()?.quarantined(&collection).map_err(err_to_napi)?;
-        Ok(recs
-            .into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "document": doc_to_json(&r.document),
-                    "reason": r.reason,
-                    "changedAt": r.changed_at,
-                })
-            })
-            .collect())
     }
 
     /// Read the current application migration version (0 if never set). Backs
@@ -592,40 +371,14 @@ impl TalaDBNode {
         self.db()?.set_user_version(version).map_err(err_to_napi)
     }
 
-    /// Get a collection by name. If an HTTP sync hook is configured it is
-    /// automatically attached to the returned collection.
+    /// Get a collection by name.
     #[napi]
     pub fn collection(&self, name: String) -> napi::Result<CollectionNode> {
         let col = self.db()?.collection(&name).map_err(err_to_napi)?;
-        let col = match &self.sync_hook {
-            Some(hook) => col.with_sync_hook(Arc::clone(hook)),
-            None => col,
-        };
         Ok(CollectionNode {
             inner: Arc::new(col),
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Sync hook builder
-// ---------------------------------------------------------------------------
-
-/// Parse an optional JSON config string and build an `HttpSyncHook` when
-/// `sync.enabled = true`. Returns `None` when config is absent or disabled.
-fn build_sync_hook(
-    config_json: Option<String>,
-) -> napi::Result<Option<Arc<dyn taladb_core::SyncHook>>> {
-    if let Some(json) = config_json {
-        let config: TalaDbConfig = serde_json::from_str(&json)
-            .map_err(|e| napi::Error::from_reason(format!("invalid config JSON: {e}")))?;
-        config.validate().map_err(err_to_napi)?;
-        if config.sync.enabled {
-            let hook: Arc<dyn taladb_core::SyncHook> = Arc::new(HttpSyncHook::new(config.sync));
-            return Ok(Some(hook));
-        }
-    }
-    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -654,40 +407,6 @@ impl CollectionNode {
             docs.into_iter().map(obj_to_fields).collect();
         let ids = self.inner.insert_many(items?).map_err(err_to_napi)?;
         Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
-    }
-
-    /// Upsert many documents **by caller-supplied `_id`**, in one commit.
-    ///
-    /// Unlike `insertMany` — which discards `_id` and mints a fresh ULID — this
-    /// honours the id on each document, which is what lets replication address a
-    /// remote row by a *derived* id so repeated fetches converge on one document
-    /// rather than duplicating it.
-    ///
-    /// `origin` is `"remote"` for authoritative rows replicated in from an origin,
-    /// or `"local"` for ordinary user writes. Remote rows are marked so they can
-    /// never replicate back out.
-    #[napi]
-    pub fn replace_many_with_ids(
-        &self,
-        docs: Vec<JsonValue>,
-        origin: String,
-    ) -> napi::Result<Vec<String>> {
-        let items: napi::Result<Vec<Document>> = docs.into_iter().map(obj_to_doc).collect();
-        let ids = self
-            .inner
-            .replace_many_with_ids(items?, parse_write_origin(&origin)?)
-            .map_err(err_to_napi)?;
-        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
-    }
-
-    /// Delete many documents by id, in one commit. Returns the number removed.
-    #[napi]
-    pub fn delete_many_with_ids(&self, ids: Vec<String>, origin: String) -> napi::Result<u32> {
-        let n = self
-            .inner
-            .delete_many_with_ids(&parse_ulids(ids)?, parse_write_origin(&origin)?)
-            .map_err(err_to_napi)?;
-        Ok(n as u32)
     }
 
     /// Find documents matching the filter.
@@ -1021,8 +740,8 @@ impl CollectionNode {
         }))
     }
 
-    /// Async variant of `insert` — the write (and any HTTP sync hook retries)
-    /// runs on the libuv thread pool instead of blocking the JS thread.
+    /// Async variant of `insert` — the write runs on the libuv thread pool
+    /// instead of blocking the JS thread.
     #[napi(js_name = "insertAsync", ts_return_type = "Promise<string>")]
     pub fn insert_async(&self, doc: JsonValue) -> napi::Result<AsyncTask<InsertTask>> {
         let fields = obj_to_fields(doc)?;
@@ -1043,38 +762,6 @@ impl CollectionNode {
         Ok(AsyncTask::new(InsertManyTask {
             collection: Arc::clone(&self.inner),
             items: Some(items?),
-        }))
-    }
-
-    /// `replaceManyWithIds` on the libuv thread pool.
-    ///
-    /// The bulk path: a hydration page is hundreds of rows in one commit, and with
-    /// fsync-per-commit durability that is long enough to stall the event loop.
-    #[napi]
-    pub fn replace_many_with_ids_async(
-        &self,
-        docs: Vec<JsonValue>,
-        origin: String,
-    ) -> napi::Result<AsyncTask<ReplaceManyWithIdsTask>> {
-        let items: napi::Result<Vec<Document>> = docs.into_iter().map(obj_to_doc).collect();
-        Ok(AsyncTask::new(ReplaceManyWithIdsTask {
-            collection: Arc::clone(&self.inner),
-            docs: Some(items?),
-            origin: parse_write_origin(&origin)?,
-        }))
-    }
-
-    /// `deleteManyWithIds` on the libuv thread pool.
-    #[napi]
-    pub fn delete_many_with_ids_async(
-        &self,
-        ids: Vec<String>,
-        origin: String,
-    ) -> napi::Result<AsyncTask<DeleteManyWithIdsTask>> {
-        Ok(AsyncTask::new(DeleteManyWithIdsTask {
-            collection: Arc::clone(&self.inner),
-            ids: Some(parse_ulids(ids)?),
-            origin: parse_write_origin(&origin)?,
         }))
     }
 
@@ -1251,60 +938,6 @@ impl Task for InsertManyTask {
             .ok_or_else(|| napi::Error::from_reason("insertMany task already consumed"))?;
         let ids = self.collection.insert_many(items).map_err(err_to_napi)?;
         Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct ReplaceManyWithIdsTask {
-    collection: Arc<Collection>,
-    docs: Option<Vec<Document>>,
-    origin: WriteOrigin,
-}
-
-impl Task for ReplaceManyWithIdsTask {
-    type Output = Vec<String>;
-    type JsValue = Vec<String>;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        let docs = self
-            .docs
-            .take()
-            .ok_or_else(|| napi::Error::from_reason("replaceManyWithIds task already consumed"))?;
-        let ids = self
-            .collection
-            .replace_many_with_ids(docs, self.origin)
-            .map_err(err_to_napi)?;
-        Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct DeleteManyWithIdsTask {
-    collection: Arc<Collection>,
-    ids: Option<Vec<Ulid>>,
-    origin: WriteOrigin,
-}
-
-impl Task for DeleteManyWithIdsTask {
-    type Output = u32;
-    type JsValue = u32;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        let ids = self
-            .ids
-            .take()
-            .ok_or_else(|| napi::Error::from_reason("deleteManyWithIds task already consumed"))?;
-        let n = self
-            .collection
-            .delete_many_with_ids(&ids, self.origin)
-            .map_err(err_to_napi)?;
-        Ok(n as u32)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

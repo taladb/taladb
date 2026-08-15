@@ -587,7 +587,9 @@ fn finalize_state(state: AccState) -> Value {
     match state {
         AccState::Sum { int, float } => match float {
             Some(n) => float_or_int(n),
-            None if int <= i128::from(i64::MAX) && int >= i128::from(i64::MIN) => Value::Int(int as i64),
+            None if int <= i128::from(i64::MAX) && int >= i128::from(i64::MIN) => {
+                Value::Int(int as i64)
+            }
             None => Value::Float(int as f64),
         },
         AccState::AvgState { sum, count } => {

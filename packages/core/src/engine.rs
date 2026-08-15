@@ -68,6 +68,18 @@ pub trait WriteTxn {
     ) -> Result<KvPairs, TalaDbError>;
     fn commit(self: Box<Self>) -> Result<(), TalaDbError>;
 
+    /// Names of every table in the database, as seen from inside this write
+    /// transaction. The read-side counterpart is [`ReadTxn::list_tables`].
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError>;
+
+    /// Drop `table` and everything in it. Returns whether it existed.
+    ///
+    /// This is table *removal*, not truncation: the storage is reclaimed at
+    /// commit. Used by migrations that retire a table wholesale — deleting the
+    /// keys one by one would leave the empty table (and its page allocations)
+    /// behind.
+    fn delete_table(&mut self, table: &str) -> Result<bool, TalaDbError>;
+
     /// Fetch many keys from one table. Semantically `keys.map(|k| self.get(k))`.
     ///
     /// The point is that a backend can resolve the table **once** for the whole
@@ -357,6 +369,18 @@ impl WriteTxn for RedbWriteTxn {
         Ok(())
     }
 
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
+        Ok(self
+            .txn
+            .list_tables()?
+            .map(|t| t.name().to_string())
+            .collect())
+    }
+
+    fn delete_table(&mut self, table: &str) -> Result<bool, TalaDbError> {
+        Ok(self.txn.delete_table(table_def(table)?)?)
+    }
+
     /// One `open_table` for the whole batch instead of one per key.
     fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
         match self.txn.open_table(table_def(table)?) {
@@ -422,9 +446,7 @@ impl RedbReadTxn {
             Err(redb::TableError::TableDoesNotExist(_)) => None,
             Err(e) => return Err(e.into()),
         };
-        self.open
-            .borrow_mut()
-            .insert(name.into(), opened.clone());
+        self.open.borrow_mut().insert(name.into(), opened.clone());
         Ok(opened)
     }
 }

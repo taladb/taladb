@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use taladb_core::{Database, Filter, FindOptions, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::banner;
 use crate::value_to_json;
 
 const HTML: &str = include_str!("../studio.html");
@@ -13,24 +14,26 @@ const HTML: &str = include_str!("../studio.html");
 // ── Entry point ────────────────────────────────────────────────────────────────
 
 pub(crate) fn cmd_studio(file: &Path, port: u16, host: &str, no_open: bool) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = crate::open_existing(&file.to_path_buf())?;
     // Loopback by default: the studio has no authentication, so any reachable
     // client can browse and delete documents.
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("cannot bind to {addr}: {e}"))?;
 
     let url = format!("http://localhost:{port}");
-    eprintln!();
-    eprintln!("  TalaDB Studio");
-    eprintln!("  ─────────────────────────────────");
-    eprintln!("  Database : {}", file.display());
-    eprintln!("  URL      : {url}");
-    eprintln!("  Ctrl+C   : stop server");
+    eprint!("{}", banner::studio_banner(env!("CARGO_PKG_VERSION")));
+    eprint!("{}", banner::field("Database", &file.display().to_string()));
+    eprint!("{}", banner::field("URL", &url));
+    eprint!("{}", banner::field("Stop", "Ctrl+C"));
     eprintln!();
     if !is_loopback_host(host) {
-        eprintln!("  WARNING: bound to {host} — the studio has no authentication;");
-        eprintln!("           anyone who can reach this address can read and delete data.");
-        eprintln!();
+        eprint!(
+            "{}",
+            banner::warn(&[
+                format!("bound to {host} — the studio has no authentication;"),
+                "anyone who can reach this address can read and delete data.".to_owned(),
+            ])
+        );
     }
 
     if !no_open {
@@ -136,6 +139,7 @@ fn api_collections(db: &Database, file: &Path) -> Response<Cursor<Vec<u8>>> {
         200,
         &serde_json::json!({
             "db": file.display().to_string(),
+            "version": env!("CARGO_PKG_VERSION"),
             "collections": collections,
         }),
     )
@@ -341,15 +345,23 @@ mod tests {
                 }
             });
 
-            // Poll until the port accepts connections (up to 3 s).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            // Poll until the port accepts connections.
+            //
+            // The deadline is generous because it costs nothing when things are
+            // healthy — the loop exits on the first successful connect — and
+            // because the work behind it is not free: a thread spawn, a redb
+            // open, and a socket bind, times however many of these tests the
+            // runner has in flight. At 3 s this suite failed intermittently on
+            // a machine that was also compiling, which is the ordinary state of
+            // a developer's laptop and of CI.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             loop {
                 if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
                     break;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "server did not start in time"
+                    "test server on port {port} did not accept connections within 30s"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }

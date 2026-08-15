@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react-native",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "TalaDB React Native module — document and vector database via JSI HostObject",
   "main": "src/index",
   "types": "src/index.tsx",
@@ -11,6 +11,8 @@
     "build:cbindgen": "cbindgen --config rust/cbindgen.toml --crate taladb-ffi --output cpp/taladb.h"
   },
   "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "src/",
     "cpp/",
     "ios/",
@@ -39,7 +41,7 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "Apache-2.0",
+  "license": "MIT OR Apache-2.0",
   "codegenConfig": {
     "name": "TalaDB",
     "type": "modules",
@@ -51,5 +53,8 @@
   "devDependencies": {
     "typescript": "^5.9.3",
     "react-native": "^0.83.0"
+  },
+  "dependencies": {
+    "taladb": "workspace:*"
   }
 }

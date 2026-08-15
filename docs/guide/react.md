@@ -58,7 +58,7 @@ root.render(
 
 > **React Native**: call `TalaDBModule.initialize('myapp.db')` before `openDB`. See the [React Native guide](/guide/react-native) for setup details.
 >
-> **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary — use the name form and see the dedicated [Next.js guide](/guide/nextjs).
+> **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary.
 
 ### Registering collection options
 
@@ -77,10 +77,10 @@ Hooks resolve their collection by name, so they need to know how that collection
 </TalaDBProvider>
 ```
 
-Every hook below it — `useCollection`, `useFind`, `useQuery`, `useMutation` — now opens a **configured** collection: a local write hard-fails validation, and the engine stamps the document's `_v` shape version. `useCollection(name, options)` overrides the registry for a single call.
+Every hook below it — `useCollection`, `useFind`, `useFindOne`, `useAggregate`, `useWrite` — now opens a **configured** collection: a local write hard-fails validation, and the engine stamps the document's `_v` shape version. `useCollection(name, options)` overrides the registry for a single call.
 
 ::: warning Changed in 0.9.3
-Before 0.9.3 there was no way to give the hooks these options: `useCollection(name)` called `db.collection(name)` bare, so a write through `useMutation` **silently skipped** the strict `schema` and the `_v` stamp that `db.collection(name, { … })` applies. An app that followed both this guide and the [Schema & Sync Standards](/guide/schema-and-sync-standards) lost local validation without any warning. Register `collections` and that gap is closed.
+Before 0.9.3 there was no way to give the hooks these options: `useCollection(name)` called `db.collection(name)` bare, so a write through `useWrite` **silently skipped** the strict `schema` and the `_v` stamp that `db.collection(name, { … })` applies. An app that followed this guide lost local validation without any warning. Register `collections` and that gap is closed.
 :::
 
 ---
@@ -195,6 +195,45 @@ if (!user)   return <p>User not found.</p>
 
 return <p>Hello, {user.name}</p>
 ```
+
+---
+
+### `useWrite`
+
+Writes to a collection. The write is local, immediate, durable, and reactive —
+every `useFind` / `useFindOne` / `useAggregate` subscribed to that collection
+re-renders once it commits.
+
+```ts
+const { write, writeAsync, pending, error } = useWrite<T>({
+  collection: string,
+})
+```
+
+```tsx
+const { write, pending } = useWrite<Order>({ collection: 'orders' })
+
+write({ type: 'insert', doc: { sku: 'A1', status: 'new' } })
+write({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+write({ type: 'delete', where: { _id } })
+```
+
+`write` is fire-and-forget — failures land on `error` rather than throwing into
+render. `writeAsync` returns a promise you can await and catch.
+
+There is no network step here and no rollback to reason about: the database is
+on the device, so the write either committed or threw. If the change webhook is
+enabled (`openDB({ webhook })`), its HTTP request is dispatched after the commit,
+outside this hook and outside `pending` — a webhook is a notification, not part
+of the write's success.
+
+::: tip Why not `useMutation`?
+Because this hook is exactly a local write. The React Query-shaped name carries
+an expectation of a network round-trip that it would borrow and then fail to
+meet — so it belongs to
+[`@taladb/react/query`](/guide/query#writing), which does perform one. Renamed
+from `useMutation` in 0.11.0.
+:::
 
 ---
 
@@ -331,3 +370,13 @@ const { data } = useFind(articles, { locale: 'en' })
 ```
 
 Filter and update types are inferred from the document type — typos on field names are caught at compile time.
+
+---
+
+## Talking to a server
+
+The hooks above are local-only: they read and write the database on the device
+and never touch the network. To hydrate a collection from your API and queue
+writes back to it, see
+[Local-First Data (`@taladb/react/query`)](/guide/query) — `useQuery` and
+`useMutation` in the React Query shape, with the local collection as the cache.

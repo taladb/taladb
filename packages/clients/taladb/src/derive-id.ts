@@ -1,17 +1,23 @@
 /**
- * Deterministic document ids for replicated rows.
+ * Deterministic document ids for rows that already have an identity elsewhere.
  *
- * The engine assigns ULIDs and **ignores a caller-supplied `_id`** — it silently
- * becomes an ordinary field, so `find({ _id: 'sku-1' })` then matches nothing.
- * That leaves a document replicated from a remote origin with no stable local
- * identity to merge on: re-fetching the same row would insert a duplicate.
+ * `insert` accepts an `_id`, but it must be a ULID — ids are 16 raw bytes on
+ * disk and every index key ends with one, so `'sku-1'` cannot be stored as an
+ * id and is rejected. Hashing the origin's primary key into a ULID bridges the
+ * two: the same `(collection, key)` always maps to the same document.
  *
- * Hashing the origin's primary key into the ULID gives that identity back. The
- * same `(collection, key)` always maps to the same document, which is what makes
- * replication upserts **idempotent** (re-applying a page is a no-op), **resumable**
- * (a bootstrap walk can restart mid-way), and **safe to run concurrently** (an
- * on-demand fetch and the background walk can touch the same row and converge on
- * one document rather than two).
+ * That is what makes hydrating from a server **idempotent** — fetch a page,
+ * `insertMany` it, and re-running the same fetch cannot produce a second copy of
+ * a row, because the second insert is refused as a duplicate id rather than
+ * minting a new document. It is also **resumable** (a bootstrap walk can restart
+ * mid-way) and **safe to run concurrently** (an on-demand fetch and a background
+ * walk touching the same row converge on one document rather than two).
+ *
+ * @example
+ * const rows = await fetch('/api/products').then((r) => r.json())
+ * await products.insertMany(
+ *   rows.map((row) => ({ ...row, _id: deriveDocId('products', row.sku) })),
+ * )
  *
  * ## This must stay byte-identical to the Rust `derive_doc_id`
  *

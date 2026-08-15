@@ -105,11 +105,6 @@ jobs:
       - name: tsc --noEmit (@taladb/react)
         run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
-      - name: tsc --noEmit (@taladb/sync-mongodb)
-        run: node_modules/.bin/tsc -p packages/adapters/mongodb/tsconfig.json --noEmit
-
-      - name: tsc --noEmit (@taladb/next)
-        run: node_modules/.bin/tsc -p packages/integrations/next/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build WASM
@@ -219,15 +214,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Asset names carry the Rust target triple and **no version**, so that
+        # `releases/latest/download/taladb-<triple>.tar.gz` resolves — that URL
+        # is what makes the one-line installer work without the caller knowing
+        # which release is current.
         include:
           - os: ubuntu-latest
-            artifact: taladb-linux-x86_64
+            artifact: taladb-x86_64-unknown-linux-gnu
             bin: taladb
           - os: macos-latest
-            artifact: taladb-macos-aarch64
+            artifact: taladb-aarch64-apple-darwin
+            bin: taladb
+          - os: macos-13 # Intel runner; macos-latest is Apple silicon
+            artifact: taladb-x86_64-apple-darwin
             bin: taladb
           - os: windows-latest
-            artifact: taladb-windows-x86_64
+            artifact: taladb-x86_64-pc-windows-msvc
             bin: taladb.exe
 
     steps:
@@ -249,7 +251,7 @@ jobs:
       - name: Compress binary (unix)
         if: runner.os != 'Windows'
         run: |
-          tar -czf ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz \
+          tar -czf ${{ matrix.artifact }}.tar.gz \
             -C target/release ${{ matrix.bin }}
 
       - name: Compress binary (windows)
@@ -257,14 +259,14 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path target/release/${{ matrix.bin }} `
-            -DestinationPath ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+            -DestinationPath ${{ matrix.artifact }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz
-            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip
 
   # ---------------------------------------------------------------------------
   # Build React Native iOS static library (universal arm64 + x86_64)
@@ -432,8 +434,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Publish npm packages
-  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react,
-  # @taladb/cloudflare, @taladb/sync-mongodb, @taladb/next
+  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
@@ -477,9 +478,10 @@ jobs:
         run: |
           mkdir -p packages/bindings/web/pkg
           tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/bindings/web/pkg
-          # wasm-pack generates pkg/.gitignore with "*.wasm" which causes npm to
-          # silently exclude the binary during publish. Remove it so the files
-          # field in package.json is the only include/exclude authority.
+          # wasm-pack generates pkg/.gitignore containing `*`, which npm-packlist
+          # honours — silently excluding the whole pkg/ directory during publish.
+          # Remove it so the files field in package.json is the only authority.
+          # `pnpm build` does this too, so a local pack matches what CI ships.
           rm -f packages/bindings/web/pkg/.gitignore
 
       - name: Publish @taladb/web
@@ -545,39 +547,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # -- @taladb/cloudflare --------------------------------------------------
-      - name: Publish @taladb/cloudflare
-        working-directory: packages/integrations/cloudflare
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # -- @taladb/sync-mongodb ------------------------------------------------
-      # Pure TS with no native artifacts — build inline rather than via a
-      # separate build job.
-      - name: Build @taladb/sync-mongodb
-        working-directory: packages/adapters/mongodb
-        run: pnpm exec tsup
-
-      - name: Publish @taladb/sync-mongodb
-        working-directory: packages/adapters/mongodb
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # -- @taladb/next ----------------------------------------------------------
-      # Pure TS with no native artifacts — build inline rather than via a
-      # separate build job.
-      - name: Build @taladb/next
-        working-directory: packages/integrations/next
-        run: pnpm exec tsup
-
-      - name: Publish @taladb/next
-        working-directory: packages/integrations/next
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       # -- taladb (TS wrapper) -------------------------------------------------
       - name: Download taladb dist
         uses: actions/download-artifact@v4
@@ -589,9 +558,14 @@ jobs:
         working-directory: packages/clients/taladb
         run: npm pack --dry-run
 
+      # `pnpm publish`, not `npm publish`: this package declares its bindings as
+      # `workspace:*` peers, and only pnpm rewrites that protocol to a real
+      # version on publish. npm ships it verbatim — taladb@0.9.3 went out with
+      # `"@taladb/web": "workspace:*"` in peerDependencies, which no consumer
+      # can resolve.
       - name: Publish taladb
         working-directory: packages/clients/taladb
-        run: npm publish --access public || echo 'Already published, skipping'
+        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -614,17 +588,24 @@ jobs:
       # here would just be loose duplicates. taladb-cli is the one artifact with
       # no npm channel; docs/features.md points users to Releases for it.
       #
-      # `release-taladb-*-*` selects exactly the three platform CLI builds
-      # (release-taladb-linux-x86_64, -macos-aarch64, -windows-x86_64) and
-      # excludes release-taladb / release-taladb-react (no second dash). Each CLI
-      # archive already has a unique, platform-suffixed name, so merge-multiple
-      # is collision-free — no more duplicate-basename delete-reupload failure.
+      # `release-taladb-*-*` selects exactly the platform CLI builds
+      # (release-taladb-x86_64-unknown-linux-gnu, -aarch64-apple-darwin,
+      # -x86_64-apple-darwin, -x86_64-pc-windows-msvc) and excludes
+      # release-taladb / release-taladb-react, which have no second dash. The
+      # @taladb/node binaries are uploaded unprefixed (taladb-node-*), so they
+      # do not match either. Each CLI archive has a unique, triple-suffixed
+      # name, so merge-multiple is collision-free.
       - name: Download CLI archives
         uses: actions/download-artifact@v4
         with:
           pattern: release-taladb-*-*
           path: /tmp/release-assets
           merge-multiple: true
+
+      # Published as a release asset so the documented one-liner —
+      # releases/latest/download/install.sh — resolves without a version.
+      - name: Stage installer
+        run: cp install.sh /tmp/release-assets/install.sh
 
       - name: List assets
         run: ls -lh /tmp/release-assets/

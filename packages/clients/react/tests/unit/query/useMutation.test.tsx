@@ -1,0 +1,260 @@
+/**
+ * useMutation — the two modes.
+ *
+ * The claim under test for `optimistic` is that `pending` never becomes true:
+ * the whole reason the mode exists is that the UI does not wait on a round trip.
+ * For `remote-first` it is the opposite — nothing is written locally until the
+ * server agrees.
+ */
+import { describe, it, expect, vi } from 'vitest'
+import React from 'react'
+import { renderHook, waitFor, act } from '@testing-library/react'
+import type { Document } from 'taladb'
+import type { DrainOptions } from '../../../src/query/types'
+import { TalaDBProvider } from '../../../src/context'
+import { QueryProvider } from '../../../src/query/context'
+import { useMutation } from '../../../src/query/useMutation'
+import { createFakeDB } from '../../helpers/fakeQueryDB'
+
+interface Todo extends Document {
+  _id?: string
+  title: string
+  done?: boolean
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+type Policy = { classify?: (r: Response) => 'ok' | 'applied' | 'retry' | 'terminal'; fetch?: unknown; drain?: DrainOptions }
+
+function setup(policy?: Policy) {
+  const { db, docsIn } = createFakeDB()
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <TalaDBProvider db={db}>
+      <QueryProvider classify={policy?.classify as never} fetch={policy?.fetch as never} drain={policy?.drain}>
+        {children}
+      </QueryProvider>
+    </TalaDBProvider>
+  )
+  return { wrapper, docsIn }
+}
+
+/**
+ * Insert and update are separate hooks now, as they are in React Query — one
+ * `useCreateTodo`, one `useUpdateTodo`. The operation is declared once rather
+ * than passed per call, so a test needing both renders both.
+ */
+function pair(options: Parameters<typeof useMutation<Todo>>[0]) {
+  return {
+    create: useMutation<Todo>(options),
+    update: useMutation<Todo>({ ...options, operation: 'update' }),
+  }
+}
+
+describe('useMutation — optimistic', () => {
+  it('never reports pending, because it never waits on the network', async () => {
+    const { wrapper, docsIn } = setup()
+    const { result } = renderHook(() => useMutation<Todo>({ collection: 'todos' }), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync({ title: 'offline' })
+    })
+
+    expect(result.current.isPending).toBe(false)
+    const stored = docsIn('todos')
+    expect(stored).toHaveLength(1)
+    expect(stored[0]._sync).toBe('pending')
+    expect(stored[0]._op).toBe('insert')
+  })
+
+  it('commits without a backend configured at all', async () => {
+    // Offline-first: a write must not depend on knowing where it will be sent.
+    const { wrapper, docsIn } = setup(undefined)
+    const { result } = renderHook(() => useMutation<Todo>({ collection: 'todos' }), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync({ title: 'x' })
+    })
+    expect(docsIn('todos')).toHaveLength(1)
+  })
+
+  it('does not drain immediately under the interval policy', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'saved' }))
+    const { wrapper } = setup({ fetch, drain: { policy: 'interval', intervalMs: 60_000 } })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({ title: 'local' })
+    })
+
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failure on error rather than throwing from mutate', async () => {
+    const { wrapper } = setup()
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', operation: 'update' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      // No such document — writes are local-first, so there is nothing to update.
+      result.current.mutate({ _id: 'nope', title: 'x' })
+    })
+
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error))
+  })
+})
+
+describe('useMutation — immediate', () => {
+  it('writes nothing locally until the server agrees', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'server said so', done: true }))
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({ title: 'sent' })
+    })
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+    const stored = docsIn('todos')
+    expect(stored).toHaveLength(1)
+    // The response body is canonical, so server-set fields land immediately.
+    expect(stored[0].title).toBe('server said so')
+    expect(stored[0].done).toBe(true)
+    expect(stored[0]._sync).toBe('synced')
+  })
+
+  it('sends a client-generated id, so a retry cannot duplicate', async () => {
+    let sent: Record<string, unknown> | null = null
+    const fetch = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      sent = JSON.parse(init.body as string) as Record<string, unknown>
+      return jsonResponse(sent)
+    })
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({ title: 'x' })
+    })
+
+    expect(typeof sent!._id).toBe('string')
+    expect(sent!._id).toMatch(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}$/)
+    expect(docsIn('todos')[0]._id).toBe(sent!._id)
+  })
+
+  it('preserves existing fields when an immediate update returns no document', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ title: 'seed', done: false }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () => pair({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.create.mutateAsync({ title: 'seed' })
+    })
+    const id = docsIn('todos')[0]._id as string
+    await act(async () => {
+      await result.current.update.mutateAsync({ _id: id, done: true })
+    })
+
+    expect(docsIn('todos')[0]).toMatchObject({ _id: id, title: 'seed', done: true, _sync: 'synced' })
+  })
+
+  it('leaves the database untouched when the server rejects', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ message: 'nope' }, 422))
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ title: 'doomed' }),
+      ).rejects.toThrow(/422/)
+    })
+
+    expect(docsIn('todos')).toHaveLength(0)
+    expect(result.current.isPending).toBe(false)
+  })
+
+  it('explains itself when no url is given', async () => {
+    const { wrapper } = setup(undefined)
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ title: 'x' }),
+      ).rejects.toThrow(/url/i)
+    })
+  })
+
+  it('works as a plain fetch with no provider backend at all', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'saved' }))
+    const original = globalThis.fetch
+    globalThis.fetch = fetch as never
+    try {
+      const { wrapper, docsIn } = setup(undefined)
+      const { result } = renderHook(
+        () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+        { wrapper },
+      )
+      await act(async () => {
+        await result.current.mutateAsync({ title: 'x' })
+      })
+      expect(fetch).toHaveBeenCalledWith('/api/todos', expect.objectContaining({ method: 'POST' }))
+      expect(docsIn('todos')[0].title).toBe('saved')
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('uses the verb the backend maps for each operation', async () => {
+    const calls: string[] = []
+    const fetch = vi.fn().mockImplementation(async (_u: string, init: RequestInit) => {
+      calls.push(init.method as string)
+      return jsonResponse({ title: 'x' })
+    })
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () =>
+        pair({
+          collection: 'todos',
+          mode: 'immediate',
+          url: '/api/todos/:id',
+          method: { update: 'PATCH' },
+        }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.create.mutateAsync({ title: 'x' })
+    })
+    const id = docsIn('todos')[0]._id as string
+    await act(async () => {
+      await result.current.update.mutateAsync({ _id: id, done: true })
+    })
+
+    expect(calls).toEqual(['POST', 'PATCH'])
+  })
+})

@@ -117,6 +117,18 @@ pub enum TalaDbError {
     #[error("vector dimension mismatch: index expects {expected}, got {got}")]
     VectorDimensionMismatch { expected: usize, got: usize },
 
+    #[error(
+        "a compound index cannot cover more than one array field in the same document — \
+         the index entries would be the product of the two lists"
+    )]
+    CompoundIndexMultipleArrays,
+
+    #[error("duplicate document id: {0} already exists in this collection")]
+    DuplicateId(String),
+
+    #[error("invalid document id: {0}")]
+    InvalidDocumentId(String),
+
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
 
@@ -194,6 +206,9 @@ impl TalaDbError {
             Self::InvalidSnapshot => "InvalidSnapshot",
             Self::VectorIndexNotFound(_) => "VectorIndexNotFound",
             Self::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
+            Self::CompoundIndexMultipleArrays => "CompoundIndexMultipleArrays",
+            Self::DuplicateId(_) => "DuplicateId",
+            Self::InvalidDocumentId(_) => "InvalidDocumentId",
             Self::InvalidOperation(_) => "InvalidOperation",
             Self::Config(_) => "Config",
             Self::InvalidName(_) => "InvalidName",

@@ -8,7 +8,6 @@ Grouped by role. The dependency direction is one-way: **core** ← **bindings** 
 | `bindings/` | **Runtime wrappers over core** | `node/` (napi → `@taladb/node`), `web/` (wasm → `@taladb/web`), `react-native/` (JSI → `@taladb/react-native`). Rust + JS hybrids. |
 | `clients/` | **What apps import** | `taladb/` (unified meta-package → `taladb`), `react/` (→ `@taladb/react`). Pure TypeScript. |
 | `adapters/` | **Sync adapters** | `mongodb/` (→ `@taladb/sync-mongodb`). Pure TypeScript. Implement the `SyncAdapter` interface from `taladb`. |
-| `integrations/` | **Deploy-target helpers** | `cloudflare/` (→ `@taladb/cloudflare`). |
 | `tools/` | **Dev tooling** | `cli/` (`taladb-cli` Rust binary). |
 
 ## Conventions
