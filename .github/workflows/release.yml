@@ -471,9 +471,10 @@ jobs:
         run: |
           mkdir -p packages/bindings/web/pkg
           tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/bindings/web/pkg
-          # wasm-pack generates pkg/.gitignore with "*.wasm" which causes npm to
-          # silently exclude the binary during publish. Remove it so the files
-          # field in package.json is the only include/exclude authority.
+          # wasm-pack generates pkg/.gitignore containing `*`, which npm-packlist
+          # honours — silently excluding the whole pkg/ directory during publish.
+          # Remove it so the files field in package.json is the only authority.
+          # `pnpm build` does this too, so a local pack matches what CI ships.
           rm -f packages/bindings/web/pkg/.gitignore
 
       - name: Publish @taladb/web
@@ -550,9 +551,14 @@ jobs:
         working-directory: packages/clients/taladb
         run: npm pack --dry-run
 
+      # `pnpm publish`, not `npm publish`: this package declares its bindings as
+      # `workspace:*` peers, and only pnpm rewrites that protocol to a real
+      # version on publish. npm ships it verbatim — taladb@0.9.3 went out with
+      # `"@taladb/web": "workspace:*"` in peerDependencies, which no consumer
+      # can resolve.
       - name: Publish taladb
         working-directory: packages/clients/taladb
-        run: npm publish --access public || echo 'Already published, skipping'
+        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

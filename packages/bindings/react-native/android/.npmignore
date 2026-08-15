@@ -1,0 +1,7 @@
+# Gradle's local build state. It is machine-specific, it is not ours, and it
+# reached the published tarball because `files: ["android/"]` takes the whole
+# tree — a root .npmignore cannot narrow that, but a nested one can.
+.gradle/
+build/
+.cxx/
+local.properties
