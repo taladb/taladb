@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
-use crate::clamp_to_usize;
 use crate::aggregate::{Stage, execute_pipeline};
 use crate::audit::{AuditOp, write_audit_entry};
 use crate::bm25::{Bm25Params, FtsStats};
+use crate::clamp_to_usize;
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
@@ -29,8 +29,8 @@ use crate::query::planner::plan_full;
 use crate::time::now_ms;
 use crate::vector::{
     CachedVectors, HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, SharedVectorCache, VectorDef,
-    VectorMetric, VectorSearchResult, decode_f32_vec, encode_f32_vec,
-    value_to_f32_vec, vec_meta_key, vec_table_name,
+    VectorMetric, VectorSearchResult, decode_f32_vec, encode_f32_vec, value_to_f32_vec,
+    vec_meta_key, vec_table_name,
 };
 #[cfg(feature = "vector-hnsw")]
 use crate::vector::{SharedHnswCache, build_hnsw, search_hnsw};
@@ -97,7 +97,8 @@ impl IndexTables {
             compound: compound_indexes
                 .iter()
                 .map(|d| {
-                    let refs: Vec<&str> = d.fields.iter().map(std::string::String::as_str).collect();
+                    let refs: Vec<&str> =
+                        d.fields.iter().map(std::string::String::as_str).collect();
                     compound_table_name(collection, &refs)
                 })
                 .collect(),
@@ -437,7 +438,10 @@ pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
 
 impl Collection {
     fn invalidate_index_cache(&self) {
-        let mut guard = self.index_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .index_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&self.name);
     }
 
@@ -446,13 +450,19 @@ impl Collection {
     /// vec table without bumping it, so they evict explicitly.
     fn evict_vector_cache(&self, field: &str) {
         let key = format!("{}::{}", self.name, field);
-        let mut cache = self.vector_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self
+            .vector_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.remove(&key);
     }
 
     fn load_indexes_cached(&self) -> Result<CachedIndexes, TalaDbError> {
         {
-            let guard = self.index_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = self
+                .index_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(cached) = guard.get(&self.name) {
                 return Ok(cached.clone());
             }
@@ -483,7 +493,10 @@ impl Collection {
             compound_indexes: Arc::new(compound_indexes),
             tables: Arc::new(tables),
         };
-        let mut guard = self.index_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .index_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.insert(self.name.clone(), cached.clone());
         Ok(cached)
     }
@@ -944,7 +957,10 @@ impl Collection {
 
         let def = CompoundIndexDef {
             collection: self.name.clone(),
-            fields: fields.iter().map(std::string::ToString::to_string).collect(),
+            fields: fields
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         };
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_COMPOUND_TABLE, meta_key.as_bytes(), &bytes)?;
@@ -1149,7 +1165,10 @@ impl Collection {
             {
                 let graph = build_hnsw(&backfill, &resolved_metric, hnsw_opts.ef_construction)?;
                 let cache_key = format!("{}::{}", self.name, field);
-                let mut cache = self.hnsw_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut cache = self
+                    .hnsw_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.insert(cache_key, graph);
             }
         }
@@ -1192,7 +1211,10 @@ impl Collection {
         #[cfg(feature = "vector-hnsw")]
         {
             let cache_key = format!("{}::{}", self.name, field);
-            let mut cache = self.hnsw_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut cache = self
+                .hnsw_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             cache.remove(&cache_key);
         }
 
@@ -1257,7 +1279,10 @@ impl Collection {
         if pre_filter.is_none() {
             let cache_key = format!("{}::{}", self.name, field);
             let graph_opt = {
-                let cache = self.hnsw_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let cache = self
+                    .hnsw_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.get(&cache_key).cloned()
             };
             if let Some(graph) = graph_opt {
@@ -1284,7 +1309,10 @@ impl Collection {
         let cache_key = format!("{}::{}", self.name, field);
         let vectors: Arc<Vec<(ulid::Ulid, Vec<f32>)>> = {
             let cached = {
-                let cache = self.vector_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let cache = self
+                    .vector_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache
                     .get(&cache_key)
                     .filter(|c| c.generation == generation)
@@ -1312,7 +1340,10 @@ impl Collection {
                         }
                     }
                     let arc = Arc::new(decoded);
-                    let mut cache = self.vector_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut cache = self
+                        .vector_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     cache.insert(
                         cache_key,
                         CachedVectors {
@@ -1441,7 +1472,10 @@ impl Collection {
         {
             let graph = build_hnsw(&vectors, &def.metric, hnsw_opts.ef_construction)?;
             let cache_key = format!("{}::{}", self.name, field);
-            let mut cache = self.hnsw_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut cache = self
+                .hnsw_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             cache.insert(cache_key, graph);
         }
 
@@ -1568,11 +1602,7 @@ impl Collection {
         //
         // Only meaningful for updates (`old_doc` is `Some`) and only when the
         // id is unchanged, since every index key embeds it.
-        fn unchanged<'a>(
-            doc: &'a Document,
-            old_doc: Option<&&'a Document>,
-            field: &str,
-        ) -> bool {
+        fn unchanged<'a>(doc: &'a Document, old_doc: Option<&&'a Document>, field: &str) -> bool {
             old_doc.is_some_and(|old| old.id == doc.id && old.get(field) == doc.get(field))
         }
 
@@ -1600,11 +1630,17 @@ impl Collection {
                 if let Some(old) = old_doc
                     && let Some(old_val) = old.get(&idx.field)
                 {
-                    keys.extend(encode_index_keys(old_val, old.id).into_iter().map(|k| (k, true)));
+                    keys.extend(
+                        encode_index_keys(old_val, old.id)
+                            .into_iter()
+                            .map(|k| (k, true)),
+                    );
                 }
                 if let Some(new_val) = doc.get(&idx.field) {
                     keys.extend(
-                        encode_index_keys(new_val, doc.id).into_iter().map(|k| (k, false)),
+                        encode_index_keys(new_val, doc.id)
+                            .into_iter()
+                            .map(|k| (k, false)),
                     );
                 }
             }
@@ -1627,8 +1663,7 @@ impl Collection {
         }
 
         // --- FTS indexes ---
-        for (fts, (fts_table, len_table, stats_table)) in
-            cache.fts_indexes.iter().zip(&tables.fts)
+        for (fts, (fts_table, len_table, stats_table)) in cache.fts_indexes.iter().zip(&tables.fts)
         {
             let mut posting_deletes: Vec<Vec<u8>> = Vec::new();
             let mut posting_puts: Vec<(Vec<u8>, [u8; 4])> = Vec::new();
@@ -1738,14 +1773,21 @@ impl Collection {
             let ops: Vec<KvOp<'_>> = deletes
                 .iter()
                 .map(|k| KvOp::Delete(k.as_slice()))
-                .chain(puts.iter().map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice())))
+                .chain(
+                    puts.iter()
+                        .map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice())),
+                )
                 .collect();
             wtxn.apply_batch(vtable, &ops)?;
         }
 
         // --- compound indexes ---
         for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {
-            let field_refs: Vec<&str> = cidx.fields.iter().map(std::string::String::as_str).collect();
+            let field_refs: Vec<&str> = cidx
+                .fields
+                .iter()
+                .map(std::string::String::as_str)
+                .collect();
             let mut deletes: Vec<Vec<u8>> = Vec::new();
             let mut puts: Vec<Vec<u8>> = Vec::new();
             for (doc, old_doc) in docs {
@@ -1871,8 +1913,7 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         // One batched pass over the whole insert: every index table is opened
         // once, not once per document.
-        let batch: Vec<(&Document, Option<&Document>)> =
-            docs.iter().map(|d| (d, None)).collect();
+        let batch: Vec<(&Document, Option<&Document>)> = docs.iter().map(|d| (d, None)).collect();
         self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
@@ -2478,22 +2519,23 @@ impl Collection {
         let tables = &cache.tables;
         let ids: Vec<[u8; 16]> = docs.iter().map(|d| d.id.to_bytes()).collect();
 
-        let body_ops: Vec<KvOp<'_>> =
-            ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+        let body_ops: Vec<KvOp<'_>> = ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
         wtxn.apply_batch(&tables.docs, &body_ops)?;
 
         for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
             let keys: Vec<Vec<u8>> = docs
                 .iter()
-                .filter_map(|doc| doc.get(&idx.field).map(|val| encode_index_keys(val, doc.id)))
+                .filter_map(|doc| {
+                    doc.get(&idx.field)
+                        .map(|val| encode_index_keys(val, doc.id))
+                })
                 .flatten()
                 .collect();
             let ops: Vec<KvOp<'_>> = keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(table, &ops)?;
         }
 
-        for (fts, (fts_table, len_table, stats_table)) in
-            cache.fts_indexes.iter().zip(&tables.fts)
+        for (fts, (fts_table, len_table, stats_table)) in cache.fts_indexes.iter().zip(&tables.fts)
         {
             let mut posting_keys: Vec<Vec<u8>> = Vec::new();
             let mut len_keys: Vec<[u8; 16]> = Vec::new();
@@ -2518,24 +2560,28 @@ impl Collection {
                 .map(|k| KvOp::Delete(k.as_slice()))
                 .collect();
             wtxn.apply_batch(fts_table, &ops)?;
-            let len_ops: Vec<KvOp<'_>> =
-                len_keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            let len_ops: Vec<KvOp<'_>> = len_keys
+                .iter()
+                .map(|k| KvOp::Delete(k.as_slice()))
+                .collect();
             wtxn.apply_batch(len_table, &len_ops)?;
             adjust_fts_stats_batch(wtxn, stats_table, &removed, &[])?;
         }
 
         for vtable in &tables.vectors {
-            let ops: Vec<KvOp<'_>> =
-                ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
+            let ops: Vec<KvOp<'_>> = ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(vtable, &ops)?;
         }
 
         for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {
-            let field_refs: Vec<&str> = cidx.fields.iter().map(std::string::String::as_str).collect();
+            let field_refs: Vec<&str> = cidx
+                .fields
+                .iter()
+                .map(std::string::String::as_str)
+                .collect();
             let mut keys: Vec<Vec<u8>> = Vec::new();
             for doc in docs {
-                let vals: Option<Vec<&Value>> =
-                    field_refs.iter().map(|f| doc.get(f)).collect();
+                let vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
                 if let Some(v) = vals {
                     // A delete must remove every key the write path wrote, or an
                     // array member leaves entries pointing at a document that no
@@ -2594,7 +2640,6 @@ fn adjust_fts_stats_batch(
     wtxn.put(stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
     Ok(())
 }
-
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     match update {

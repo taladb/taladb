@@ -78,7 +78,12 @@ fn both(f: impl Fn(&taladb_core::Collection) -> Vec<String>, expected: &[&str]) 
 #[test]
 fn equality_matches_an_element() {
     both(
-        |col| titles(&col.find(Filter::Eq("tags".into(), Value::Str("rust".into()))).unwrap()),
+        |col| {
+            titles(
+                &col.find(Filter::Eq("tags".into(), Value::Str("rust".into())))
+                    .unwrap(),
+            )
+        },
         // 'a' has it in a list, 'c' has it as a scalar.
         &["a", "c"],
     );
@@ -87,7 +92,12 @@ fn equality_matches_an_element() {
 #[test]
 fn equality_still_matches_the_whole_array() {
     both(
-        |col| titles(&col.find(Filter::Eq("tags".into(), arr(&["rust", "db"]))).unwrap()),
+        |col| {
+            titles(
+                &col.find(Filter::Eq("tags".into(), arr(&["rust", "db"])))
+                    .unwrap(),
+            )
+        },
         &["a"],
     );
 }
@@ -111,7 +121,12 @@ fn in_matches_any_element_against_any_candidate() {
 #[test]
 fn ne_excludes_a_document_any_element_of_which_matches() {
     both(
-        |col| titles(&col.find(Filter::Ne("tags".into(), Value::Str("db".into()))).unwrap()),
+        |col| {
+            titles(
+                &col.find(Filter::Ne("tags".into(), Value::Str("db".into())))
+                    .unwrap(),
+            )
+        },
         // 'a' and 'b' both carry 'db'; 'd' has no field at all, which `$ne`
         // has always matched.
         &["c", "d"],
@@ -121,7 +136,12 @@ fn ne_excludes_a_document_any_element_of_which_matches() {
 #[test]
 fn range_comparisons_match_any_element() {
     both(
-        |col| titles(&col.find(Filter::Gte("scores".into(), Value::Int(7))).unwrap()),
+        |col| {
+            titles(
+                &col.find(Filter::Gte("scores".into(), Value::Int(7)))
+                    .unwrap(),
+            )
+        },
         // 'a' has a 9, 'c' is the scalar 7. 'b' tops out at 3.
         &["a", "c"],
     );
@@ -132,7 +152,12 @@ fn a_document_is_returned_once_however_many_elements_match() {
     // Three of `a`'s scores are in range. Each is its own index entry, so
     // without deduplication the document comes back three times.
     both(
-        |col| titles(&col.find(Filter::Gte("scores".into(), Value::Int(0))).unwrap()),
+        |col| {
+            titles(
+                &col.find(Filter::Gte("scores".into(), Value::Int(0)))
+                    .unwrap(),
+            )
+        },
         &["a", "b", "c"],
     );
 }
@@ -161,17 +186,26 @@ fn updates_keep_the_index_in_step_with_the_document() {
 
     // The old elements must no longer be reachable...
     assert_eq!(
-        titles(&col.find(Filter::Eq("tags".into(), Value::Str("wasm".into()))).unwrap()),
+        titles(
+            &col.find(Filter::Eq("tags".into(), Value::Str("wasm".into())))
+                .unwrap()
+        ),
         Vec::<String>::new(),
     );
     // ...and the new one must be.
     assert_eq!(
-        titles(&col.find(Filter::Eq("tags".into(), Value::Str("swift".into()))).unwrap()),
+        titles(
+            &col.find(Filter::Eq("tags".into(), Value::Str("swift".into())))
+                .unwrap()
+        ),
         vec!["b".to_string()],
     );
     // A document still carrying 'db' is untouched.
     assert_eq!(
-        titles(&col.find(Filter::Eq("tags".into(), Value::Str("db".into()))).unwrap()),
+        titles(
+            &col.find(Filter::Eq("tags".into(), Value::Str("db".into())))
+                .unwrap()
+        ),
         vec!["a".to_string()],
     );
 }
@@ -182,7 +216,10 @@ fn deletes_remove_every_element_entry() {
     col.delete_one(Filter::Eq("title".into(), Value::Str("a".into())))
         .unwrap();
     assert_eq!(
-        titles(&col.find(Filter::Eq("tags".into(), Value::Str("rust".into()))).unwrap()),
+        titles(
+            &col.find(Filter::Eq("tags".into(), Value::Str("rust".into())))
+                .unwrap()
+        ),
         vec!["c".to_string()],
         "a deleted document must not linger under any of its elements"
     );
@@ -200,7 +237,10 @@ fn an_index_created_after_the_writes_backfills_every_element() {
     col.create_index("tags").unwrap();
 
     assert_eq!(
-        titles(&col.find(Filter::Eq("tags".into(), Value::Str("db".into()))).unwrap()),
+        titles(
+            &col.find(Filter::Eq("tags".into(), Value::Str("db".into())))
+                .unwrap()
+        ),
         vec!["a".to_string()],
     );
 }
@@ -228,8 +268,7 @@ fn nested_arrays_are_not_flattened() {
 fn compound_index_expands_one_array_member() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("posts").unwrap();
-    col.create_compound_index(&["author", "tags"])
-        .unwrap();
+    col.create_compound_index(&["author", "tags"]).unwrap();
     col.insert(vec![
         ("title".into(), Value::Str("a".into())),
         ("author".into(), Value::Str("ana".into())),
@@ -255,8 +294,7 @@ fn compound_index_expands_one_array_member() {
 fn a_compound_index_refuses_two_array_members() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("posts").unwrap();
-    col.create_compound_index(&["tags", "scores"])
-        .unwrap();
+    col.create_compound_index(&["tags", "scores"]).unwrap();
 
     let err = col
         .insert(vec![

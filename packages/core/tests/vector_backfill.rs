@@ -39,8 +39,14 @@ fn flat_index_backfills_existing_documents() {
     col.create_vector_index("emb", 4, Some(VectorMetric::Cosine), None)
         .unwrap();
 
-    let hits = col.find_nearest("emb", &[1.0, 0.0, 0.0, 0.0], 20, None).unwrap();
-    assert_eq!(hits.len(), 20, "every pre-existing document must be indexed");
+    let hits = col
+        .find_nearest("emb", &[1.0, 0.0, 0.0, 0.0], 20, None)
+        .unwrap();
+    assert_eq!(
+        hits.len(),
+        20,
+        "every pre-existing document must be indexed"
+    );
 }
 
 #[test]

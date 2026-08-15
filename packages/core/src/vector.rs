@@ -620,7 +620,9 @@ mod tests {
     }
 
     fn ramp(len: usize, offset: f32) -> Vec<f32> {
-        (0..len).map(|i| (i as f32).mul_add(0.125, offset)).collect()
+        (0..len)
+            .map(|i| (i as f32).mul_add(0.125, offset))
+            .collect()
     }
 
     #[test]
@@ -662,9 +664,15 @@ mod tests {
         for len in [4usize, 8, 12, 384] {
             let v = ramp(len, 1.0);
             let cos = score_with_query_norm(&VectorMetric::Cosine, &v, l2_norm(&v), &v);
-            assert!((cos - 1.0).abs() < 1e-5, "cosine self-similarity at len {len}: {cos}");
+            assert!(
+                (cos - 1.0).abs() < 1e-5,
+                "cosine self-similarity at len {len}: {cos}"
+            );
             let euc = euclidean_similarity(&v, &v);
-            assert!((euc - 1.0).abs() < 1e-6, "euclidean self-similarity at len {len}");
+            assert!(
+                (euc - 1.0).abs() < 1e-6,
+                "euclidean self-similarity at len {len}"
+            );
         }
     }
 }

@@ -274,12 +274,12 @@ fn plan_inner(
                     matches!(f, Filter::Eq(field, _)
                         if field != "_id" && indexed_fields.contains(&field.as_str()))
                 })
-                .filter_map(|f| {
-                    match plan_inner(f, indexed_fields, fts_fields, compound_indexes) {
+                .filter_map(
+                    |f| match plan_inner(f, indexed_fields, fts_fields, compound_indexes) {
                         QueryPlan::FullScan => None,
                         plan => Some(plan),
-                    }
-                })
+                    },
+                )
                 .collect();
             if indexed_eq.len() > 1 {
                 return QueryPlan::IndexAnd { plans: indexed_eq };

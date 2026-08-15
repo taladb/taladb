@@ -497,7 +497,10 @@ mod tests {
         // Same story at the bottom of the range.
         let small = Value::Int(-9_007_199_254_740_993);
         let small_float = Value::Float(-9_007_199_254_740_992.0);
-        assert_eq!(small.partial_cmp_numeric(&small_float), Some(Ordering::Less));
+        assert_eq!(
+            small.partial_cmp_numeric(&small_float),
+            Some(Ordering::Less)
+        );
         assert_eq!(
             small_float.partial_cmp_numeric(&small),
             Some(Ordering::Greater)
@@ -511,7 +514,10 @@ mod tests {
         let max = Value::Int(i64::MAX);
         let min = Value::Int(i64::MIN);
 
-        assert_eq!(max.partial_cmp_numeric(&Value::Float(1e300)), Some(Ordering::Less));
+        assert_eq!(
+            max.partial_cmp_numeric(&Value::Float(1e300)),
+            Some(Ordering::Less)
+        );
         assert_eq!(
             min.partial_cmp_numeric(&Value::Float(-1e300)),
             Some(Ordering::Greater)
@@ -543,8 +549,14 @@ mod tests {
         );
 
         // NaN stays incomparable, as it was before.
-        assert_eq!(Value::Int(1).partial_cmp_numeric(&Value::Float(f64::NAN)), None);
-        assert_eq!(Value::Float(f64::NAN).partial_cmp_numeric(&Value::Int(1)), None);
+        assert_eq!(
+            Value::Int(1).partial_cmp_numeric(&Value::Float(f64::NAN)),
+            None
+        );
+        assert_eq!(
+            Value::Float(f64::NAN).partial_cmp_numeric(&Value::Int(1)),
+            None
+        );
     }
 
     #[test]
@@ -576,7 +588,10 @@ mod tests {
         assert_eq!(Value::Float(1.5).as_float(), Some(1.5));
         assert_eq!(Value::Str("s".into()).as_str(), Some("s"));
         assert_eq!(Value::Bytes(vec![1, 2]).as_bytes(), Some(&[1u8, 2][..]));
-        assert_eq!(Value::Array(vec![Value::Int(1)]).as_array().unwrap().len(), 1);
+        assert_eq!(
+            Value::Array(vec![Value::Int(1)]).as_array().unwrap().len(),
+            1
+        );
         assert!(Value::Null.is_null());
 
         let obj = Value::Object(vec![("a".into(), Value::Int(1))]);

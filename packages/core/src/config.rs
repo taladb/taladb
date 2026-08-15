@@ -199,7 +199,12 @@ durability:
         assert_eq!(cfg.durability.flush_ms, Some(50));
 
         let empty = write_tmp("{}", "json");
-        assert!(load_from_path(empty.path()).unwrap().durability.flush_every_write);
+        assert!(
+            load_from_path(empty.path())
+                .unwrap()
+                .durability
+                .flush_every_write
+        );
     }
 
     #[test]

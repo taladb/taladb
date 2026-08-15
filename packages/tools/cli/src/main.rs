@@ -124,7 +124,6 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
-
 }
 
 #[derive(Clone, ValueEnum)]
@@ -374,9 +373,7 @@ fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Re
     db.collection(collection)?
         .upgrade_vector_index(field)
         .with_context(|| {
-            format!(
-                "rebuilding HNSW graph for '{collection}::{field}' in {file:?}"
-            )
+            format!("rebuilding HNSW graph for '{collection}::{field}' in {file:?}")
         })?;
     eprintln!("HNSW graph for '{collection}::{field}' rebuilt successfully.");
     Ok(())

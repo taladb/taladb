@@ -105,11 +105,6 @@ jobs:
       - name: tsc --noEmit (@taladb/react)
         run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
-      - name: tsc --noEmit (@taladb/sync-mongodb)
-        run: node_modules/.bin/tsc -p packages/adapters/mongodb/tsconfig.json --noEmit
-
-      - name: tsc --noEmit (@taladb/next)
-        run: node_modules/.bin/tsc -p packages/integrations/next/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build WASM
@@ -433,7 +428,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Publish npm packages
   # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react,
-  # @taladb/cloudflare, @taladb/sync-mongodb, @taladb/next
+  # @taladb/cloudflare
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
@@ -548,32 +543,6 @@ jobs:
       # -- @taladb/cloudflare --------------------------------------------------
       - name: Publish @taladb/cloudflare
         working-directory: packages/integrations/cloudflare
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # -- @taladb/sync-mongodb ------------------------------------------------
-      # Pure TS with no native artifacts — build inline rather than via a
-      # separate build job.
-      - name: Build @taladb/sync-mongodb
-        working-directory: packages/adapters/mongodb
-        run: pnpm exec tsup
-
-      - name: Publish @taladb/sync-mongodb
-        working-directory: packages/adapters/mongodb
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # -- @taladb/next ----------------------------------------------------------
-      # Pure TS with no native artifacts — build inline rather than via a
-      # separate build job.
-      - name: Build @taladb/next
-        working-directory: packages/integrations/next
-        run: pnpm exec tsup
-
-      - name: Publish @taladb/next
-        working-directory: packages/integrations/next
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

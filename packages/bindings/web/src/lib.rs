@@ -5,12 +5,10 @@ pub use worker_db::WorkerDB;
 
 use std::sync::Arc;
 
-
 use serde::Serialize;
 use serde_wasm_bindgen::{from_value, to_value};
 use taladb_core::{
-    Collection, Database, Filter, HnswOptions, TalaDbError,
-    Update, Value, VectorMetric,
+    Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric,
 };
 use wasm_bindgen::prelude::*;
 
@@ -468,7 +466,6 @@ fn json_to_value(j: serde_json::Value) -> Value {
         ),
     }
 }
-
 
 fn value_to_json(v: &Value) -> serde_json::Value {
     match v {

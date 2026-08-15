@@ -121,7 +121,10 @@ fn a_non_ulid_id_is_refused_with_a_message_pointing_at_derive_doc_id() {
         .insert(vec![("_id".into(), Value::Str("sku-1".into()))])
         .unwrap_err();
 
-    assert!(matches!(err, TalaDbError::InvalidDocumentId(_)), "got {err:?}");
+    assert!(
+        matches!(err, TalaDbError::InvalidDocumentId(_)),
+        "got {err:?}"
+    );
     assert!(
         err.to_string().contains("deriveDocId"),
         "the error must say how to get a usable id from a natural key: {err}"
@@ -131,10 +134,11 @@ fn a_non_ulid_id_is_refused_with_a_message_pointing_at_derive_doc_id() {
 #[test]
 fn a_non_string_id_is_refused() {
     let (_db, col) = collection();
-    let err = col
-        .insert(vec![("_id".into(), Value::Int(7))])
-        .unwrap_err();
-    assert!(matches!(err, TalaDbError::InvalidDocumentId(_)), "got {err:?}");
+    let err = col.insert(vec![("_id".into(), Value::Int(7))]).unwrap_err();
+    assert!(
+        matches!(err, TalaDbError::InvalidDocumentId(_)),
+        "got {err:?}"
+    );
 }
 
 #[test]

@@ -122,11 +122,6 @@ jobs:
       - name: tsc --noEmit (@taladb/react)
         run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
-      - name: tsc --noEmit (@taladb/sync-mongodb)
-        run: node_modules/.bin/tsc -p packages/adapters/mongodb/tsconfig.json --noEmit
-
-      - name: tsc --noEmit (@taladb/next)
-        run: node_modules/.bin/tsc -p packages/integrations/next/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Validate — @taladb/cloudflare (JS-only, no build step)
@@ -360,119 +355,6 @@ jobs:
         run: ls dist/index.mjs dist/index.js dist/index.d.ts
 
   # ---------------------------------------------------------------------------
-  # Test + Build — @taladb/sync-mongodb adapter package
-  # ---------------------------------------------------------------------------
-  build-taladb-sync-mongodb:
-    name: Build — @taladb/sync-mongodb (TS)
-    runs-on: ubuntu-latest
-    needs: ts-check
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Unit tests
-        working-directory: packages/adapters/mongodb
-        run: pnpm test
-
-      - name: Build
-        working-directory: packages/adapters/mongodb
-        run: pnpm exec tsup
-
-      - name: Verify dist/ output
-        working-directory: packages/adapters/mongodb
-        run: ls dist/index.mjs dist/index.js dist/index.d.ts
-
-  # ---------------------------------------------------------------------------
-  # Test + Build — @taladb/next (sync route handlers + SyncProvider)
-  # ---------------------------------------------------------------------------
-  build-taladb-next:
-    name: Build — @taladb/next (TS)
-    runs-on: ubuntu-latest
-    needs: [ts-check, build-node]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # taladbSyncStore tests run against the real native engine.
-      - name: Download Node.js native module
-        uses: actions/download-artifact@v4
-        with:
-          name: taladb-node-linux
-          path: packages/bindings/node
-
-      - name: Unit tests (handlers + stores)
-        working-directory: packages/integrations/next
-        run: pnpm test
-
-      - name: Build
-        working-directory: packages/integrations/next
-        run: pnpm exec tsup
-
-      - name: Verify dist/ output
-        working-directory: packages/integrations/next
-        run: ls dist/server.mjs dist/server.js dist/server.d.ts dist/client.mjs dist/client.js dist/client.d.ts
-
-  # ---------------------------------------------------------------------------
-  # Build — example Next.js app (real `next build` over the whole client stack:
-  # taladb browser bundle, @taladb/web worker asset, @taladb/react provider,
-  # @taladb/next server + client). Catches bundler-only regressions the unit
-  # suites can't (e.g. webpack chasing @taladb/node into the browser bundle).
-  # ---------------------------------------------------------------------------
-  build-example-next:
-    name: Build — examples/nextjs-sync (next build)
-    runs-on: ubuntu-latest
-    needs: ts-check
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build workspace packages the example consumes
-        run: |
-          pnpm --filter taladb exec tsup
-          pnpm --filter @taladb/react exec tsup
-          pnpm --filter @taladb/next exec tsup
-
-      - name: next build
-        working-directory: examples/nextjs-sync
-        run: pnpm exec next build
-
-  # ---------------------------------------------------------------------------
   # Publish gate — all jobs must pass before anything can be published.
   # Use this job as the required status check in branch protection rules
   # and as the `needs:` dependency in any publish/release workflow.
@@ -490,9 +372,6 @@ jobs:
       - build-cli
       - build-taladb
       - build-taladb-react
-      - build-taladb-sync-mongodb
-      - build-taladb-next
-      - build-example-next
     if: always()
     steps:
       # Every job above runs unconditionally, so `skipped` here means an

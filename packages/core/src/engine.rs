@@ -446,9 +446,7 @@ impl RedbReadTxn {
             Err(redb::TableError::TableDoesNotExist(_)) => None,
             Err(e) => return Err(e.into()),
         };
-        self.open
-            .borrow_mut()
-            .insert(name.into(), opened.clone());
+        self.open.borrow_mut().insert(name.into(), opened.clone());
         Ok(opened)
     }
 }

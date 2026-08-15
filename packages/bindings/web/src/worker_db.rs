@@ -23,10 +23,9 @@ use std::sync::Arc;
 #[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
 use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
+use crate::doc_to_json;
 #[cfg(not(feature = "cf-workers"))]
 use crate::storage::opfs_backend::OpfsBackend;
-use crate::doc_to_json;
-
 
 // ---------------------------------------------------------------------------
 // WorkerDB
@@ -730,7 +729,6 @@ impl WorkerDB {
             .set_user_version(version)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
-
 }
 
 // ---------------------------------------------------------------------------

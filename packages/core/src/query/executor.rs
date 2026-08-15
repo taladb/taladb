@@ -104,7 +104,15 @@ pub fn execute_limited(
         // Primary-key point lookups; the post-filter still applies (covers
         // `_id` filters nested inside And/Or expressions).
         QueryPlan::ById { ids } => {
-            fetch_filtered(txn, collection, ids, &matcher, deadline, limit, &mut results)?;
+            fetch_filtered(
+                txn,
+                collection,
+                ids,
+                &matcher,
+                deadline,
+                limit,
+                &mut results,
+            )?;
         }
 
         QueryPlan::IndexEq { field, start, end } => {

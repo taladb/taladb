@@ -77,8 +77,7 @@ impl Filter {
                 if field == "_id" {
                     return matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
-                doc.get(field)
-                    .is_some_and(|v| any_element(v, |e| e == val))
+                doc.get(field).is_some_and(|v| any_element(v, |e| e == val))
             }
 
             // Negation is over the *document*, not the element: `$ne` excludes a
@@ -88,8 +87,7 @@ impl Filter {
                 if field == "_id" {
                     return !matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
-                doc.get(field)
-                    .is_none_or(|v| !any_element(v, |e| e == val))
+                doc.get(field).is_none_or(|v| !any_element(v, |e| e == val))
             }
 
             Self::Gt(field, val) => doc.get(field).is_some_and(|v| {

@@ -35,6 +35,9 @@ mod tests {
     fn now_ms_readings_are_close_together() {
         let a = now_ms();
         let b = now_ms();
-        assert!(a.abs_diff(b) < 1_000, "{a} and {b} are implausibly far apart");
+        assert!(
+            a.abs_diff(b) < 1_000,
+            "{a} and {b} are implausibly far apart"
+        );
     }
 }

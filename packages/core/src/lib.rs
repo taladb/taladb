@@ -86,11 +86,11 @@ pub use error::TalaDbError;
 pub use migration::{BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION, Migration, run_migrations};
 pub use query::Filter;
 pub use query::options::{FindOptions, SortDirection, SortSpec};
-pub use time::now_ms;
 /// Re-exported because [`TalaDbError`]'s storage variants carry `redb` errors as
 /// their [`source`](std::error::Error::source): downcasting to them requires
 /// naming the same `redb` version the engine was built against.
 pub use redb;
+pub use time::now_ms;
 /// Re-exported so bindings can parse and construct document ids without taking a
 /// direct `ulid` dependency (and risking a version skew against the engine's).
 pub use ulid::Ulid;

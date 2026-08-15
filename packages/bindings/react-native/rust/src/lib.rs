@@ -64,9 +64,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use taladb_core::{
-    Database, Filter, HnswOptions, TalaDbConfig, Update, Value, VectorMetric,
-};
+use taladb_core::{Database, Filter, HnswOptions, TalaDbConfig, Update, Value, VectorMetric};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -945,7 +943,8 @@ pub unsafe extern "C" fn taladb_search_text(
             return std::ptr::null_mut();
         }
     };
-    let options = unsafe { cstr_to_string(options_json) }.and_then(|s| serde_json::from_str(&s).ok());
+    let options =
+        unsafe { cstr_to_string(options_json) }.and_then(|s| serde_json::from_str(&s).ok());
     let bm25 = bm25_from_options(options.as_ref());
 
     let result =
@@ -1961,7 +1960,11 @@ mod tests {
         if ptr.is_null() {
             None
         } else {
-            Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+            Some(
+                unsafe { CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     }
 
@@ -2030,9 +2033,7 @@ mod tests {
         );
 
         let (handle, _dir) = open_temp_db();
-        assert!(
-            unsafe { taladb_insert(handle, std::ptr::null(), doc.as_ptr()) }.is_null()
-        );
+        assert!(unsafe { taladb_insert(handle, std::ptr::null(), doc.as_ptr()) }.is_null());
         assert!(last_error().unwrap().contains("null"));
 
         // Integer-returning functions take the same path.
@@ -2055,7 +2056,10 @@ mod tests {
         assert!(result.is_null(), "a bad element must fail the whole call");
 
         let err = last_error().expect("must report");
-        assert!(err.contains("index 1"), "must name the offending index: {err}");
+        assert!(
+            err.contains("index 1"),
+            "must name the offending index: {err}"
+        );
 
         // And nothing was written — no partial batch.
         let filter = cstr("{}");

@@ -169,9 +169,7 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
                     .to_string(),
             ),
             _ => {
-                return Err(napi::Error::from_reason(format!(
-                    "unknown operator: {op}"
-                )));
+                return Err(napi::Error::from_reason(format!("unknown operator: {op}")));
             }
         };
         filters.push(f);

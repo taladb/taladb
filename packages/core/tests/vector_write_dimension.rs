@@ -86,7 +86,10 @@ fn update_to_a_wrong_dimension_vector_is_rejected_and_leaves_the_old_one() {
         taladb_core::Filter::Eq("k".into(), Value::Str("a".into())),
         taladb_core::Update::Set(vec![("embedding".into(), vec_field(&[1.0, 2.0]))]),
     );
-    assert!(err.is_err(), "a shrinking update is a dimension mismatch too");
+    assert!(
+        err.is_err(),
+        "a shrinking update is a dimension mismatch too"
+    );
 
     let hits = col
         .find_nearest("embedding", &[1.0, 0.0, 0.0, 0.0], 10, None)

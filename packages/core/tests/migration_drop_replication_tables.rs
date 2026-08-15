@@ -12,11 +12,20 @@ use taladb_core::{Database, Filter};
 /// the new migration is pending.
 fn seed_pre_0_11(backend: &dyn StorageBackend) {
     let mut wtxn = backend.begin_write().unwrap();
-    wtxn.put("tomb::notes", &[1u8; 16], &postcard::to_allocvec(&1_i64).unwrap())
+    wtxn.put(
+        "tomb::notes",
+        &[1u8; 16],
+        &postcard::to_allocvec(&1_i64).unwrap(),
+    )
+    .unwrap();
+    wtxn.put(
+        "tomb::tasks",
+        &[2u8; 16],
+        &postcard::to_allocvec(&2_i64).unwrap(),
+    )
+    .unwrap();
+    wtxn.put("quarantine::notes", &[3u8; 16], b"whatever")
         .unwrap();
-    wtxn.put("tomb::tasks", &[2u8; 16], &postcard::to_allocvec(&2_i64).unwrap())
-        .unwrap();
-    wtxn.put("quarantine::notes", &[3u8; 16], b"whatever").unwrap();
     // A collection whose name merely *contains* the prefix must survive.
     wtxn.put("docs::tombolas", &[4u8; 16], b"keep me").unwrap();
     wtxn.put(
