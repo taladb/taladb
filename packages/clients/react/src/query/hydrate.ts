@@ -1,4 +1,5 @@
 import type { Collection, Document } from 'taladb'
+import { applyCanonical } from './canonical'
 import { reservedFieldsIn, stampSynced } from './envelope'
 import type { SyncState } from './types'
 
@@ -47,9 +48,9 @@ export async function hydrate<T extends Document>(
 
   // One read to learn which documents already exist and which are busy.
   const existing = await collection.find({ _id: { $in: ids } } as never)
-  const state = new Map<string, SyncState | undefined>()
+  const state = new Map<string, T>()
   for (const doc of existing) {
-    state.set(doc._id as string, doc._sync as SyncState | undefined)
+    state.set(doc._id as string, doc)
   }
 
   const fresh: T[] = []
@@ -63,13 +64,13 @@ export async function hydrate<T extends Document>(
       continue
     }
     // `undefined` means the document predates this layer — it owes nothing.
-    const current = state.get(id)
-    if (current !== undefined && current !== 'synced') {
+    const current = state.get(id)!
+    const syncState = current._sync as SyncState | undefined
+    if (syncState !== undefined && syncState !== 'synced') {
       skipped++
       continue
     }
-    const { _id: _ignored, ...fields } = stampSynced(doc, now)
-    await collection.updateOne({ _id: id } as never, { $set: fields } as never)
+    await applyCanonical(collection, current, doc, now)
     updated++
   }
 

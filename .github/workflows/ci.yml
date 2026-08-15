@@ -122,6 +122,15 @@ jobs:
       - name: tsc --noEmit (@taladb/react)
         run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
+      - name: tsc --noEmit (@taladb/react-native)
+        run: node_modules/.bin/tsc -p packages/bindings/react-native/tsconfig.json --noEmit
+
+      - name: Build TypeScript packages and storefront example
+        run: |
+          pnpm --filter taladb build
+          pnpm --filter @taladb/react build
+          pnpm --filter example-vite-spa-storefront build
+
 
   # ---------------------------------------------------------------------------
   # Build — WASM (wasm-pack)

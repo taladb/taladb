@@ -20,6 +20,7 @@ export const ENVELOPE_FIELDS = [
   '_retry_at',
   '_endpoint',
   '_method',
+  '_revision',
 ] as const
 
 /**
@@ -32,6 +33,14 @@ export const ENVELOPE_FIELDS = [
  * so both are safe to run on every registration.
  */
 export const ENVELOPE_INDEXES = ['_sync', '_changed_at'] as const
+
+let revisionCounter = 0
+
+/** Opaque per-write token; unlike `_changed_at`, it cannot collide in one ms. */
+export function nextRevision(): string {
+  revisionCounter = (revisionCounter + 1) % Number.MAX_SAFE_INTEGER
+  return `${Date.now().toString(36)}-${revisionCounter.toString(36)}`
+}
 
 /**
  * Reserved field names present in a document, if any.
@@ -64,6 +73,7 @@ export function stampSynced<T extends Document>(doc: T, now: number): Enveloped<
     _error: null,
     _fetched_at: now,
     _retry_at: 0,
+    _revision: null,
   }
 }
 
@@ -88,6 +98,7 @@ export function stampPending<T extends Document>(
     _fetched_at: previous?._fetched_at ?? 0,
     // Eligible immediately; the drain pushes this forward when it backs off.
     _retry_at: 0,
+    _revision: nextRevision(),
   }
 }
 

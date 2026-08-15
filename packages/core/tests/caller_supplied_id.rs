@@ -11,6 +11,7 @@
 //! application code — fetch, then `insert_many` — and that code is only safe to
 //! run twice if the caller controls the id.
 
+use std::sync::{Arc, Barrier};
 use taladb_core::document::Value;
 use taladb_core::{Database, Filter, TalaDbError};
 use ulid::Ulid;
@@ -95,6 +96,46 @@ fn insert_many_rejects_a_duplicate_within_its_own_batch() {
 
     assert!(matches!(err, TalaDbError::DuplicateId(_)), "got {err:?}");
     assert_eq!(col.count(Filter::All).unwrap(), 0, "the batch rolled back");
+}
+
+#[test]
+fn concurrent_inserts_with_one_supplied_id_have_one_winner() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let barrier = Arc::new(Barrier::new(12));
+    let mut threads = Vec::new();
+
+    for n in 0..12 {
+        let db = Arc::clone(&db);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let col = db.collection("products").unwrap();
+            barrier.wait();
+            col.insert(vec![
+                ("_id".into(), Value::Str(ID_A.into())),
+                ("writer".into(), Value::Int(n)),
+            ])
+        }));
+    }
+
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(TalaDbError::DuplicateId(_))))
+            .count(),
+        11
+    );
+    assert_eq!(
+        db.collection("products")
+            .unwrap()
+            .count(Filter::All)
+            .unwrap(),
+        1
+    );
 }
 
 #[test]

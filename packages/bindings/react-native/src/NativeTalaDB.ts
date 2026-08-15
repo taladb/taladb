@@ -13,8 +13,7 @@ export interface Spec extends TurboModule {
    * Open (or create) a TalaDB database file at the platform default path.
    * Must be called once at app startup before using `collection()`.
    *
-   * @param configJson  Optional JSON-serialised `TalaDbConfig`. Pass to enable
-   *                    HTTP push sync. When omitted, sync is disabled.
+   * @param configJson Optional JSON-serialised durability/encryption config.
    */
   initialize(dbName: string, configJson?: string): Promise<void>;
 
@@ -25,34 +24,11 @@ export interface Spec extends TurboModule {
   // Collection CRUD — all methods are synchronous via JSI
   // ------------------------------------------------------------------
 
-  /** Insert a document. Returns the ULID string id. */
+  /** Insert a document. Honours a supplied `_id`, otherwise creates a ULID. */
   insert(collection: string, doc: Object): string;
 
-  /** Insert multiple documents. Returns an array of ULID string ids. */
+  /** Insert multiple documents, honouring any supplied `_id` values. */
   insertMany(collection: string, docs: Object[]): string[];
-
-  /**
-   * Upsert many documents **by caller-supplied `_id`**, in one commit.
-   *
-   * Unlike `insertMany`, which discards `_id` and mints a fresh ULID, this honours
-   * the id on each document — which is what makes a replication upsert idempotent
-   * across repeated fetches of the same remote row.
-   *
-   * `origin` is `'remote'` for authoritative rows replicated in from an origin, or
-   * `'local'` for ordinary user writes.
-   */
-  replaceManyWithIds(
-    collection: string,
-    docs: Object[],
-    origin: 'local' | 'remote',
-  ): string[];
-
-  /** Delete many documents by id, in one commit. Returns the number removed. */
-  deleteManyWithIds(
-    collection: string,
-    ids: string[],
-    origin: 'local' | 'remote',
-  ): number;
 
   /** Find documents matching the filter. */
   find(collection: string, filter: Object | null): Object[];

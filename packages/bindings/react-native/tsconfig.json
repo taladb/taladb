@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react-jsx",
+    "paths": {
+      "taladb": ["../../clients/taladb/src/webhook.ts"]
+    }
+  },
+  "include": ["src"]
+}

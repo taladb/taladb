@@ -125,7 +125,7 @@ describe.skipIf(db === null)('writeLocal', () => {
   it('resets the retry counter when a failed write is edited again', async () => {
     await todos.insert(stampSynced({ title: 'x' }, 1))
     const id = (await todos.find())[0]._id as string
-    await todos.updateOne({ _id: id }, { $set: { _sync: 'failed', _op: 'update', _attempt: 3, _error: 'boom' } })
+    await todos.updateOne({ _id: id }, { $set: { _sync: 'failed', _op: 'update', _attempt: 3, _error: 'boom', _retry_at: 99_999 } })
 
     await writeLocal(todos, { type: 'update', where: { _id: id }, set: { title: 'retry me' } }, 2)
 
@@ -133,6 +133,7 @@ describe.skipIf(db === null)('writeLocal', () => {
     expect(stored?._sync).toBe('pending')
     expect(stored?._attempt).toBe(0)
     expect(stored?._error).toBeNull()
+    expect(stored?._retry_at).toBe(0)
   })
 
   it('refuses to update a document that is not here', async () => {
@@ -156,13 +157,14 @@ describe.skipIf(db === null)('writeConfirmed', () => {
   })
 
   it('overwrites a local document with the canonical server version', async () => {
-    const id = (await todos.insert(stampSynced({ title: 'local' }, 1))) as string
+    const id = (await todos.insert(stampSynced({ title: 'local', obsolete: 'remove me' }, 1))) as string
 
     await writeConfirmed(todos, { _id: id, title: 'canonical', done: true } as Todo, 5)
 
     const stored = await todos.findOne({ _id: id })
     expect(stored?.title).toBe('canonical')
     expect(stored?.done).toBe(true)
+    expect(stored).not.toHaveProperty('obsolete')
     expect(stored?._fetched_at).toBe(5)
   })
 })

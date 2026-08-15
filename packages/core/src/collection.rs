@@ -1830,22 +1830,6 @@ impl Collection {
     // Public API
     // ------------------------------------------------------------------
 
-    /// Fail if `id` is already stored, so `insert` cannot overwrite.
-    ///
-    /// `insert` means create. Silently replacing a document because the caller
-    /// happened to supply an id that exists would make a re-run of a seed script
-    /// destroy whatever the application had since written to those documents.
-    fn reject_existing_id(&self, id: Ulid) -> Result<(), TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
-        if rtxn
-            .get(&docs_table_name(&self.name), &id.to_bytes())?
-            .is_some()
-        {
-            return Err(TalaDbError::DuplicateId(id.to_string()));
-        }
-        Ok(())
-    }
-
     pub fn insert(&self, mut fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
         let supplied = take_supplied_id(&mut fields)?;
         // Auto-stamp `_changed_at` so callers always have a last-modified time.
@@ -1853,10 +1837,7 @@ impl Collection {
         fields.retain(|(k, _)| k != "_changed_at");
         fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
         let mut doc = match supplied {
-            Some(id) => {
-                self.reject_existing_id(id)?;
-                Document::with_id(id, fields)
-            }
+            Some(id) => Document::with_id(id, fields),
             None => Document::new(fields),
         };
         // Encrypt nominated fields before writing indexes or the doc body.
@@ -1865,6 +1846,16 @@ impl Collection {
         self.encrypt_doc(&mut doc)?;
         let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
+        // The existence check belongs inside the exclusive write transaction.
+        // A read transaction followed by a write transaction lets two callers
+        // both observe "absent" and then overwrite each other sequentially.
+        if supplied.is_some()
+            && wtxn
+                .get(&docs_table_name(&self.name), &doc.id.to_bytes())?
+                .is_some()
+        {
+            return Err(TalaDbError::DuplicateId(doc.id.to_string()));
+        }
         self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
         let id = doc.id;
         // Audit row commits atomically with the insert.
@@ -1900,7 +1891,6 @@ impl Collection {
                         return Err(TalaDbError::DuplicateId(id.to_string()));
                     }
                     supplied_ids.push(id);
-                    self.reject_existing_id(id)?;
                     Document::with_id(id, fields)
                 }
                 None => Document::new(fields),
@@ -1911,6 +1901,17 @@ impl Collection {
         }
         let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
+        let docs_table = docs_table_name(&self.name);
+        let supplied_keys: Vec<[u8; 16]> = supplied_ids.iter().map(Ulid::to_bytes).collect();
+        let supplied_refs: Vec<&[u8]> = supplied_keys.iter().map(<[u8; 16]>::as_slice).collect();
+        for (id, stored) in supplied_ids
+            .iter()
+            .zip(wtxn.get_many(&docs_table, &supplied_refs)?)
+        {
+            if stored.is_some() {
+                return Err(TalaDbError::DuplicateId(id.to_string()));
+            }
+        }
         // One batched pass over the whole insert: every index table is opened
         // once, not once per document.
         let batch: Vec<(&Document, Option<&Document>)> = docs.iter().map(|d| (d, None)).collect();

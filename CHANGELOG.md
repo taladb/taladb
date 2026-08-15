@@ -45,14 +45,15 @@ const db = await openDB('app.db', {
 
 Per-document ordering is preserved, the bounded queue drops rather than blocking
 the writer, and failures retry with backoff on 5xx and network errors but never
-on 4xx. Delivery is **at most once** — a notification channel, not a replication
-log. Adds `db.webhookStats()` and `db.flushWebhook()`; `db.close()` drains.
+on 4xx. Delivery is best effort: retries reuse an `event_id` / `Idempotency-Key`
+so receivers can deduplicate, while a crash can still lose queued events. Adds
+`db.webhookStats()` and `db.flushWebhook()`; `db.close()` drains.
 
-`document` is the stored document after the commit — `_changed_at` and `_v`
-included — and carries the same shape on all three verbs. `timestamp` is commit
-time, not send time, so a backlog or a retry does not move it. Each mutating call
-costs one extra batched read (`_id`-`$in` over the affected documents, not one
-read each); a filter of the exact form `{ _id }` skips even that.
+`document` is the stored post-image on insert/update and the last pre-image on
+delete — `_changed_at` and `_v` included — and the key exists on all verbs.
+`timestamp` is captured immediately when the commit returns, before payload
+reads, so a backlog or retry does not move it. Each mutating call costs one extra
+batched document read, not one read per affected document.
 
 It replaces the previous Rust implementation, which existed in three variants
 across the runtimes and was entirely absent from the browser's in-memory

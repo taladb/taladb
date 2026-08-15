@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Document } from 'taladb'
 import { useCollection } from '../useCollection'
+import { withoutEnvelope } from './canonical'
 import { useQueryContext } from './context'
 import { DEFAULT_METHODS, defaultClassify, resolveUrl } from './endpoint'
 import { newDocId } from './keys'
@@ -117,9 +118,21 @@ export function useMutation<T extends Document>(options: UseMutationOptions): Mu
           await collection.deleteOne({ _id: id } as never)
         } else {
           // The response body is canonical, so server-set fields land without a
-          // second fetch. A 409 carries none — the server had already done it.
+          // second fetch. A 409/empty response carries none; for an update,
+          // merge the submitted fields into the last local shape so a contract
+          // violation cannot erase unrelated fields.
           const canonical = await readJson(response)
-          await writeConfirmed(collection, (canonical ?? body) as T, Date.now())
+          const fallback = op.type === 'update'
+            ? {
+                ...withoutEnvelope((await collection.findOne({ _id: id } as never)) ?? {}),
+                ...body,
+              }
+            : body
+          await writeConfirmed(
+            collection,
+            { ...(canonical && Object.keys(canonical).length > 0 ? canonical : fallback), _id: id } as T,
+            Date.now(),
+          )
         }
       } catch (cause: unknown) {
         setIfMounted(setError, cause)

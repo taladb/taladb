@@ -402,11 +402,12 @@ function isTransientTab() {
  * Forward a committed write to the tab holding the OPFS lock.
  *
  * Inserts travel as whole documents **with their `_id`s** so the primary can
- * upsert them by id — a plain re-insert would mint a new ULID and break any id
- * the application is already holding. Filter-based updates and deletes travel
- * as the filter and update themselves, and the primary re-evaluates them
- * against authoritative data, which is more accurate than resolving ids here
- * against a possibly-stale in-memory copy.
+ * preserve the ids the application is already holding. They remain inserts,
+ * not upserts: a caller-supplied id collision is rejected at the authoritative
+ * database instead of overwriting its document. Filter-based updates and
+ * deletes travel as the filter and update themselves, and the primary
+ * re-evaluates them against authoritative data, which is more accurate than
+ * resolving ids here against a possibly-stale in-memory copy.
  *
  * Ordering is arrival order at the primary. Unlike the changeset merge this
  * replaces, there is no timestamp comparison — two tabs on one device share a
@@ -426,7 +427,10 @@ function forwardWriteToPrimary(op, args, result) {
         .map((id) => JSON.parse(db.findOne(args.collection, JSON.stringify({ _id: id }))))
         .filter((d) => d !== null);
       if (docs.length === 0) return;
-      payload = { kind: 'upsert', collection: args.collection, docsJson: JSON.stringify(docs) };
+      // Preserve create semantics at the authoritative database. An upsert here
+      // lets two tabs inserting the same caller-supplied id overwrite each other,
+      // even though Collection::insert promises DuplicateId and never replace.
+      payload = { kind: 'insert', collection: args.collection, docsJson: JSON.stringify(docs) };
     } else {
       payload = {
         kind: 'replay',
@@ -459,8 +463,25 @@ function forwardWriteToPrimary(op, args, result) {
  * Returns the number of documents affected.
  */
 function applyForwardedWrite(payload) {
-  if (payload.kind === 'upsert') {
-    return JSON.parse(db.upsertManyWithIds(payload.collection, payload.docsJson)).length;
+  if (payload.kind === 'insert') {
+    const docs = JSON.parse(payload.docsJson);
+    // A collision is a terminal evaluation, not a transient forwarding error.
+    // Return zero so the primary acknowledges it and the secondary cannot later
+    // replay/resurrect its rejected document after the authoritative one is
+    // deleted. The worker handles BroadcastChannel messages serially, so this
+    // preflight and the synchronous insert below cannot race another message.
+    for (const doc of docs) {
+      if (typeof doc?._id !== 'string') continue;
+      const existing = db.findOne(
+        payload.collection,
+        JSON.stringify({ _id: doc._id }),
+      );
+      if (JSON.parse(existing) !== null) {
+        warn(`Rejected forwarded insert with duplicate _id ${doc._id}`);
+        return 0;
+      }
+    }
+    return JSON.parse(db.insertMany(payload.collection, payload.docsJson)).length;
   }
   if (payload.kind !== 'replay') return 0;
   switch (payload.op) {

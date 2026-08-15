@@ -199,7 +199,7 @@ different set of documents than the one your UI just showed.
 Timing lives on the provider, not the call site:
 
 ```tsx
-<QueryProvider backend={backend} drain={{ policy: 'interval', intervalMs: 30_000 }}>
+<QueryProvider drain={{ policy: 'interval', intervalMs: 30_000 }}>
 ```
 
 | Policy | Behaviour |

@@ -1,5 +1,6 @@
 import type { Collection, Document } from 'taladb'
-import { coalesce, stampPending, stampSynced } from './envelope'
+import { applyCanonical } from './canonical'
+import { coalesce, nextRevision, stampPending } from './envelope'
 import type { Enveloped } from './envelope'
 import { DEFAULT_METHODS } from './endpoint'
 import type { MutationOp, SyncEnvelope, SyncOp } from './types'
@@ -88,11 +89,21 @@ export async function writeLocal<T extends Document>(
     _op: next,
     _attempt: 0,
     _error: null,
+    _retry_at: 0,
+    _revision: nextRevision(),
     // The verb follows the coalesced operation, not the one just requested:
     // editing an unsent insert still POSTs.
     ...stampRoute(route, next),
   }
-  await collection.updateOne({ _id: id } as never, { $set: fields } as never)
+  await collection.updateOne(
+    { _id: id } as never,
+    {
+      $set: fields,
+      // A hook without a route means "use the provider", not "reuse whatever
+      // endpoint a previous write happened to stamp on this document".
+      ...(route?.url === undefined ? { $unset: { _endpoint: true, _method: true } } : {}),
+    } as never,
+  )
   return { id, op: next, cancelled: false }
 }
 
@@ -119,8 +130,6 @@ export async function writeConfirmed<T extends Document>(
   now: number,
 ): Promise<void> {
   const id = doc._id as string
-  const stamped = stampSynced(doc, now)
-  const { _id: _ignored, ...fields } = stamped
-  const updated = await collection.updateOne({ _id: id } as never, { $set: fields } as never)
-  if (!updated) await collection.insert(stamped)
+  const current = await collection.findOne({ _id: id } as never)
+  await applyCanonical(collection, current, doc, now)
 }

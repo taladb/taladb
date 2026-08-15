@@ -24,8 +24,8 @@ engine. Remaining work:
   debounce or batch window; the only timing knob is per-request retry backoff
   (200/400/800 ms × 3), which is unrelated. A `batch: { maxEvents, maxWaitMs }`
   option would let a bulk import send one request instead of five hundred.
-- **A durable outbox, opt-in.** Delivery is at most once — a crash or a closed
-  tab drops in-flight events. Some applications genuinely need at-least-once;
+- **A durable outbox, opt-in.** Delivery is best effort — a crash or a closed
+  tab drops in-flight events, while retries may duplicate. Some applications genuinely need durable at-least-once;
   those need events written to a reserved collection inside the mutation's own
   transaction and drained separately. Deliberately opt-in: it re-adds the
   per-write cost that removing tombstones just reclaimed.

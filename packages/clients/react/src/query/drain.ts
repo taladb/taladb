@@ -1,5 +1,5 @@
 import type { Collection, Document, TalaDB } from 'taladb'
-import { ENVELOPE_FIELDS } from './envelope'
+import { applyCanonical, withoutEnvelope } from './canonical'
 import { defaultClassify, resolveUrl } from './endpoint'
 import { sendWrite, toPendingWrite } from './send'
 import type { ResolvedBackend, SyncOp } from './types'
@@ -102,7 +102,7 @@ async function sendOne(
   const op = doc._op as SyncOp
   // Captured before the request so a local edit arriving mid-flight is visible
   // afterwards as a changed value.
-  const sentAt = doc._changed_at
+  const sentRevision = doc._revision
 
   const backend = routeFor(doc, name, id, op, deps.backend)
   if (backend === null) {
@@ -115,7 +115,7 @@ async function sendOne(
   let result
   try {
     const attempt = (doc._attempt as number) ?? 0
-    result = await sendWrite(backend, toPendingWrite(name, id, op, toWire(doc)), undefined, attempt)
+        result = await sendWrite(backend, toPendingWrite(name, id, op, withoutEnvelope(doc)), undefined, attempt)
   } catch {
     // A transport failure is indistinguishable from a 5xx: both may recover.
     await defer(collection, id, doc, stats, now, random)
@@ -125,7 +125,7 @@ async function sendOne(
   const current = await collection.findOne({ _id: id })
   if (current === null) return // deleted underneath us; nothing to record
 
-  if (current._changed_at !== sentAt) {
+  if (current._revision !== sentRevision) {
     // The user edited this document while its request was in flight. Applying
     // the response would silently revert a change they watched themselves make,
     // so the local edit wins and stays queued.
@@ -142,22 +142,18 @@ async function sendOne(
       if (op === 'delete') {
         await collection.deleteOne({ _id: id })
       } else {
-        const canonical = result.document ?? {}
-        const { _id: _ignored, ...fields } = canonical
-        await collection.updateOne(
-          { _id: id },
-          {
-            $set: {
-              ...fields,
-              _sync: 'synced',
-              _op: null,
-              _attempt: 0,
-              _error: null,
-              _fetched_at: now(),
-              _retry_at: 0,
-            },
-          } as never,
-        )
+        // A 409 has no body, and some endpoints violate the canonical-body
+        // contract with an empty object. Settling the queue must not turn that
+        // server mistake into local data loss; preserve the sent shape in that
+        // case and let the development validator explain the missing body.
+        const responseDocument = result.document
+        const canonical = {
+          ...(responseDocument && Object.keys(responseDocument).length > 0
+            ? responseDocument
+            : withoutEnvelope(current)),
+          _id: id,
+        } as Document
+        await applyCanonical(collection, current, canonical, now())
       }
       stats.synced++
       return
@@ -214,7 +210,11 @@ function routeFor(
   fallback: ResolvedBackend | null,
 ): ResolvedBackend | null {
   const template = doc._endpoint as string | undefined
-  if (template === undefined) return fallback
+  if (template === undefined) {
+    if (fallback === null) return null
+    const candidate = fallback.url(toPendingWrite(collection, id, op, withoutEnvelope(doc)))
+    return candidate === '' ? null : { ...fallback, url: () => candidate }
+  }
 
   const url = resolveUrl(template, collection, id, op)
   const method = (doc._method as string | undefined) ?? fallback?.method[op] ?? 'POST'
@@ -225,16 +225,4 @@ function routeFor(
     classify: fallback?.classify ?? defaultClassify,
     fetch: fallback?.fetch,
   }
-}
-
-/**
- * The document as the backend should see it: the application's own fields,
- * without this layer's bookkeeping.
- */
-function toWire(doc: Document): Record<string, unknown> {
-  const wire: Record<string, unknown> = {}
-  for (const [field, value] of Object.entries(doc)) {
-    if (!(ENVELOPE_FIELDS as readonly string[]).includes(field)) wire[field] = value
-  }
-  return wire
 }

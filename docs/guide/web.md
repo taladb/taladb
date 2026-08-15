@@ -367,8 +367,9 @@ after the commit with 3 retries and exponential backoff (200 / 400 / 800 ms) on
 5xx and network errors. Writes are never blocked.
 
 ::: warning Tab lifetime
-Delivery is **at most once**. If the user closes the tab mid-flight, remaining
-attempts are lost — this is a notification channel, not a replication log.
+Delivery is **best effort**. Closing the tab can lose queued events; a lost
+response can cause a retry. Retries carry a stable `event_id` and
+`Idempotency-Key` so the receiver can deduplicate them.
 
 Drain the queue at a moment you control:
 

@@ -61,6 +61,8 @@ export interface SyncEnvelope {
   _endpoint?: string
   /** HTTP verb for the current `_op`, recomputed whenever `_op` changes. */
   _method?: string
+  /** Opaque local revision used to detect edits while a request is in flight. */
+  _revision: string | null
 }
 
 /**
@@ -145,8 +147,8 @@ export type DrainPolicy = 'auto' | 'interval' | 'online-only' | 'manual'
 export interface DrainOptions {
   /**
    * `auto` (default) sends an `optimistic` write as soon as it commits.
-   * `interval` and `online-only` wait for their trigger. `manual` never drains
-   * on its own.
+   * `interval` waits for its timer. `online-only` sends while online and resumes
+   * on the browser's `online` event. `manual` never drains on its own.
    *
    * A `queued` mutation ignores `auto` and waits for a trigger either way.
    */

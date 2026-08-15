@@ -88,6 +88,20 @@ describe.skipIf(db === null)('hydrate', () => {
     expect(result).toEqual({ inserted: 0, updated: 1, skipped: 0 })
   })
 
+  it('removes local fields absent from the canonical server document', async () => {
+    const a = id('removed-field')
+    await todos.insert(
+      stampSynced({ _id: a, title: 'old', done: true, obsolete: 'local only' }, 1) as never,
+    )
+
+    await hydrate(todos, [{ _id: a, title: 'canonical' }], 2000)
+
+    const stored = await todos.findOne({ _id: a })
+    expect(stored?.title).toBe('canonical')
+    expect(stored).not.toHaveProperty('done')
+    expect(stored).not.toHaveProperty('obsolete')
+  })
+
   it('adopts a document that predates this layer', async () => {
     // No `_sync` at all — it owes the server nothing, so refreshing is safe.
     const a = id('c')

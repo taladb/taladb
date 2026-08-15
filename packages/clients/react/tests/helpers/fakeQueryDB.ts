@@ -68,10 +68,11 @@ export function createFakeCollection<T extends Document>(seed: T[] = []) {
       notify()
       return ids
     },
-    updateOne: async (filter: Rec, update: { $set?: Rec }) => {
+    updateOne: async (filter: Rec, update: { $set?: Rec; $unset?: Rec }) => {
       const target = docs.find((d) => matches(d, filter))
       if (!target) return false
       Object.assign(target, update.$set ?? {})
+      for (const field of Object.keys(update.$unset ?? {})) delete target[field]
       notify()
       return true
     },

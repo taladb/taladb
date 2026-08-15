@@ -91,7 +91,11 @@ describe.skipIf(db === null)('drainOnce', () => {
 
     // Edit the document while the request is "in flight".
     const fetch = vi.fn().mockImplementation(async () => {
-      await todos.updateOne({ _id: id }, { $set: { title: 'edited mid-flight' } })
+      await writeLocal(
+        todos,
+        { type: 'update', where: { _id: id }, set: { title: 'edited mid-flight' } },
+        1,
+      )
       return json({ title: 'server version' })
     })
 
@@ -191,13 +195,14 @@ describe.skipIf(db === null)('drainOnce', () => {
   })
 
   it('applies the canonical response body over the local document', async () => {
-    await writeLocal(todos, { type: 'insert', doc: { title: 'mine' } }, 1)
+    await writeLocal(todos, { type: 'insert', doc: { title: 'mine', obsolete: true } }, 1)
     const fetch = vi.fn().mockResolvedValue(json({ title: 'mine', serverStamp: 'abc' }))
 
     await drainOnce(deps(backendOf(fetch)))
 
     const [doc] = await todos.find()
     expect(doc.serverStamp).toBe('abc')
+    expect(doc).not.toHaveProperty('obsolete')
   })
 
   it('never sends the sync envelope to the backend', async () => {
@@ -301,6 +306,18 @@ describe.skipIf(db === null)('per-hook routing', () => {
 
     await drainOnce(deps(backendOf(fetch)))
     expect(called).toContain('/api/')
+  })
+
+  it('clears a stale per-hook route when the next write uses the provider', async () => {
+    const { id } = await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1, {
+      url: '/old/:id',
+    })
+    await todos.updateOne({ _id: id }, { $set: { _sync: 'synced', _op: null } })
+    await writeLocal(todos, { type: 'update', where: { _id: id }, set: { title: 'y' } }, 2)
+
+    const doc = await todos.findOne({ _id: id })
+    expect(doc).not.toHaveProperty('_endpoint')
+    expect(doc).not.toHaveProperty('_method')
   })
 
   it('leaves a write pending when it has neither a route nor a fallback', async () => {

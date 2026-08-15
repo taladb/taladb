@@ -23,12 +23,13 @@ The verb carries the operation, so a REST backend can route on method alone.
 
 | Mutation | Method | Body |
 |---|---|---|
-| `insert`, `insertMany` | `POST` | `{ collection, id, document, timestamp }` |
-| `updateOne`, `updateMany` | `PUT` | `{ collection, id, document, timestamp }` |
-| `deleteOne`, `deleteMany` | `DELETE` | `{ collection, id, timestamp }` |
+| `insert`, `insertMany` | `POST` | `{ event_id, collection, id, document, timestamp }` |
+| `updateOne`, `updateMany` | `PUT` | `{ event_id, collection, id, document, timestamp }` |
+| `deleteOne`, `deleteMany` | `DELETE` | `{ event_id, collection, id, document, timestamp }` |
 
 ```json
 {
+  "event_id": "m5z8p1-7-k3jf91ab",
   "collection": "notes",
   "id": "01J4XQ8ZK3N7YB2W5V9MTC6RDA",
   "document": { "_id": "01J4XQ8ZK3N7YB2W5V9MTC6RDA", "title": "Draft", "_changed_at": 1755212400000 },
@@ -42,30 +43,30 @@ for the same document always arrive in the order they happened — an update can
 never overtake its own insert — while different documents are delivered
 concurrently.
 
-`document` is always the stored document as it stands *after* the commit —
-`_id`, the engine's `_changed_at`, and the `_v` shape version included — not the
-object you passed in. `PUT` is therefore not a patch: there is no changed-fields
-diff. The body has the same shape whichever verb delivers it, so a receiver can
-persist what it is handed without caring how the document got there.
+`document` is the stored post-image for `POST` and `PUT`, including `_id`, the
+engine's `_changed_at`, and `_v`. For `DELETE` it is the last stored pre-image,
+because there is no document to read after the commit. In the narrow race where
+an update's post-image is concurrently deleted, it is `null`. The key is always
+present, so every verb retains one payload shape.
 
-`timestamp` is when the write committed, not when the request was sent. A
-backlogged queue or a retrying endpoint delays delivery; it does not move the
-timestamp.
+`timestamp` is captured immediately when the mutation returns from its commit,
+before payload reads or queueing. A backlog or retry delays delivery without
+moving it.
 
-The cost of that guarantee is one batched read per mutating call — a single
-`_id`-`$in` lookup covering every affected document, not one read each. Filters
-of the exact form `{ _id }` skip even that, so the common "edit this record"
-write costs the same with the webhook on as with it off.
+The payload costs one batched document read per mutating call: a post-image read
+for inserts/updates, or a pre-image read for deletes. It is never one read per
+affected document.
 
-## Delivery guarantee: at most once
+## Delivery guarantee: best effort with idempotent retries
 
-Events are queued in memory and sent after the write commits. **A crash, a closed
-tab, or a process exit drops whatever is still in flight.**
+Events are queued in memory and sent after the write commits. **A crash, closed
+tab, or process exit can drop an event. A lost HTTP response can cause a retry
+after the receiver already applied it.**
 
 This is a notification channel, not a replication log. If your backend must never
 miss a write, it needs its own reconciliation pass — a periodic full read, a
 nightly job, a version counter it can compare. Do not build a system whose
-correctness depends on every webhook arriving.
+correctness depends on every webhook arriving exactly once.
 
 What you get in exchange is that a slow or failing endpoint can never stall a
 write. The queue is bounded (512 events by default); when it saturates, new
@@ -75,6 +76,10 @@ the database.
 ### Retries
 
 Failed deliveries retry three times with 200 / 400 / 800 ms backoff.
+
+All attempts for one event carry the same `event_id` in the JSON body and the
+same `Idempotency-Key` request header. A receiver should store that key and
+return success without applying the event again when it sees a duplicate.
 
 - **5xx and network errors** are retried — the endpoint may recover.
 - **4xx is not retried.** A 401 or a malformed body will fail identically on the
@@ -177,9 +182,8 @@ With the webhook disabled there is no wrapper and no cost.
 
 With it enabled, the cost depends on the filter shape:
 
-- **`{ _id: '…' }`** — the common case, and what `useWrite` generates — needs no
-  resolving query. The mutation runs as normal, plus one read for the `PUT`
-  post-image.
+- **`{ _id: '…' }`** — updates need only their post-image read; deletes read the
+  pre-image so their payload includes the removed document.
 - **Any other filter** — `deleteMany({ archived: true })` — needs one query first,
   to learn which ids the mutation will affect. Updates and deletes take filters
   and return only counts, so the ids are not otherwise available.
@@ -187,7 +191,7 @@ With it enabled, the cost depends on the filter shape:
 There is one consequence worth stating plainly. For a non-`_id` filter, the
 resolving query and the mutation are separate transactions, so a concurrent write
 landing between them can make the reported id set differ slightly from the set
-actually mutated. Under at-most-once delivery that means a notification may be
+actually mutated. Under best-effort delivery a notification may likewise be
 missed or extra — **the mutation itself is never affected**, and the database is
 never inconsistent. Filters on `_id` have no such window at all.
 

@@ -71,6 +71,10 @@ importers:
         version: 5.9.3
 
   packages/bindings/react-native:
+    dependencies:
+      taladb:
+        specifier: workspace:*
+        version: link:../../clients/taladb
     devDependencies:
       react-native:
         specifier: ^0.83.0

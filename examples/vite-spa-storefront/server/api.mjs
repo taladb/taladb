@@ -2,16 +2,11 @@
  * A mock product API — an ordinary paged REST endpoint, the kind a team already
  * has on Express + Postgres. Nothing here knows what TalaDB is.
  *
- * It implements the three capabilities from docs/guide/rest-replication.md:
+ * It supports the paging/filter/sort parameters used by the local-first query
+ * example. Snapshot/delta parameters remain available to make the mock useful
+ * for experiments, but the client does not depend on a replication protocol.
  *
- *   1. GET /api/products?page=&limit=          → paged list (required)
- *   2. …&snapshot=<token>                      → snapshot-consistent paging
- *   3. GET /api/products?since=<cursor>        → delta feed (changes + deletions)
- *
- * The snapshot is the interesting one. Every row carries a monotonic `rev`, and a
- * page reads `rev <= snapshot`. That's the whole trick: the walk sees one
- * consistent view of the table even while the table is being written to. On
- * Postgres this is a `WHERE rev <= $1` clause — no long-lived transaction.
+ * GET /api/products?page=&limit=&category=&sort=&order=
  */
 import { createServer } from 'node:http';
 

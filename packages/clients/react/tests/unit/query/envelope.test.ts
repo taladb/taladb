@@ -52,6 +52,7 @@ describe('stampSynced', () => {
       _error: null,
       _fetched_at: 1000,
       _retry_at: 0,
+      _revision: null,
     })
   })
 
@@ -70,6 +71,7 @@ describe('stampPending', () => {
     expect(doc._sync).toBe('pending')
     expect(doc._op).toBe('insert')
     expect(doc._fetched_at).toBe(0)
+    expect(typeof doc._revision).toBe('string')
   })
 
   it('preserves when the server last spoke about this document', () => {
@@ -82,6 +84,7 @@ describe('stampPending', () => {
     const doc = stampPending({ _id: 'a' }, 'update', { _fetched_at: 1, _attempt: 4 } as never)
     expect(doc._attempt).toBe(0)
     expect(doc._error).toBeNull()
+    expect(doc._retry_at).toBe(0)
   })
 })
 
@@ -127,6 +130,7 @@ describe('ENVELOPE_FIELDS', () => {
       '_retry_at',
       '_endpoint',
       '_method',
+      '_revision',
     ])
   })
 

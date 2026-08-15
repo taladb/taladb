@@ -1406,7 +1406,8 @@ export interface OpenDBOptions {
    *
    * Takes precedence over `config.webhook`. This is the only way to enable the
    * webhook on the browser and React Native, where there is no config file to
-   * discover. Delivery is at most once — see `webhook.ts`.
+   * discover. Delivery is best effort with stable idempotency keys across
+   * retries — see `webhook.ts`.
    *
    * @example
    * const db = await openDB('app.db', {

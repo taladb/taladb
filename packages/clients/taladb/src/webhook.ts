@@ -6,7 +6,7 @@
 //
 //   insert → POST    {endpoint}   { collection, id, document, timestamp }
 //   update → PUT     {endpoint}   { collection, id, document, timestamp }
-//   delete → DELETE  {endpoint}   { collection, id, timestamp }
+//   delete → DELETE  {endpoint}   { collection, id, document, timestamp }
 //
 // Delivery lives here, in TypeScript, rather than in the Rust core, for one
 // reason: the core's HTTP path was `reqwest::blocking` on an OS thread pool,
@@ -14,13 +14,13 @@
 // React-Native-only, on a database whose primary runtime is the browser.
 // `fetch` exists on all three, so this module does.
 //
-// # Delivery guarantee: at most once
+// # Delivery guarantee: best effort with idempotent retries
 //
-// Events are queued in memory and posted after the write commits. A crash, a
-// closed tab, or a process exit drops whatever is still in flight. This is a
-// *notification* channel, not a replication log — if the receiver must not miss
-// a write, it needs its own reconciliation pass. `flush()` drains the queue and
-// is the correct thing to await before closing the database.
+// Events are queued in memory and posted after the write commits. A crash can
+// lose an event, while a lost response can cause a retry after the receiver has
+// already applied it. Every retry carries one stable event id in both the body
+// and `Idempotency-Key`; receivers should deduplicate on it. This remains a
+// notification channel, not a durable replication log.
 
 import type { Document } from './types';
 
@@ -95,9 +95,9 @@ export interface WebhookStats {
 // ---------------------------------------------------------------------------
 
 export type WebhookEvent =
-  | { op: 'insert'; collection: string; id: string; document: Document }
-  | { op: 'update'; collection: string; id: string; document: Document }
-  | { op: 'delete'; collection: string; id: string };
+  | { op: 'insert'; collection: string; id: string; document: Document; committedAt?: number }
+  | { op: 'update'; collection: string; id: string; document: Document; committedAt?: number }
+  | { op: 'delete'; collection: string; id: string; document?: Document | null; committedAt?: number };
 
 export interface WebhookDispatcher {
   /** True when this collection should report changes. Lets the write wrapper
@@ -215,6 +215,14 @@ export function createWebhookDispatcher(
   // leaves the receiver holding the stale body. Keying the chain by document
   // rather than globally keeps unrelated documents fully concurrent.
   const chains = new Map<string, Promise<void>>();
+  let eventSequence = 0;
+
+  function nextEventId(): string {
+    eventSequence++;
+    return `${Date.now().toString(36)}-${eventSequence.toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+  }
 
   function endpointFor(op: WebhookOp): string {
     return (
@@ -234,26 +242,23 @@ export function createWebhookDispatcher(
    * mutation it describes, which is exactly what a receiver reaching for that
    * field is trying to order by.
    */
-  function bodyFor(event: WebhookEvent, at: number): string {
-    const base = {
+  function bodyFor(event: WebhookEvent, at: number, eventId: string): string {
+    return JSON.stringify({
+      event_id: eventId,
       collection: event.collection,
       id: event.id,
       timestamp: at,
-    };
-    return JSON.stringify(
-      event.op === 'delete'
-        ? base
-        : { ...base, document: stripFields(event.document, exclude) },
-    );
+      document: event.document ? stripFields(event.document, exclude) : null,
+    });
   }
 
   /** One delivery attempt chain. Resolves when delivered or permanently failed. */
-  async function deliver(event: WebhookEvent, at: number): Promise<void> {
+  async function deliver(event: WebhookEvent, at: number, eventId: string): Promise<void> {
     const url = endpointFor(event.op);
     const init: RequestInit = {
       method: METHOD[event.op],
-      headers,
-      body: bodyFor(event, at),
+      headers: { ...headers, 'Idempotency-Key': eventId },
+      body: bodyFor(event, at, eventId),
     };
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -303,12 +308,14 @@ export function createWebhookDispatcher(
       }
 
       stats.pending++;
-      // Stamped here, at commit time — see `bodyFor`.
-      const at = Date.now();
+      // Wrappers capture this immediately when the mutation promise resolves,
+      // before any post-image read. Direct dispatcher users get queue time.
+      const at = event.committedAt ?? Date.now();
+      const eventId = nextEventId();
       const key = `${event.collection} ${event.id}`;
       const prior = chains.get(key) ?? Promise.resolve();
       const next = prior
-        .then(() => deliver(event, at))
+        .then(() => deliver(event, at, eventId))
         .finally(() => {
           stats.pending--;
           // Drop the chain entry once this was the last link, so a long-lived
@@ -358,8 +365,8 @@ export function createWebhookDispatcher(
  * full collection surface (vector search, FTS, index DDL, …).
  */
 interface WebhookWritable<T extends Document> {
-  insert(doc: Omit<T, '_id'>): Promise<string>;
-  insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
+  insert(doc: Omit<T, '_id'> & { _id?: string }): Promise<string>;
+  insertMany(docs: (Omit<T, '_id'> & { _id?: string })[]): Promise<string[]>;
   find(filter?: unknown): Promise<T[]>;
   findOne(filter: unknown): Promise<T | null>;
   updateOne(filter: unknown, update: unknown): Promise<boolean>;
@@ -428,10 +435,10 @@ function idFromFilter(filter: unknown): string | null {
  * The cost of that choice, stated plainly: for a filter that is *not* a bare
  * `_id`, the resolving query and the mutation are separate transactions, so a
  * concurrent write landing between them can make the reported id set drift from
- * the set actually mutated. Under the at-most-once delivery contract this is a
- * notification that may be missed or extra, never a corrupted database — the
- * mutation itself is unaffected. Bare-`_id` filters (see {@link idFromFilter})
- * have no such window because no resolving query happens at all.
+ * the set actually mutated. This can produce a missed or extra notification,
+ * never a corrupted database — the mutation itself is unaffected. Bare-`_id`
+ * update filters (see {@link idFromFilter}) have no such id-resolution window;
+ * deletes still read their pre-image.
  *
  * Post-images for `update` are read after the commit, so a `PUT` carries the
  * document as it now stands — which is what `PUT` means.
@@ -465,6 +472,15 @@ export function wrapCollectionWithWebhook<T extends Document>(
     return docs.map((d) => d._id).filter((id): id is string => typeof id === 'string');
   }
 
+  /** Full pre-images for DELETE payloads; deletion has no post-image to read. */
+  async function docsFor(filter: unknown, limitOne: boolean): Promise<T[]> {
+    if (limitOne) {
+      const doc = await col.findOne(filter);
+      return doc === null ? [] : [doc];
+    }
+    return col.find(filter);
+  }
+
   /**
    * Emit `op` events carrying each id's post-commit document.
    *
@@ -486,7 +502,11 @@ export function wrapCollectionWithWebhook<T extends Document>(
    * document depending on which verb delivered it. One batched read per insert
    * *call* (not per document) buys one payload shape for all three verbs.
    */
-  async function emitPostImages(ids: string[], op: 'insert' | 'update'): Promise<void> {
+  async function emitPostImages(
+    ids: string[],
+    op: 'insert' | 'update',
+    committedAt: number,
+  ): Promise<void> {
     if (ids.length === 0) return;
     const docs = await col.find(byIds(ids));
     const byId = new Map<string, T>();
@@ -500,8 +520,11 @@ export function wrapCollectionWithWebhook<T extends Document>(
       // Absent means something else deleted it between the commit and this
       // read. There is no post-image to report, so report the deletion — the
       // receiver's view of "this id is gone" is correct either way.
-      if (doc === undefined) webhook.emit({ op: 'delete', collection, id });
-      else webhook.emit({ op, collection, id, document: doc });
+      if (doc === undefined) {
+        webhook.emit({ op: 'delete', collection, id, document: null, committedAt });
+      } else {
+        webhook.emit({ op, collection, id, document: doc, committedAt });
+      }
     }
   }
 
@@ -510,44 +533,66 @@ export function wrapCollectionWithWebhook<T extends Document>(
 
     async insert(doc) {
       const id = await col.insert(doc);
-      await emitPostImages([id], 'insert');
+      const committedAt = Date.now();
+      await emitPostImages([id], 'insert', committedAt);
       return id;
     },
 
     async insertMany(docs) {
       const ids = await col.insertMany(docs);
-      await emitPostImages(ids, 'insert');
+      const committedAt = Date.now();
+      await emitPostImages(ids, 'insert', committedAt);
       return ids;
     },
 
     async updateOne(filter, update) {
       const ids = await idsFor(filter, true);
       const changed = await col.updateOne(filter, update);
-      if (changed) await emitPostImages(ids, 'update');
+      const committedAt = Date.now();
+      if (changed) await emitPostImages(ids, 'update', committedAt);
       return changed;
     },
 
     async updateMany(filter, update) {
       const ids = await idsFor(filter, false);
       const n = await col.updateMany(filter, update);
-      if (n > 0) await emitPostImages(ids, 'update');
+      const committedAt = Date.now();
+      if (n > 0) await emitPostImages(ids, 'update', committedAt);
       return n;
     },
 
     async deleteOne(filter) {
-      const ids = await idsFor(filter, true);
+      const docs = await docsFor(filter, true);
       const deleted = await col.deleteOne(filter);
+      const committedAt = Date.now();
       if (deleted) {
-        for (const id of ids) webhook.emit({ op: 'delete', collection, id });
+        for (const document of docs) {
+          webhook.emit({
+            op: 'delete',
+            collection,
+            id: document._id as string,
+            document,
+            committedAt,
+          });
+        }
       }
       return deleted;
     },
 
     async deleteMany(filter) {
-      const ids = await idsFor(filter, false);
+      const docs = await docsFor(filter, false);
       const n = await col.deleteMany(filter);
+      const committedAt = Date.now();
       if (n > 0) {
-        for (const id of ids) webhook.emit({ op: 'delete', collection, id });
+        for (const document of docs) {
+          webhook.emit({
+            op: 'delete',
+            collection,
+            id: document._id as string,
+            document,
+            committedAt,
+          });
+        }
       }
       return n;
     },

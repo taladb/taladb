@@ -7,7 +7,8 @@ use ulid::Ulid;
 use taladb_core::document::Document;
 use taladb_core::engine::{RedbBackend, StorageBackend};
 use taladb_core::index::{
-    IndexDef, META_INDEXES_TABLE, docs_table_name, index_table_name, meta_key,
+    IndexDef, META_INDEXES_TABLE, META_VERSION_KEY, META_VERSION_TABLE, docs_table_name,
+    index_table_name, meta_key,
 };
 use taladb_core::{Database, Filter, Value};
 
@@ -121,4 +122,57 @@ fn open_is_idempotent_when_already_current() {
         taladb_core::migration::read_version(rtxn.as_ref()).unwrap(),
         taladb_core::CURRENT_SCHEMA_VERSION
     );
+}
+
+#[test]
+fn v1_to_v2_rebuilds_array_indexes_per_element() {
+    let backend: Box<dyn StorageBackend> = Box::new(RedbBackend::open_in_memory().unwrap());
+    let doc_id = Ulid::new();
+    let col_name = "posts";
+    let field = "tags";
+    let doc = Document::with_id(
+        doc_id,
+        vec![(
+            field.into(),
+            Value::Array(vec![Value::Str("rust".into()), Value::Str("db".into())]),
+        )],
+    );
+    let idx_def = IndexDef {
+        collection: col_name.into(),
+        field: field.into(),
+    };
+
+    {
+        let mut wtxn = backend.begin_write().unwrap();
+        wtxn.put(
+            &docs_table_name(col_name),
+            &doc_id.to_bytes(),
+            &postcard::to_allocvec(&doc).unwrap(),
+        )
+        .unwrap();
+        wtxn.put(
+            META_INDEXES_TABLE,
+            meta_key(col_name, field).as_bytes(),
+            &postcard::to_allocvec(&idx_def).unwrap(),
+        )
+        .unwrap();
+        // A real 0.10 database has already applied the old v0 -> v1
+        // re-encoding migration, before arrays acquired per-element keys.
+        wtxn.put(
+            META_VERSION_TABLE,
+            META_VERSION_KEY,
+            &postcard::to_allocvec(&1_u32).unwrap(),
+        )
+        .unwrap();
+        wtxn.commit().unwrap();
+    }
+
+    let db = Database::open_with_backend(backend).unwrap();
+    let hits = db
+        .collection(col_name)
+        .unwrap()
+        .find(Filter::Eq(field.into(), Value::Str("rust".into())))
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, doc_id);
 }

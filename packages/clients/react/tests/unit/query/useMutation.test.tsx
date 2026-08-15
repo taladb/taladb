@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest'
 import React from 'react'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import type { Document } from 'taladb'
+import type { DrainOptions } from '../../../src/query/types'
 import { TalaDBProvider } from '../../../src/context'
 import { QueryProvider } from '../../../src/query/context'
 import { useMutation } from '../../../src/query/useMutation'
@@ -28,13 +29,13 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-type Policy = { classify?: (r: Response) => 'ok' | 'applied' | 'retry' | 'terminal'; fetch?: unknown }
+type Policy = { classify?: (r: Response) => 'ok' | 'applied' | 'retry' | 'terminal'; fetch?: unknown; drain?: DrainOptions }
 
 function setup(policy?: Policy) {
   const { db, docsIn } = createFakeDB()
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <TalaDBProvider db={db}>
-      <QueryProvider classify={policy?.classify as never} fetch={policy?.fetch as never}>
+      <QueryProvider classify={policy?.classify as never} fetch={policy?.fetch as never} drain={policy?.drain}>
         {children}
       </QueryProvider>
     </TalaDBProvider>
@@ -67,6 +68,21 @@ describe('useMutation — optimistic', () => {
       await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
     })
     expect(docsIn('todos')).toHaveLength(1)
+  })
+
+  it('does not drain immediately under the interval policy', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'saved' }))
+    const { wrapper } = setup({ fetch, drain: { policy: 'interval', intervalMs: 60_000 } })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({ type: 'insert', doc: { title: 'local' } })
+    })
+
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('surfaces a failure on error rather than throwing from mutate', async () => {
@@ -110,7 +126,7 @@ describe('useMutation — immediate', () => {
       sent = JSON.parse(init.body as string) as Record<string, unknown>
       return jsonResponse(sent)
     })
-    const { wrapper } = setup({ fetch: fetch as never })
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
       () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
       { wrapper },
@@ -122,6 +138,28 @@ describe('useMutation — immediate', () => {
 
     expect(typeof sent!._id).toBe('string')
     expect(sent!._id).toMatch(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}$/)
+    expect(docsIn('todos')[0]._id).toBe(sent!._id)
+  })
+
+  it('preserves existing fields when an immediate update returns no document', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ title: 'seed', done: false }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      { wrapper },
+    )
+
+    await act(async () => {
+      await result.current.mutateAsync({ type: 'insert', doc: { title: 'seed' } })
+    })
+    const id = docsIn('todos')[0]._id as string
+    await act(async () => {
+      await result.current.mutateAsync({ type: 'update', where: { _id: id }, set: { done: true } })
+    })
+
+    expect(docsIn('todos')[0]).toMatchObject({ _id: id, title: 'seed', done: true, _sync: 'synced' })
   })
 
   it('leaves the database untouched when the server rejects', async () => {

@@ -10,9 +10,8 @@
  * Imported from a subpath so none of it reaches a bundle that only uses the
  * hooks in `@taladb/react`.
  *
- * **Status: in progress.** The type surface, `defineBackend`, and the envelope
- * and query-record layer are in place; the hooks are not implemented yet.
- * See PLAN-query.md.
+ * Reads, writes, queue observability, retry policy, and hydration are exported
+ * from this subpath; see the local-first query guide for the backend contract.
  */
 
 export { QueryProvider, useQueryContext } from './context'

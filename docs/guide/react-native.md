@@ -103,9 +103,10 @@ await db.flushWebhook?.(5_000)
 await db.close()             // drains automatically
 ```
 
-The webhook is a best-effort event stream with **at-most-once** delivery, not a
-durable replication queue. If events must survive process termination or a long
-offline period, your app needs its own outbox or a reconciliation pass.
+The webhook is a best-effort event stream, not a durable replication queue. A
+crash can lose events and a retry can duplicate one; retries reuse `event_id`
+and `Idempotency-Key` so the receiver can deduplicate. If events must survive
+process termination, use an outbox or reconciliation pass.
 
 Per-op endpoint overrides are supported:
 

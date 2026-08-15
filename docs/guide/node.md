@@ -56,7 +56,7 @@ const db = await openDB('app.db', {
 ```
 
 See the [Change Webhook reference](/api/webhook) for payload shapes, retry
-behaviour, and the at-most-once delivery contract.
+behaviour, and the best-effort delivery/idempotency contract.
 
 ## Basic CRUD
 

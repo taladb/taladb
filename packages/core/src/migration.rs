@@ -30,10 +30,11 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// `index_range_eq`, so equality filters against persisted data returned zero
 /// rows.  This migration re-derives every index from the live docs table.
 ///
-/// v1 → v2 drops the tombstone and quarantine tables that backed replication,
-/// removed in 0.11.  Nothing reads them any more, so in a database created by an
-/// earlier release they are pure dead weight — and on a delete-heavy collection
-/// the tombstone table can rival the documents it shadows.
+/// v1 → v2 both drops the tables retired with replication and rebuilds indexes.
+/// The rebuild is required because 0.11 changed array indexes from "not
+/// encodable" to one key per element. Databases already at v1 would otherwise
+/// keep empty/stale array indexes forever while newly-written rows used the new
+/// representation.
 pub const BUILTIN_MIGRATIONS: &[Migration] = &[
     Migration {
         from_version: 0,
@@ -44,8 +45,8 @@ pub const BUILTIN_MIGRATIONS: &[Migration] = &[
     Migration {
         from_version: 1,
         to_version: 2,
-        description: "drop tombstone and quarantine tables left by replication",
-        up: drop_replication_tables,
+        description: "drop replication tables and rebuild indexes for array containment",
+        up: migrate_v1_to_v2,
     },
 ];
 
@@ -71,6 +72,11 @@ fn drop_replication_tables(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         txn.delete_table(&name)?;
     }
     Ok(())
+}
+
+fn migrate_v1_to_v2(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
+    drop_replication_tables(txn)?;
+    rebuild_all_secondary_indexes(txn)
 }
 
 /// Read the current database version (0 if unset).

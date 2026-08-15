@@ -177,7 +177,7 @@ describe('createWebhookDispatcher', () => {
     expect(calls.map((c) => c.method)).toEqual(['POST', 'PUT', 'DELETE']);
   });
 
-  it('omits the document on delete and includes it otherwise', async () => {
+  it('keeps one payload shape and uses null when no delete pre-image was supplied', async () => {
     const { fn, calls } = recordingFetch();
     const d = createWebhookDispatcher(config({ fetch: fn }))!;
     d.emit({ op: 'insert', collection: 'notes', id: '1', document: { _id: '1', title: 'a' } });
@@ -185,7 +185,8 @@ describe('createWebhookDispatcher', () => {
     await d.flush();
     expect(calls[0].body).toMatchObject({ collection: 'notes', id: '1', document: { title: 'a' } });
     expect(calls[1].body).toMatchObject({ collection: 'notes', id: '1' });
-    expect(calls[1].body.document).toBeUndefined();
+    expect(calls[1].body.document).toBeNull();
+    expect(calls[0].body.event_id).toEqual(expect.any(String));
     expect(calls[0].body.timestamp).toEqual(expect.any(Number));
   });
 
@@ -243,6 +244,8 @@ describe('createWebhookDispatcher', () => {
     d.emit({ op: 'delete', collection: 'c', id: '1' });
     await d.flush(10_000);
     expect(calls).toHaveLength(3);
+    expect(new Set(calls.map((call) => call.body.event_id)).size).toBe(1);
+    expect(new Set(calls.map((call) => call.headers['Idempotency-Key'])).size).toBe(1);
     expect(d.stats()).toMatchObject({ delivered: 1, failed: 0, pending: 0 });
   });
 
@@ -355,7 +358,7 @@ describe('wrapCollectionWithWebhook', () => {
     expect((calls[0].body.document as Document).title).toBe('b');
   });
 
-  it('resolves a non-_id filter to ids before mutating', async () => {
+  it('reads delete pre-images before mutating', async () => {
     const { col, d, calls, spy } = setup([
       { _id: 'id1', tag: 'x', title: 'a' },
       { _id: 'id2', tag: 'x', title: 'b' },
@@ -363,13 +366,11 @@ describe('wrapCollectionWithWebhook', () => {
     ]);
     await col.deleteMany({ tag: 'x' });
     await d.flush();
-    expect(spy.aggregate).toHaveBeenCalledWith([
-      { $match: { tag: 'x' } },
-      { $project: { _id: 1 } },
-    ]);
+    expect(spy.find).toHaveBeenCalledWith({ tag: 'x' });
     expect(calls).toHaveLength(2);
     expect(calls.every((c) => c.method === 'DELETE')).toBe(true);
     expect(calls.map((c) => c.body.id).sort()).toEqual(['id1', 'id2']);
+    expect(calls.map((c) => (c.body.document as Document).title).sort()).toEqual(['a', 'b']);
   });
 
   it('sends the post-commit document on update, not the pre-image', async () => {
@@ -401,6 +402,26 @@ describe('wrapCollectionWithWebhook', () => {
     await d.flush();
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe('DELETE');
+    expect(calls[0].body.document).toBeNull();
+  });
+
+  it('captures commit time before the post-image read', async () => {
+    let now = 100;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const { fn, calls } = recordingFetch();
+    const d = createWebhookDispatcher(config({ fetch: fn }))!;
+    const { col: raw } = fakeCollection();
+    const find = raw.find.bind(raw);
+    raw.find = (async (filter?: unknown) => {
+      now = 900;
+      return find(filter);
+    }) as typeof raw.find;
+    const col = wrapCollectionWithWebhook(raw, 'notes', d);
+
+    await col.insert({ title: 'a' });
+    await d.flush();
+
+    expect(calls[0].body.timestamp).toBe(100);
   });
 
   it('returns the collection untouched for an unreported collection', async () => {

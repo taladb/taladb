@@ -32,8 +32,8 @@ export interface QueryContextValue {
   collections: string[]
   /** A drain cycle is in flight. */
   draining: boolean
-  /** Ask for a drain cycle soon. A no-op under the `manual` policy. */
-  requestDrain: () => void
+  /** Ask for a drain cycle soon. `force` is reserved for an explicit retry. */
+  requestDrain: (force?: boolean) => void
 }
 
 const QueryContext = createContext<QueryContextValue | null>(null)
@@ -162,8 +162,17 @@ export function QueryProvider({
     }
   }, [db, backend, batch])
 
-  const requestDrain = useCallback(() => {
-    if (policy === 'manual') return
+  const requestDrain = useCallback((force = false) => {
+    if (!force && policy === 'manual') return
+    if (!force && policy === 'interval') return
+    if (
+      !force &&
+      policy === 'online-only' &&
+      typeof navigator !== 'undefined' &&
+      !navigator.onLine
+    ) {
+      return
+    }
     void runDrain()
   }, [policy, runDrain])
 

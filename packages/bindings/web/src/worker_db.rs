@@ -121,7 +121,7 @@ impl WorkerDB {
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const workerDb = WorkerDB.openWithOpfs(handle);
     /// ```
-        #[wasm_bindgen(js_name = openWithOpfs)]
+    #[wasm_bindgen(js_name = openWithOpfs)]
     pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<Self, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)

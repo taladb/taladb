@@ -93,7 +93,7 @@ export function useSyncStatus(): SyncStatus {
           { _id: id },
           { $set: { _sync: 'pending', _attempt: 0, _error: null, _retry_at: 0 } } as never,
         )
-        requestDrain()
+        requestDrain(true)
       })()
     },
     [findCollection, requestDrain],

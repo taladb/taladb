@@ -309,18 +309,18 @@ const db = await openDB('app.db', {
 
 | Mutation | Method | Body |
 |---|---|---|
-| `insert`, `insertMany` | `POST` | `{ collection, id, document, timestamp }` |
-| `updateOne`, `updateMany` | `PUT` | `{ collection, id, document, timestamp }` |
-| `deleteOne`, `deleteMany` | `DELETE` | `{ collection, id, timestamp }` |
+| `insert`, `insertMany` | `POST` | `{ event_id, collection, id, document, timestamp }` |
+| `updateOne`, `updateMany` | `PUT` | `{ event_id, collection, id, document, timestamp }` |
+| `deleteOne`, `deleteMany` | `DELETE` | `{ event_id, collection, id, document, timestamp }` |
 
 Delivery happens after the commit, on a bounded in-memory queue that **drops
 rather than blocking** — a slow endpoint can never stall a write. Failed
 deliveries retry three times with backoff on 5xx and network errors; a 4xx is
 permanent and is not retried. Events for one document always arrive in order.
 
-The guarantee is **at most once**: a crash or a closed tab drops whatever is in
-flight. This is a notification channel, not a replication log — a receiver that
-must not miss a write needs its own reconciliation pass.
+Delivery is **best effort**: a crash can lose queued events and a lost response
+can cause a retry. Retries reuse `event_id` and `Idempotency-Key`, which the
+receiver should deduplicate. This is a notification channel, not a replication log.
 
 Delivery is implemented once in the `taladb` client on top of `fetch`, above the
 platform bindings, so Node.js, the browser, and React Native behave identically.

@@ -119,6 +119,22 @@ fn in_matches_any_element_against_any_candidate() {
 }
 
 #[test]
+fn in_with_an_unindexable_whole_array_candidate_stays_correct() {
+    both(
+        |col| {
+            titles(
+                &col.find(Filter::In(
+                    "tags".into(),
+                    vec![arr(&["rust", "db"]), Value::Str("missing".into())],
+                ))
+                .unwrap(),
+            )
+        },
+        &["a"],
+    );
+}
+
+#[test]
 fn ne_excludes_a_document_any_element_of_which_matches() {
     both(
         |col| {

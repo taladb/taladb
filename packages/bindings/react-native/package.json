@@ -51,5 +51,8 @@
   "devDependencies": {
     "typescript": "^5.9.3",
     "react-native": "^0.83.0"
+  },
+  "dependencies": {
+    "taladb": "workspace:*"
   }
 }

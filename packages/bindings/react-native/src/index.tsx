@@ -1,71 +1,32 @@
-/**
- * TalaDB React Native — public JS API.
- *
- * Usage:
- * ```ts
- * import { TalaDBModule, openDB } from '@taladb/react-native';
- *
- * // In App.tsx / index.js (once, at startup)
- * await TalaDBModule.initialize('myapp.db');
- *
- * // Anywhere in the app — same API as browser
- * const db = openDB('myapp.db');
- * const users = db.collection<User>('users');
- * const id = users.insert({ name: 'Alice', age: 30 });
- * ```
- *
- * All operations are **synchronous** via JSI — no async/await needed
- * after initialization.
- */
+/** TalaDB React Native public API. CRUD is synchronous through the JSI host. */
+import {
+  createWebhookDispatcher,
+  type WebhookConfig,
+  type WebhookDispatcher,
+  type WebhookEvent,
+  type WebhookStats,
+} from 'taladb';
 import NativeTalaDB from './NativeTalaDB';
 
-// ---------------------------------------------------------------------------
-// Module-level helpers
-// ---------------------------------------------------------------------------
-
 export const TalaDBModule = {
-  /**
-   * Open (or create) the database. Call once at app startup.
-   *
-   * @param configJson  Optional JSON-serialised `TalaDbConfig` for HTTP push
-   *                    sync. Example: `JSON.stringify({ sync: { enabled: true,
-   *                    endpoint: 'https://api.example.com/events' } })`.
-   */
+  /** Open the native database. The config controls durability/encryption only. */
   initialize: (dbName: string, configJson?: string) =>
     NativeTalaDB.initialize(dbName, configJson),
-  /** Close the database gracefully. */
   close: () => NativeTalaDB.close(),
-  /** HTTP push events dropped by backpressure or failed after retries. */
-  syncStatus: () => native().syncStatus(),
-  /** Wait for HTTP push work accepted before this call. */
-  flushSync: (timeoutMs = 5000) => native().flushSync(timeoutMs),
 };
-
-// ---------------------------------------------------------------------------
-// Collection handle
-// ---------------------------------------------------------------------------
 
 export interface Document {
   _id?: string;
   [key: string]: unknown;
 }
 
+export type InsertDocument<T extends Document> = Omit<T, '_id'> & { _id?: string };
 export type Filter = Record<string, unknown>;
 export type Update = Record<string, unknown>;
 
 export interface Collection<T extends Document = Document> {
-  insert(doc: Omit<T, '_id'>): string;
-  insertMany(docs: Omit<T, '_id'>[]): string[];
-  /**
-   * Upsert many documents **by `_id`**, in one commit. Requires an `_id` on every
-   * document — for replicated rows that comes from `deriveDocId(collection, key)`.
-   *
-   * `origin: 'remote'` marks rows as replicated in from an authoritative origin so
-   * they are never replicated back out; it defaults to `'local'`.
-   */
-  replaceManyWithIds(docs: T[], origin?: 'local' | 'remote'): string[];
-  /** Delete many documents by id, in one commit. Returns the number removed. */
-  deleteManyWithIds(ids: string[], origin?: 'local' | 'remote'): number;
+  insert(doc: InsertDocument<T>): string;
+  insertMany(docs: InsertDocument<T>[]): string[];
   find(filter?: Filter): T[];
   findOne(filter: Filter): T | null;
   updateOne(filter: Filter, update: Update): boolean;
@@ -79,26 +40,21 @@ export interface Collection<T extends Document = Document> {
   dropFtsIndex(field: string): void;
 }
 
+export interface OpenDBOptions {
+  /** Runtime-agnostic outbound change webhook, delivered with global `fetch`. */
+  webhook?: WebhookConfig;
+}
+
 export interface DB {
   collection<T extends Document = Document>(name: string): Collection<T>;
-  syncStatus(): { dropped: number; failed: number };
-  flushSync(timeoutMs?: number): boolean;
+  webhookStats(): WebhookStats;
+  flushWebhook(timeoutMs?: number): Promise<boolean>;
   close(): Promise<void>;
 }
 
 interface JsiTalaDB {
   insert(collection: string, doc: Object): string;
   insertMany(collection: string, docs: Object[]): string[];
-  replaceManyWithIds(
-    collection: string,
-    docs: Object[],
-    origin: 'local' | 'remote',
-  ): string[];
-  deleteManyWithIds(
-    collection: string,
-    ids: string[],
-    origin: 'local' | 'remote',
-  ): number;
   find(collection: string, filter: Object | null): Object[];
   findOne(collection: string, filter: Object | null): Object | null;
   updateOne(collection: string, filter: Object, update: Object): boolean;
@@ -110,8 +66,6 @@ interface JsiTalaDB {
   dropIndex(collection: string, field: string): void;
   createFtsIndex(collection: string, field: string): void;
   dropFtsIndex(collection: string, field: string): void;
-  syncStatus(): { dropped: number; failed: number };
-  flushSync(timeoutMs?: number): boolean;
 }
 
 function native(): JsiTalaDB {
@@ -120,31 +74,102 @@ function native(): JsiTalaDB {
   return host;
 }
 
-// ---------------------------------------------------------------------------
-// openDB — synchronous DB handle (after initialize() has been called)
-// ---------------------------------------------------------------------------
+const EMPTY_STATS: WebhookStats = { pending: 0, delivered: 0, failed: 0, dropped: 0 };
 
-/**
- * Get a synchronous DB handle for the given database name.
- *
- * `TalaDBModule.initialize(dbName)` **must** have been awaited before calling
- * this function.
- */
-function collection<T extends Document>(colName: string): Collection<T> {
+function emitPostImages<T extends Document>(
+  webhook: WebhookDispatcher | null,
+  collection: string,
+  ids: string[],
+  op: 'insert' | 'update',
+  committedAt: number,
+): void {
+  if (!webhook?.reports(collection) || ids.length === 0) return;
+  const docs = native().find(collection, { _id: { $in: ids } }) as T[];
+  const byId = new Map(docs.map((doc) => [doc._id, doc]));
+  for (const id of ids) {
+    const document = byId.get(id);
+    if (document) webhook.emit({ op, collection, id, document, committedAt } as WebhookEvent);
+  }
+}
+
+function emitDeletes<T extends Document>(
+  webhook: WebhookDispatcher | null,
+  collection: string,
+  docs: T[],
+  committedAt: number,
+): void {
+  if (!webhook?.reports(collection)) return;
+  for (const document of docs) {
+    if (typeof document._id !== 'string') continue;
+    // DELETE carries the pre-image: after commit there is no post-image to read.
+    webhook.emit({
+      op: 'delete',
+      collection,
+      id: document._id,
+      document,
+      committedAt,
+    } as WebhookEvent);
+  }
+}
+
+function collection<T extends Document>(
+  colName: string,
+  webhook: WebhookDispatcher | null,
+): Collection<T> {
   return {
-    insert: (doc) => native().insert(colName, doc as Object),
-    insertMany: (docs) => native().insertMany(colName, docs as Object[]),
-    replaceManyWithIds: (docs, origin = 'local') =>
-      native().replaceManyWithIds(colName, docs as Object[], origin),
-    deleteManyWithIds: (ids, origin = 'local') =>
-      native().deleteManyWithIds(colName, ids, origin),
-    find: (filter?) => native().find(colName, filter ?? null) as T[],
+    insert(doc) {
+      const id = native().insert(colName, doc as Object);
+      const committedAt = Date.now();
+      emitPostImages<T>(webhook, colName, [id], 'insert', committedAt);
+      return id;
+    },
+    insertMany(docs) {
+      const ids = native().insertMany(colName, docs as Object[]);
+      const committedAt = Date.now();
+      emitPostImages<T>(webhook, colName, ids, 'insert', committedAt);
+      return ids;
+    },
+    find: (filter) => native().find(colName, filter ?? null) as T[],
     findOne: (filter) => native().findOne(colName, filter) as T | null,
-    updateOne: (filter, update) => native().updateOne(colName, filter, update),
-    updateMany: (filter, update) => native().updateMany(colName, filter, update),
-    deleteOne: (filter) => native().deleteOne(colName, filter),
-    deleteMany: (filter) => native().deleteMany(colName, filter),
-    count: (filter?) => native().count(colName, filter ?? null),
+    updateOne(filter, update) {
+      const before = native().findOne(colName, filter) as T | null;
+      const changed = native().updateOne(colName, filter, update);
+      const committedAt = Date.now();
+      if (changed && typeof before?._id === 'string') {
+        emitPostImages<T>(webhook, colName, [before._id], 'update', committedAt);
+      }
+      return changed;
+    },
+    updateMany(filter, update) {
+      const before = native().find(colName, filter) as T[];
+      const changed = native().updateMany(colName, filter, update);
+      const committedAt = Date.now();
+      if (changed > 0) {
+        emitPostImages<T>(
+          webhook,
+          colName,
+          before.map((doc) => doc._id).filter((id): id is string => typeof id === 'string'),
+          'update',
+          committedAt,
+        );
+      }
+      return changed;
+    },
+    deleteOne(filter) {
+      const before = native().findOne(colName, filter) as T | null;
+      const deleted = native().deleteOne(colName, filter);
+      const committedAt = Date.now();
+      if (deleted && before) emitDeletes(webhook, colName, [before], committedAt);
+      return deleted;
+    },
+    deleteMany(filter) {
+      const before = native().find(colName, filter) as T[];
+      const deleted = native().deleteMany(colName, filter);
+      const committedAt = Date.now();
+      if (deleted > 0) emitDeletes(webhook, colName, before, committedAt);
+      return deleted;
+    },
+    count: (filter) => native().count(colName, filter ?? null),
     createIndex: (field) => native().createIndex(colName, field),
     dropIndex: (field) => native().dropIndex(colName, field),
     createFtsIndex: (field) => native().createFtsIndex(colName, field),
@@ -152,11 +177,16 @@ function collection<T extends Document>(colName: string): Collection<T> {
   };
 }
 
-export function openDB(_dbName: string): DB {
+/** Get a synchronous DB handle after `TalaDBModule.initialize(dbName)`. */
+export function openDB(_dbName: string, options?: OpenDBOptions): DB {
+  const webhook = createWebhookDispatcher(options?.webhook);
   return {
-    collection,
-    syncStatus: () => native().syncStatus(),
-    flushSync: (timeoutMs = 5000) => native().flushSync(timeoutMs),
-    close: () => NativeTalaDB.close(),
+    collection: <T extends Document>(name: string) => collection<T>(name, webhook),
+    webhookStats: () => webhook?.stats() ?? { ...EMPTY_STATS },
+    flushWebhook: (timeoutMs) => webhook?.flush(timeoutMs) ?? Promise.resolve(true),
+    close: async () => {
+      await webhook?.flush();
+      await NativeTalaDB.close();
+    },
   };
 }
