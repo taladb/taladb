@@ -124,38 +124,6 @@ jobs:
 
 
   # ---------------------------------------------------------------------------
-  # Validate — @taladb/cloudflare (JS-only, no build step)
-  # ---------------------------------------------------------------------------
-  validate-cloudflare:
-    name: Validate — @taladb/cloudflare
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify package files exist
-        run: |
-          test -f packages/integrations/cloudflare/src/index.js  || (echo "Missing src/index.js"  && exit 1)
-          test -f packages/integrations/cloudflare/src/index.d.ts || (echo "Missing src/index.d.ts" && exit 1)
-
-      - name: tsc --noEmit (@taladb/cloudflare)
-        run: node_modules/.bin/tsc -p packages/integrations/cloudflare/tsconfig.json --noEmit
-
-  # ---------------------------------------------------------------------------
   # Build — WASM (wasm-pack)
   # ---------------------------------------------------------------------------
   build-wasm:
@@ -325,7 +293,7 @@ jobs:
   build-taladb-react:
     name: Build — @taladb/react (TS)
     runs-on: ubuntu-latest
-    needs: ts-check
+    needs: [ts-check, build-node]
 
     steps:
       - uses: actions/checkout@v4
@@ -341,6 +309,16 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The query layer's hydration and query-record suites run against the real
+      # engine — a fake cannot answer whether the engine accepts a derived `_id`
+      # or rejects a duplicate. Without this they skip silently, which reads as
+      # passing.
+      - name: Download Node.js native module
+        uses: actions/download-artifact@v4
+        with:
+          name: taladb-node-linux
+          path: packages/bindings/node
 
       - name: Unit + integration tests
         working-directory: packages/clients/react
@@ -366,7 +344,6 @@ jobs:
       - setup
       - rust-check
       - ts-check
-      - validate-cloudflare
       - build-wasm
       - build-node
       - build-cli

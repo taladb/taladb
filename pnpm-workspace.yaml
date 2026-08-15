@@ -2,7 +2,6 @@ packages:
   - "packages/core"
   - "packages/bindings/*"
   - "packages/clients/*"
-  - "packages/integrations/*"
   - "packages/tools/*"
   - "examples/*"
 

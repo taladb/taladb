@@ -121,7 +121,6 @@ pnpm add taladb @taladb/node                 # required
 | `@taladb/react-native` | — | ✅ required | — | React Native (JSI) binding |
 | `@taladb/node` | — | — | ✅ required | Node.js native binding |
 | `@taladb/react` | ⭕ optional | ⭕ optional | — | React / React Native hooks |
-| `@taladb/cloudflare` | — | — | ⭕ optional | Cloudflare Workers deploy target |
 
 ### Quick start
 

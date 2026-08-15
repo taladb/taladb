@@ -702,6 +702,12 @@ async function dispatch(op, args) {
       await flushSnapshot();
       return null;
 
+    case 'isPrimary':
+      // Do this tab's writes land authoritatively, or are they forwarded?
+      // Both the OPFS lock holder and the IDB-fallback snapshot writer own
+      // their storage; only a transient tab has to forward.
+      return !isTransientTab();
+
     case 'userVersion':
       // Current application migration version (backs openDB({ migrations })).
       return db.userVersion();

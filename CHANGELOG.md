@@ -5,7 +5,7 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - 2026-08-15
+## [0.11.0] - Unreleased
 
 0.11.0 narrows TalaDB to its core: an embedded document + vector database, and
 the work to harden it. Dropping replication is the first step — it frees the
@@ -25,7 +25,7 @@ only embedded database serving browser, React Native, and Node.js from one API.
 replacement for the pull direction — a database that does not replicate cannot
 pull. Hydrating from a server is now ordinary application code: fetch, then
 `insertMany`. In React, use `useFind` / `useFindOne` / `useAggregate`;
-`useMutation` remains as a plain local-write hook.
+`useWrite` (formerly `useMutation`) remains as a plain local-write hook.
 
 ### Added
 
@@ -102,8 +102,53 @@ and a non-ULID `_id` is refused with a message pointing there. Inserting an id
 that already exists is a `DuplicateId` error, never an overwrite: re-running a
 seed cannot clobber what the application has since written.
 
+**`db.isPrimary()`** — whether this tab's writes land authoritatively, or are
+forwarded to the tab that owns the storage.
+
+```ts
+if (await db.isPrimary?.() ?? true) {
+  await drainOutbox();
+}
+```
+
+The primary/secondary split already governed every browser write; there was no
+way to ask which side you were on. Anything that must run in exactly one tab, or
+that needs to read its own writes back immediately — a queue drainer, a cleanup
+pass, an outbound sync loop — had no way to tell whether it was safe to run. On a
+secondary tab both assumptions fail: other tabs' writes arrive up to ~500 ms
+late, and its own writes are only visible to everyone once the primary applies
+them.
+
+Returns `true` on Node.js and React Native, and on the in-memory Safari fallback
+where each tab holds an isolated database. Primary status changes when the owning
+tab closes, so re-check it rather than caching. See
+[Web › Multi-tab behaviour](https://taladb.dev/guide/web).
+
 ### Changed — BREAKING
 
+- **`insert` and `insertMany` accept an optional `_id` in their types.** The
+  runtime has honoured a caller-supplied id since this release, but the
+  parameter was typed `Omit<T, '_id'>`, so the `deriveDocId` hydration pattern
+  the documentation recommends did not compile. Both now take
+  `InsertDoc<T>` (`Omit<T, '_id'> & { _id?: string }`), which is exported.
+  Widening only — no call site breaks.
+- **`@taladb/react`: `useMutation` is now `useWrite`.** The hook is unchanged
+  apart from its name and the two callbacks it returns — `mutate` → `write`,
+  `mutateAsync` → `writeAsync`. Types follow: `UseMutationOptions` →
+  `UseWriteOptions`, `MutationResult` → `WriteResult`; `WriteOp` is unchanged.
+
+  ```diff
+  -const { mutate, mutateAsync } = useMutation<Order>({ collection: 'orders' })
+  -mutate({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+  +const { write, writeAsync } = useWrite<Order>({ collection: 'orders' })
+  +write({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+  ```
+
+  No deprecated alias is kept. `useMutation` promises a network round-trip that
+  this hook does not perform, and an alias would leave the misleading name in
+  scope for exactly as long as it took someone to depend on it. The hook is also
+  documented for the first time, under
+  [React › useWrite](https://taladb.dev/guide/react).
 - **`_changed_at` is no longer auto-indexed.** The index was created behind the
   caller's back to serve changeset exports. The field is still stamped; the index
   is now opt-in via `createIndex('_changed_at')`. Create it explicitly if you

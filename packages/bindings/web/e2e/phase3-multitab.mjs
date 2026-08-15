@@ -53,6 +53,11 @@ export async function run(browser, r) {
     r.note(`B warnings: ${modes.b.slice(0, 100) || '(none)'}`);
   });
 
+  await r.test('isPrimary: A owns the file, B does not', async (r) => {
+    r.eq(await A.evaluate(() => window.db.isPrimary()), true, 'A holds the OPFS lock');
+    r.eq(await B.evaluate(() => window.db.isPrimary()), false, 'B forwards its writes');
+  });
+
   await r.test("A's later writes become visible in B", async (r) => {
     await A.evaluate(() => window.c.insert({ t: 'from-A-3' }));
     const n = await until(B, () => window.c.count(), null, (x) => x >= 3);
@@ -163,6 +168,9 @@ export async function run(browser, r) {
     const total = await count(D);
     r.eq(durable, 1, 'a write made after the primary closed is durable');
     r.note(`before=${before} totalAfter=${total}`);
+    // Primary status is not fixed for a tab's lifetime — B was a secondary and
+    // is now the owner. Anything gated on isPrimary must re-check, not cache.
+    r.eq(await B.evaluate(() => window.db.isPrimary()), true, 'B reports primary after promotion');
     await D.close();
   });
 

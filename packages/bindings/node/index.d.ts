@@ -10,10 +10,9 @@ export declare class TalaDbNode {
   /**
    * Open a file-backed database at the given path.
    *
-   * Pass an optional JSON-serialised `TalaDbConfig` as `config_json` to
-   * activate HTTP push sync. When `sync.enabled` is `true` and the
-   * `sync-http` feature is compiled in, an `HttpSyncHook` is attached to
-   * every collection returned by `collection()`.
+   * `config_json` is an optional JSON-serialised `TalaDbConfig`; only its
+   * `durability` block is read here. Change webhooks are delivered by the
+   * `taladb` TypeScript client, not by this binding.
    */
   static open(path: string, configJson?: string | undefined | null, passphrase?: string | undefined | null): TalaDbNode
   /**
@@ -23,8 +22,8 @@ export declare class TalaDbNode {
   flush(): void
   /**
    * Compact the underlying storage file, reclaiming space freed by deletes
-   * and updates. Call during idle periods after large bulk deletes or
-   * tombstone compaction. Returns the number of bytes reclaimed (may be 0).
+   * and updates. Call during idle periods after large bulk deletes.
+   * Returns the number of bytes reclaimed (may be 0).
    */
   compact(): void
   /**
@@ -35,37 +34,8 @@ export declare class TalaDbNode {
    * garbage-collected — drop them too to fully release the file.
    */
   close(): void
-  /**
-   * List user collection names (excludes reserved `_`-prefixed collections
-   * such as the sync cursor store). Backs "sync all collections".
-   */
+  /** List user collection names (excludes reserved `_`-prefixed collections). */
   listCollectionNames(): Array<string>
-  /**
-   * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
-   * changeset string, for the bidirectional sync orchestration. `sinceMs`
-   * is a millisecond epoch timestamp (the persisted sync cursor).
-   */
-  exportChanges(sinceMs: number, collections: Array<string>): string
-  /**
-   * Merge a JSON changeset string (from a remote peer) into the local
-   * database via Last-Write-Wins. Returns the number of documents changed.
-   */
-  importChanges(changesetJson: string): number
-  /**
-   * Merge a JSON changeset through a tolerant structural validator built from
-   * `schemas_json` — a `{ "<collection>": { version, required, types,
-   * defaults } }` object. Every imported upsert is normalized, skipped, or
-   * quarantined per its collection schema before Last-Write-Wins; a rejected
-   * document is set aside (see `quarantined`), never dropped, and never
-   * aborts the batch. Returns `{ applied, skipped, quarantined }`.
-   */
-  importChangesValidated(changesetJson: string, schemasJson: string): JsonValue
-  /**
-   * Return every document currently held in `collection`'s quarantine table,
-   * each as `{ document, reason, changedAt }`. Empty when nothing has been
-   * set aside. For operator inspection and recovery tooling.
-   */
-  quarantined(collection: string): Array<JsonValue>
   /**
    * Read the current application migration version (0 if never set). Backs
    * the `openDB({ migrations })` runner, which advances it per migration.
@@ -76,10 +46,7 @@ export declare class TalaDbNode {
    * body succeeds so a crash mid-run resumes from the last applied version.
    */
   setUserVersion(version: number): void
-  /**
-   * Get a collection by name. If an HTTP sync hook is configured it is
-   * automatically attached to the returned collection.
-   */
+  /** Get a collection by name. */
   collection(name: string): CollectionNode
 }
 export declare class CollectionNode {
@@ -87,21 +54,6 @@ export declare class CollectionNode {
   insert(doc: JsonValue): string
   /** Insert multiple documents. */
   insertMany(docs: Array<JsonValue>): Array<string>
-  /**
-   * Upsert many documents **by caller-supplied `_id`**, in one commit.
-   *
-   * Unlike `insertMany` — which discards `_id` and mints a fresh ULID — this
-   * honours the id on each document, which is what lets replication address a
-   * remote row by a *derived* id so repeated fetches converge on one document
-   * rather than duplicating it.
-   *
-   * `origin` is `"remote"` for authoritative rows replicated in from an origin,
-   * or `"local"` for ordinary user writes. Remote rows are marked so they can
-   * never replicate back out.
-   */
-  replaceManyWithIds(docs: Array<JsonValue>, origin: string): Array<string>
-  /** Delete many documents by id, in one commit. Returns the number removed. */
-  deleteManyWithIds(ids: Array<string>, origin: string): number
   /** Find documents matching the filter. */
   find(filter: JsonValue): Array<JsonValue>
   /** Find a single document or return null. */
@@ -200,21 +152,12 @@ export declare class CollectionNode {
    */
   findAsync(filter: JsonValue): Promise<Array<any>>
   /**
-   * Async variant of `insert` — the write (and any HTTP sync hook retries)
-   * runs on the libuv thread pool instead of blocking the JS thread.
+   * Async variant of `insert` — the write runs on the libuv thread pool
+   * instead of blocking the JS thread.
    */
   insertAsync(doc: JsonValue): Promise<string>
   /** Async variant of `insertMany`. */
   insertManyAsync(docs: Array<JsonValue>): Promise<Array<string>>
-  /**
-   * `replaceManyWithIds` on the libuv thread pool.
-   *
-   * The bulk path: a hydration page is hundreds of rows in one commit, and with
-   * fsync-per-commit durability that is long enough to stall the event loop.
-   */
-  replaceManyWithIdsAsync(docs: Array<JsonValue>, origin: string): Promise<unknown>
-  /** `deleteManyWithIds` on the libuv thread pool. */
-  deleteManyWithIdsAsync(ids: Array<string>, origin: string): Promise<unknown>
   /** Async variant of `updateOne`. */
   updateOneAsync(filter: JsonValue, update: JsonValue): Promise<boolean>
   /** Async variant of `updateMany`. */

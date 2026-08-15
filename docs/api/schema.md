@@ -132,41 +132,6 @@ const users = db.collection<User>('users', {
 | `retiredFields` | `(keyof T & string)[]` | `[]` | Fields an upcast may intentionally remove during persist-on-read. Prefer this precise retirement list. |
 | `allowFieldRemoval` | `boolean` | `false` | **Deprecated.** Treat every field absent from `migrateDocument`'s output as an intentional removal. Destructive when app versions differ — prefer `retiredFields`. |
 
-## Cloudflare Workers
-
-`@taladb/cloudflare` supports the same `schema` option on `db.collection()`:
-
-```ts
-import { TalaDBDurableObject, TalaDbValidationError } from '@taladb/cloudflare'
-import { z } from 'zod'
-
-const noteSchema = z.object({ title: z.string(), body: z.string() })
-type Note = z.infer<typeof noteSchema>
-
-export class NoteDB extends TalaDBDurableObject {
-  async fetch(request: Request): Promise<Response> {
-    const db = await this.getDB()
-    const notes = db.collection<Note>('notes', { schema: noteSchema })
-
-    if (request.method === 'POST') {
-      try {
-        const body = await request.json<unknown>()
-        const id = await notes.insert(body as Omit<Note, '_id'>)
-        await db.flush()
-        return Response.json({ id }, { status: 201 })
-      } catch (err) {
-        if (err instanceof TalaDbValidationError) {
-          return Response.json({ error: err.message }, { status: 400 })
-        }
-        throw err
-      }
-    }
-
-    return Response.json(await notes.find())
-  }
-}
-```
-
 ## FAQ
 
 **Does the schema affect storage?**

@@ -37,6 +37,7 @@ export type {
   HybridSearchOptions,
   AggregateStage,
   AggregatePipeline,
+  InsertDoc,
 } from './types';
 
 export { deriveDocId } from './derive-id';
@@ -716,6 +717,10 @@ async function createInMemoryBrowserDB(
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => {},
     close: async () => {},
+    // Each tab holds its own isolated in-memory database and forwards nothing,
+    // so every tab is authoritative for the only data it can see. Two tabs both
+    // reporting `true` is correct here — they share no state to duplicate.
+    isPrimary: async () => true,
   };
   return handle;
 }
@@ -1023,6 +1028,7 @@ async function createBrowserDB(
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
     flush: async () => { await proxy.send<void>('flush'); },
+    isPrimary: () => proxy.send<boolean>('isPrimary'),
     close: async () => {
       channel?.close();
       try {
@@ -1140,6 +1146,8 @@ async function createNodeDB(
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
     flush: db.flush ? async () => { db.flush(); } : undefined,
+    // One process owns the file — there is no other tab to defer to.
+    isPrimary: async () => true,
     listCollectionNames: async () => db.listCollectionNames(),
   };
   if (migrations?.length) {
@@ -1281,6 +1289,8 @@ async function createNativeDB(
     compact: async () => native.compact(),
     close: async () => native.close(),
     flush: native.flush ? async () => { native.flush!(); } : undefined,
+    // One process owns the file — there is no other tab to defer to.
+    isPrimary: async () => true,
   };
   if (migrations?.length) {
     // Feature-detected: the JSI HostObject exposes these once the native glue

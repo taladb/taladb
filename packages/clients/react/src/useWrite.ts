@@ -8,16 +8,16 @@ export type WriteOp<T extends Document> =
   | { type: 'update'; where: Filter<T>; set: Partial<Omit<T, '_id'>> }
   | { type: 'delete'; where: Filter<T> }
 
-export interface UseMutationOptions {
+export interface UseWriteOptions {
   /** Collection the write targets. */
   collection: string
 }
 
-export interface MutationResult<T extends Document> {
+export interface WriteResult<T extends Document> {
   /** Fire-and-forget write. Errors surface on `error`, never thrown to render. */
-  mutate: (op: WriteOp<T>) => void
+  write: (op: WriteOp<T>) => void
   /** Awaitable write. Resolves once the write commits; rejects on error. */
-  mutateAsync: (op: WriteOp<T>) => Promise<void>
+  writeAsync: (op: WriteOp<T>) => Promise<void>
   /** A write is in flight. */
   pending: boolean
   /** Most recent write error. */
@@ -32,16 +32,21 @@ export interface MutationResult<T extends Document> {
  * commits. There is no network step in this hook and no rollback to reason
  * about: the database is on the device, and the write either committed or threw.
  *
+ * Named `useWrite`, not `useMutation`, because it is exactly a local write and
+ * nothing more. The React Query-shaped name belongs to a hook that also owns a
+ * network round-trip; this one would only borrow the expectation and then fail
+ * to meet it.
+ *
  * If the application has enabled the change webhook (`openDB({ webhook })`),
  * the resulting HTTP request is dispatched by the client after the commit,
  * outside this hook and outside `pending` — a webhook is a notification, not
  * part of the write's success.
  *
  * @example
- * const { mutate, pending } = useMutation<Order>({ collection: 'orders' })
- * mutate({ type: 'update', where: { _id }, set: { status: 'shipped' } })
+ * const { write, pending } = useWrite<Order>({ collection: 'orders' })
+ * write({ type: 'update', where: { _id }, set: { status: 'shipped' } })
  */
-export function useMutation<T extends Document>(options: UseMutationOptions): MutationResult<T> {
+export function useWrite<T extends Document>(options: UseWriteOptions): WriteResult<T> {
   const { collection } = options
   const col = useCollection<T>(collection)
 
@@ -65,7 +70,7 @@ export function useMutation<T extends Document>(options: UseMutationOptions): Mu
     [col],
   )
 
-  const mutateAsync = useCallback(
+  const writeAsync = useCallback(
     async (op: WriteOp<T>): Promise<void> => {
       setPending(true)
       setError(null)
@@ -81,14 +86,14 @@ export function useMutation<T extends Document>(options: UseMutationOptions): Mu
     [apply],
   )
 
-  const mutate = useCallback(
+  const write = useCallback(
     (op: WriteOp<T>): void => {
-      void mutateAsync(op).catch(() => {
+      void writeAsync(op).catch(() => {
         /* surfaced on `error`; swallow so it doesn't become an unhandled rejection */
       })
     },
-    [mutateAsync],
+    [writeAsync],
   )
 
-  return { mutate, mutateAsync, pending, error }
+  return { write, writeAsync, pending, error }
 }

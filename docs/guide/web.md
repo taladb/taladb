@@ -315,6 +315,32 @@ primary — two tabs on one device share a clock, so there is no skew to arbitra
 For bulk write workloads across many tabs, prefer routing mutations through the
 primary tab. Forwarding adds one BroadcastChannel round-trip per write.
 
+### `isPrimary()`
+
+Ask whether this tab's writes land authoritatively:
+
+```ts
+if (await db.isPrimary?.() ?? true) {
+  await drainOutbox();
+}
+```
+
+Use it for work that must not run in more than one tab at once, or that depends
+on reading its own writes straight back — a background queue drainer, a
+scheduled cleanup pass, an outbound sync loop. On a secondary tab both
+assumptions fail: other tabs' writes arrive up to ~500 ms late, and its own
+writes only become visible to everyone once the primary has applied them. A
+drainer running there will re-send work it has already sent.
+
+Primary status changes during a session — closing the owning tab promotes
+another — so **re-check it rather than caching the answer**. A per-cycle check
+at the top of a loop is enough.
+
+It returns `true` on Node.js and React Native, where a single process owns the
+database, and on the in-memory Safari fallback, where each tab holds its own
+isolated database and forwards nothing. It may be absent on older `@taladb/web`
+builds, so treat absence as `true`.
+
 ## Change webhook
 
 Report every committed write to a backend over HTTP:

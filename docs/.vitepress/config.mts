@@ -144,7 +144,6 @@ export default defineConfig({
           { text: "Web (Browser / WASM)", link: "/guide/web" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
-          { text: "Cloudflare Workers", link: "/guide/cloudflare" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
         ],
       },

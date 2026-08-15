@@ -177,7 +177,7 @@ With the webhook disabled there is no wrapper and no cost.
 
 With it enabled, the cost depends on the filter shape:
 
-- **`{ _id: '…' }`** — the common case, and what `useMutation` generates — needs no
+- **`{ _id: '…' }`** — the common case, and what `useWrite` generates — needs no
   resolving query. The mutation runs as normal, plus one read for the `PUT`
   post-image.
 - **Any other filter** — `deleteMany({ archived: true })` — needs one query first,

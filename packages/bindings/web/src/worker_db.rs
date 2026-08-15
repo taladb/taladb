@@ -8,23 +8,19 @@
 //! `JSON.stringify` / `JSON.parse` — no complex serialisation on the JS side.
 
 use wasm_bindgen::prelude::*;
-
-#[cfg(not(feature = "cf-workers"))]
 use web_sys::FileSystemSyncAccessHandle;
 
-#[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Document, Filter, HnswOptions, Update, Value, VectorMetric};
 // Encryption is only wired on the wasm OPFS open path — gate the imports the
 // same way as `open_with_config_and_opfs` so native workspace builds (CI's
 // cargo check/clippy) don't see them as unused.
-#[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
-#[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+#[cfg(target_arch = "wasm32")]
 use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
 use crate::doc_to_json;
-#[cfg(not(feature = "cf-workers"))]
 use crate::storage::opfs_backend::OpfsBackend;
 
 // ---------------------------------------------------------------------------
@@ -120,15 +116,12 @@ impl WorkerDB {
 
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
     ///
-    /// Not available when compiled with the `cf-workers` feature.
-    ///
     /// Call sequence in the SharedWorker:
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const workerDb = WorkerDB.openWithOpfs(handle);
     /// ```
-    #[cfg(not(feature = "cf-workers"))]
-    #[wasm_bindgen(js_name = openWithOpfs)]
+        #[wasm_bindgen(js_name = openWithOpfs)]
     pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<Self, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
@@ -140,15 +133,13 @@ impl WorkerDB {
 
     /// Open a database backed by OPFS with HTTP push sync config.
     ///
-    /// Not available when compiled with the `cf-workers` feature.
-    ///
     /// `config_json` - JSON-serialised `TalaDbConfig`, or `null` to open without sync.
     ///
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const db = WorkerDB.openWithConfigAndOpfs(handle, JSON.stringify(config));
     /// ```
-    #[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+    #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = openWithConfigAndOpfs)]
     pub fn open_with_config_and_opfs(
         sync_handle: FileSystemSyncAccessHandle,

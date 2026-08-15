@@ -269,7 +269,7 @@ await users.insert({ name: '', age: 30 })       // ✗ throws TalaDbValidationEr
 
 `insert` and `insertMany` run the document through `schema.parse()` before storage. If validation fails, a `TalaDbValidationError` is thrown and nothing is written. Collections without a `schema` option have zero overhead.
 
-See the [Schema Validation reference](/api/schema) for the full API including `validateOnRead`, Valibot usage, and Cloudflare Workers support.
+See the [Schema Validation reference](/api/schema) for the full API including `validateOnRead` and Valibot usage.
 
 ## TypeScript generics
 

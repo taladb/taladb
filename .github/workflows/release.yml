@@ -427,8 +427,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Publish npm packages
-  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react,
-  # @taladb/cloudflare
+  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
@@ -536,13 +535,6 @@ jobs:
 
       - name: Publish @taladb/react
         working-directory: packages/clients/react
-        run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # -- @taladb/cloudflare --------------------------------------------------
-      - name: Publish @taladb/cloudflare
-        working-directory: packages/integrations/cloudflare
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

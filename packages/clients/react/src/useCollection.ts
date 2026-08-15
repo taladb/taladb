@@ -8,7 +8,7 @@ import { useTalaDB, useCollectionOptions } from './context'
  * The collection is opened **with its registered options** — the `schema`,
  * `syncSchema` and `migrateDocument` declared in the provider's `collections`
  * prop, or the `options` passed here (which win). That is what makes a write
- * through `useMutation` hard-fail on an invalid document and carry its `_v`
+ * through `useWrite` hard-fail on an invalid document and carry its `_v`
  * shape version, exactly as `db.collection(name, { … })` does. Without it the
  * hooks resolve a bare, unconfigured handle and silently skip validation.
  *

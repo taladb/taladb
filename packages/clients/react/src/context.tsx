@@ -16,7 +16,7 @@ const TalaDBContext = createContext<TalaDB | null>(null)
  * collection name.
  *
  * Register them once on the provider and every hook below it — `useCollection`,
- * and therefore `useFind`, `useFindOne` and `useMutation` — resolves a *configured*
+ * and therefore `useFind`, `useFindOne` and `useWrite` — resolves a *configured*
  * collection. Without this, those hooks call `db.collection(name)` with no
  * options, so a hook-driven write silently skips the strict `schema` validation
  * and the `_v` stamp that `db.collection(name, { … })` would have applied.

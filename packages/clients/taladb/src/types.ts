@@ -395,9 +395,18 @@ export type AggregatePipeline<T extends Document = Document> = AggregateStage<T>
 
 // --------------- Collection interface ---------------
 
+/**
+ * A document on its way in: `_id` is optional, not forbidden.
+ *
+ * The engine mints a ULID when none is given, and honours one when it is — that
+ * is what makes `deriveDocId` hydration idempotent. Typing these parameters as
+ * `Omit<T, '_id'>` rejected the very pattern the documentation recommends.
+ */
+export type InsertDoc<T extends Document> = Omit<T, '_id'> & { _id?: string };
+
 export interface Collection<T extends Document = Document> {
-  insert(doc: Omit<T, '_id'>): Promise<string>;
-  insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
+  insert(doc: InsertDoc<T>): Promise<string>;
+  insertMany(docs: InsertDoc<T>[]): Promise<string[]>;
   find(filter?: Filter<T>): Promise<T[]>;
   findOne(filter: Filter<T>): Promise<T | null>;
   updateOne(filter: Filter<T>, update: Update<T>): Promise<boolean>;
@@ -621,6 +630,34 @@ export interface TalaDB {
    * "save now" moments (before checkout, on `visibilitychange`).
    */
   flush?(): Promise<void>;
+  /**
+   * Whether this tab's writes land authoritatively, without being forwarded to
+   * another tab.
+   *
+   * **Browser only.** The first tab to open a database becomes the primary and
+   * owns the storage; later tabs run an in-memory copy and forward their writes
+   * to it over BroadcastChannel. Both the OPFS owner and — where OPFS is
+   * unavailable — the tab that publishes the IndexedDB snapshot report `true`.
+   *
+   * Use it for work that must not run in more than one tab at a time, or that
+   * depends on reading its own writes back immediately: a background queue
+   * drainer, a scheduled cleanup pass, an outbound sync loop. A secondary tab
+   * sees other tabs' writes up to ~500 ms late, and its own writes only once
+   * the primary has applied them.
+   *
+   * Primary status changes during a session — closing the owning tab promotes
+   * another — so re-check it rather than caching the answer.
+   *
+   * Always `true` on Node.js and React Native, where a single process owns the
+   * database. May be absent on older `@taladb/web` builds — treat absence as
+   * `true`.
+   *
+   * @example
+   * if (await db.isPrimary?.() ?? true) {
+   *   await drainOutbox();
+   * }
+   */
+  isPrimary?(): Promise<boolean>;
   /**
    * Change-webhook delivery counters, when the webhook is enabled. All zero
    * (and `pending: 0`) when it is not.

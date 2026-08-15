@@ -12,5 +12,5 @@ export type { FindOneResult } from './useFindOne'
 export { useAggregate } from './useAggregate'
 export type { AggregateResult } from './useAggregate'
 
-export { useMutation } from './useMutation'
-export type { UseMutationOptions, MutationResult, WriteOp } from './useMutation'
+export { useWrite } from './useWrite'
+export type { UseWriteOptions, WriteResult, WriteOp } from './useWrite'

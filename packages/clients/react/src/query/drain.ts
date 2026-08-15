@@ -1,0 +1,198 @@
+import type { Collection, Document, TalaDB } from 'taladb'
+import { ENVELOPE_FIELDS } from './envelope'
+import { sendWrite, toPendingWrite } from './send'
+import type { ResolvedBackend, SyncOp } from './types'
+
+export interface DrainStats {
+  sent: number
+  /** Confirmed by the server (`ok` or `applied`). */
+  synced: number
+  /** Will be retried after a back-off. */
+  deferred: number
+  /** Terminal — parked for a human decision. */
+  failed: number
+  /** Superseded by a local edit that landed while the request was in flight. */
+  superseded: number
+  /** True when the cycle did not run because this tab is not the primary. */
+  skippedNotPrimary: boolean
+}
+
+const EMPTY: DrainStats = {
+  sent: 0,
+  synced: 0,
+  deferred: 0,
+  failed: 0,
+  superseded: 0,
+  skippedNotPrimary: false,
+}
+
+export interface DrainDeps {
+  db: TalaDB
+  backend: ResolvedBackend
+  /** Collections this layer manages, resolved fresh each cycle. */
+  collections: () => string[]
+  batch?: number
+  now?: () => number
+  random?: () => number
+}
+
+/** 1s, doubling, ±25% jitter, capped at five minutes. */
+export function backoffMs(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(1_000 * 2 ** Math.max(0, attempt - 1), 300_000)
+  const jitter = 1 + (random() - 0.5) / 2
+  return Math.round(base * jitter)
+}
+
+/**
+ * Send every eligible queued write once.
+ *
+ * **Runs only on the primary tab.** This is a correctness requirement, not an
+ * optimisation. A secondary tab reads a pending set that lags other tabs by up
+ * to half a second, and its own bookkeeping — marking a document synced after a
+ * successful request — is itself a forwarded write applied at the primary
+ * later. Until that lands the document still reads as pending locally, so the
+ * next cycle sends it again. Contract rules 2 and 3 keep that survivable rather
+ * than corrupting, which is exactly why they are rules.
+ *
+ * Primary status changes mid-session when the owning tab closes, so it is
+ * re-checked every cycle rather than cached.
+ */
+export async function drainOnce(deps: DrainDeps): Promise<DrainStats> {
+  const { db, backend, collections } = deps
+  const now = deps.now ?? Date.now
+  const random = deps.random ?? Math.random
+  const batch = deps.batch ?? 25
+
+  if (!((await db.isPrimary?.()) ?? true)) {
+    return { ...EMPTY, skippedNotPrimary: true }
+  }
+
+  const stats: DrainStats = { ...EMPTY }
+
+  for (const name of collections()) {
+    const collection = db.collection<Document>(name)
+    const due = (await collection.aggregate([
+      { $match: { _sync: 'pending', _retry_at: { $lte: now() } } },
+      { $sort: { _changed_at: 1 } },
+      { $limit: batch },
+    ])) as Document[]
+
+    // Documents go concurrently; each document's own writes stay ordered
+    // because at most one operation is ever pending per document.
+    await Promise.all(due.map((doc) => sendOne(collection, name, doc, stats, deps, now, random)))
+  }
+
+  return stats
+}
+
+async function sendOne(
+  collection: Collection<Document>,
+  name: string,
+  doc: Document,
+  stats: DrainStats,
+  deps: DrainDeps,
+  now: () => number,
+  random: () => number,
+): Promise<void> {
+  const id = doc._id as string
+  const op = doc._op as SyncOp
+  // Captured before the request so a local edit arriving mid-flight is visible
+  // afterwards as a changed value.
+  const sentAt = doc._changed_at
+
+  stats.sent++
+  let result
+  try {
+    result = await sendWrite(deps.backend, toPendingWrite(name, id, op, toWire(doc)))
+  } catch {
+    // A transport failure is indistinguishable from a 5xx: both may recover.
+    await defer(collection, id, doc, stats, now, random)
+    return
+  }
+
+  const current = await collection.findOne({ _id: id })
+  if (current === null) return // deleted underneath us; nothing to record
+
+  if (current._changed_at !== sentAt) {
+    // The user edited this document while its request was in flight. Applying
+    // the response would silently revert a change they watched themselves make,
+    // so the local edit wins and stays queued.
+    stats.superseded++
+    return
+  }
+
+  switch (result.outcome) {
+    case 'ok':
+    case 'applied': {
+      // `applied` is a 409 for a write that already landed — usually a retry
+      // after a timeout. Without treating it as success the queue would stall
+      // on it permanently.
+      if (op === 'delete') {
+        await collection.deleteOne({ _id: id })
+      } else {
+        const canonical = result.document ?? {}
+        const { _id: _ignored, ...fields } = canonical
+        await collection.updateOne(
+          { _id: id },
+          {
+            $set: {
+              ...fields,
+              _sync: 'synced',
+              _op: null,
+              _attempt: 0,
+              _error: null,
+              _fetched_at: now(),
+              _retry_at: 0,
+            },
+          } as never,
+        )
+      }
+      stats.synced++
+      return
+    }
+    case 'retry':
+      await defer(collection, id, doc, stats, now, random)
+      return
+    case 'terminal':
+      // Never retried on its own: it needs a human decision, surfaced through
+      // useSyncStatus.
+      await collection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            _sync: 'failed',
+            _error: `The server rejected this ${op} with status ${result.status}.`,
+          },
+        } as never,
+      )
+      stats.failed++
+  }
+}
+
+async function defer(
+  collection: Collection<Document>,
+  id: string,
+  doc: Document,
+  stats: DrainStats,
+  now: () => number,
+  random: () => number,
+): Promise<void> {
+  const attempt = ((doc._attempt as number) ?? 0) + 1
+  await collection.updateOne(
+    { _id: id },
+    { $set: { _attempt: attempt, _retry_at: now() + backoffMs(attempt, random) } } as never,
+  )
+  stats.deferred++
+}
+
+/**
+ * The document as the backend should see it: the application's own fields,
+ * without this layer's bookkeeping.
+ */
+function toWire(doc: Document): Record<string, unknown> {
+  const wire: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(doc)) {
+    if (!(ENVELOPE_FIELDS as readonly string[]).includes(field)) wire[field] = value
+  }
+  return wire
+}

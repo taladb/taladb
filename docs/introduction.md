@@ -75,9 +75,6 @@ taladb/
 │   │   ├── taladb/                 #   Unified meta-package        → taladb
 │   │   └── react/                  #   React hooks                 → @taladb/react
 │   │
-│   ├── integrations/
-│   │   └── cloudflare/             #   Cloudflare Workers deploy   → @taladb/cloudflare
-│   │
 │   └── tools/
 │       └── cli/                    #   Dev CLI (crate: taladb-cli)
 │

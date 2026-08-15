@@ -74,7 +74,6 @@ The database file is opened read-write. Deletions made through the UI are perman
 | **Node.js** (`@taladb/node`) | ✅ Yes | Primary use case — point at the same `.db` file your app uses |
 | **React Native** | ✅ Yes | Copy the `.db` off the device first (see below) |
 | **Browser / OPFS** | ✗ No | OPFS files live inside the browser's sandboxed filesystem, unreachable from the CLI |
-| **Cloudflare Workers** | ✗ No | State lives in Durable Objects storage, not a local file |
 
 For **React Native**, pull the file with `adb` (Android) or Xcode's device file browser (iOS), then open it:
 
