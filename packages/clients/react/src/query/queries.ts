@@ -1,5 +1,5 @@
-import type { Collection, Document, TalaDB } from 'taladb'
-import type { QueryKey, QueryRecord } from './types'
+import type { Collection, Document, TalaDB, Value } from 'taladb'
+import type { QueryKey, QueryRecord, ResultShape } from './types'
 import { ENVELOPE_INDEXES } from './envelope'
 import { QUERY_COLLECTION, hashQueryKey, queryRecordId } from './keys'
 
@@ -31,8 +31,26 @@ export async function readQueryRecord(
   queries: Collection<QueryRecord>,
   collection: string,
   key: QueryKey,
+  hash?: (key: QueryKey) => string,
 ): Promise<QueryRecord | null> {
-  return queries.findOne({ _id: queryRecordId(collection, key) })
+  return queries.findOne({ _id: queryRecordId(collection, key, hash) })
+}
+
+/**
+ * Forget which documents a query returned.
+ *
+ * Deliberately *only* the record. The documents stay: they live in the
+ * application's own collections, which it also reads directly, so deleting them
+ * would destroy real user data rather than reclaim a cache. Dropping the record
+ * makes the next mount cold, and it refetches to re-establish membership.
+ */
+export async function deleteQueryRecord(
+  queries: Collection<QueryRecord>,
+  collection: string,
+  key: QueryKey,
+  hash?: (key: QueryKey) => string,
+): Promise<void> {
+  await queries.deleteOne({ _id: queryRecordId(collection, key, hash) })
 }
 
 /**
@@ -52,20 +70,40 @@ export async function writeQueryRecord(
   ids: string[],
   now: number,
   ttl: number,
+  /** How `queryFn`'s return value mapped onto documents. */
+  shape: ResultShape = 'array',
+  /** The raw response, for envelope queries. `undefined` for every other shape. */
+  payload?: Value,
+  /** Override the key serialiser — see `queryKeyHashFn`. */
+  hash: (key: QueryKey) => string = hashQueryKey,
 ): Promise<QueryRecord> {
   const record: QueryRecord = {
-    _id: queryRecordId(collection, key),
+    _id: queryRecordId(collection, key, hash),
     collection,
-    key: hashQueryKey(key),
+    key: hash(key),
     ids,
     fetchedAt: now,
     ttl,
+    shape,
+    ...(payload === undefined ? {} : { payload }),
   }
   // Deterministic id, so a refetch overwrites its own record rather than
   // accumulating a second one.
   const replaced = await queries.updateOne(
     { _id: record._id },
-    { $set: { ids, fetchedAt: now, ttl, collection, key: record.key } },
+    {
+      $set: {
+        ids,
+        fetchedAt: now,
+        ttl,
+        collection,
+        key: record.key,
+        shape,
+        // Written unconditionally so a query that stops returning an envelope
+        // does not keep serving the previous response's `total` forever.
+        payload: payload ?? null,
+      },
+    },
   )
   if (!replaced) await queries.insert(record)
   return record

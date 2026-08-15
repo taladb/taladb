@@ -16,6 +16,8 @@ import { openQueryCollection } from './queries'
 import type {
   DrainOptions,
   PendingWrite,
+  QueryDefaults,
+  QueryKey,
   QueryRecord,
   ResolvedBackend,
   WriteOutcome,
@@ -26,6 +28,10 @@ export interface QueryContextValue {
   queries: Collection<QueryRecord> | null
   backend: ResolvedBackend
   drain: Required<Pick<DrainOptions, 'policy'>> & DrainOptions
+  /** Maps a query key to a collection name. See `QueryProviderProps`. */
+  resolveCollection?: (queryKey: QueryKey) => string | undefined
+  /** Provider-wide query defaults. Each hook option overrides its entry. */
+  defaults: QueryDefaults['queries']
   /** Declare a collection as managed, so the drain looks at it. */
   register: (collection: string) => void
   /** Collections currently managed. Stable identity until one is added. */
@@ -75,6 +81,31 @@ export interface QueryProviderProps {
   /** Override the fetch implementation (tests, instrumentation). */
   fetch?: typeof globalThis.fetch
   drain?: DrainOptions
+  /**
+   * Work out which collection a query key's documents belong in.
+   *
+   * `useQuery` infers the collection from `queryKey[0]`, which covers the usual
+   * `['todos', …]` convention. Codebases whose keys do not lead with the
+   * collection — `['api', 'v2', 'todos']`, or keys built by a helper — set this
+   * once here rather than passing `collection` at every call site.
+   *
+   * Returning `undefined` falls back to the default inference. The result is
+   * still checked against the registered collections.
+   */
+  resolveCollection?: (queryKey: QueryKey) => string | undefined
+  /**
+   * Defaults for every `useQuery` below this provider, in TanStack's
+   * `new QueryClient({ defaultOptions })` shape so existing config moves across
+   * unchanged.
+   *
+   * ```tsx
+   * <QueryProvider defaultOptions={{ queries: { staleTime: 0, retry: false } }}>
+   * ```
+   *
+   * `staleTime: 0` here is the one-line way back to TanStack's
+   * revalidate-on-every-mount behaviour.
+   */
+  defaultOptions?: QueryDefaults
 }
 
 /**
@@ -89,6 +120,8 @@ export function QueryProvider({
   classify,
   fetch,
   drain,
+  resolveCollection,
+  defaultOptions,
 }: QueryProviderProps) {
   const db = useTalaDB()
   const [queries, setQueries] = useState<Collection<QueryRecord> | null>(null)
@@ -124,6 +157,9 @@ export function QueryProvider({
     [headers, classify, fetch],
   )
 
+  // Spread by field for the same reason the context value is: an inline
+  // `defaultOptions={{…}}` would otherwise be a new object every render.
+  const defaults = defaultOptions?.queries
   const policy = drain?.policy ?? 'auto'
   const intervalMs = drain?.intervalMs
   const batch = drain?.batch
@@ -196,6 +232,8 @@ export function QueryProvider({
       queries,
       backend,
       drain: { policy, intervalMs, batch },
+      resolveCollection,
+      defaults,
       register,
       collections,
       draining,
@@ -203,7 +241,19 @@ export function QueryProvider({
     }),
     // Spread by field: an inline `drain={{…}}` object would otherwise produce a
     // new context value on every render and re-run every consumer's effects.
-    [queries, backend, policy, intervalMs, batch, register, collections, draining, requestDrain],
+    [
+      queries,
+      backend,
+      policy,
+      intervalMs,
+      batch,
+      resolveCollection,
+      defaults,
+      register,
+      collections,
+      draining,
+      requestDrain,
+    ],
   )
 
   return <QueryContext.Provider value={value}>{children}</QueryContext.Provider>

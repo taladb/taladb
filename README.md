@@ -358,8 +358,6 @@ Bug reports, PRs, and feedback are all welcome.
 
 Open an issue before large features or architectural changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
-Reach out: [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev)
-
 ## License
 
 Apache License 2.0 — © 2026 ThinkGrid Labs

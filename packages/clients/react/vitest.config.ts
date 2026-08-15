@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   resolve: {
@@ -25,6 +25,14 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Unmounts components and clears module-level state between tests; see
+    // tests/setup.ts for why forgetting it fails silently.
+    setupFiles: ['./tests/setup.ts'],
     include: ['tests/**/*.test.{ts,tsx}'],
+    // The parity suite asserts the surface PLAN-query-parity.md is building
+    // towards, so it fails by design until that work lands. It runs from
+    // `vitest.parity.config.ts` via `pnpm test:parity`; keeping it out of the
+    // default run is what lets it stay honest instead of being skipped.
+    exclude: [...configDefaults.exclude, 'tests/parity/**'],
   },
 })

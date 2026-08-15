@@ -17,7 +17,42 @@
 export { QueryProvider, useQueryContext } from './context'
 export type { QueryProviderProps, QueryContextValue } from './context'
 
-export { useQuery } from './useQuery'
+export {
+  useQuery,
+  keepPreviousData,
+  resetForgetTimers,
+  DEFAULT_STALE_TIME,
+} from './useQuery'
+export { replaceEqualDeep } from './structural'
+export { runShared, cancelShared, isShared, inflightKey, resetInflight } from './inflight'
+export { shouldRetry, retryDelayMs, isOffline, DEFAULT_RETRY } from './retry'
+export { resolveCollectionName, resetCollectionWarnings } from './collection'
+export type { ResolveCollectionInput } from './collection'
+export { extractDocuments } from './shape'
+export {
+  defineParams,
+  normalizeParams,
+  isBoundParams,
+  eq,
+  ne,
+  gt,
+  gte,
+  lt,
+  lte,
+  contains,
+  oneOf,
+  shape,
+} from './params'
+export type {
+  ParamSpec,
+  ParamOp,
+  ParamValue,
+  ParamPrimitive,
+  BoundParams,
+  ValuesOf,
+} from './params'
+export { warnOnce, noteIgnoredOptions, resetWarnings, isDev } from './dev'
+export type { ExtractInput, Extracted } from './shape'
 export { useMutation } from './useMutation'
 export { useSyncStatus } from './useSyncStatus'
 
@@ -59,6 +94,7 @@ export {
   openQueryCollection,
   readQueryRecord,
   writeQueryRecord,
+  deleteQueryRecord,
   isStale,
 } from './queries'
 
@@ -78,8 +114,21 @@ export type {
   DrainOptions,
   // Hooks
   QueryKey,
+  Doc,
+  RefetchTrigger,
+  RetryOption,
+  RetryDelayOption,
+  NetworkMode,
+  QueryDefaults,
+  QueryFunctionContext,
+  BaseQueryOptions,
   UseQueryOptions,
+  UseDocumentQueryOptions,
+  UseEnvelopeQueryOptions,
+  AnyQueryOptions,
+  ResultShape,
   QueryResult,
+  QueryResultCommon,
   MutationMode,
   UseMutationOptions,
   MutationResult,

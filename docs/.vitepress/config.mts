@@ -151,6 +151,10 @@ export default defineConfig({
         items: [
           { text: "React Hooks (@taladb/react)", link: "/guide/react" },
           { text: "Local-First Data (@taladb/react/query)", link: "/guide/query" },
+          {
+            text: "Migrating from TanStack Query",
+            link: "/guide/react-query-migration",
+          },
         ],
       },
       {

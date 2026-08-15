@@ -19,9 +19,20 @@ type Rec = Record<string, unknown>
 function matches(doc: Rec, filter: Rec | undefined): boolean {
   if (!filter) return true
   return Object.entries(filter).every(([field, expected]) => {
+    // `$and` is how `useQuery` composes an id list with a `where` predicate, so
+    // the stand-in has to understand it or every `where` assertion is vacuous.
+    if (field === '$and') return (expected as Rec[]).every((sub) => matches(doc, sub))
+    if (field === '$or') return (expected as Rec[]).some((sub) => matches(doc, sub))
     const actual = doc[field]
-    if (expected !== null && typeof expected === 'object' && '$in' in (expected as Rec)) {
-      return ((expected as { $in: unknown[] }).$in ?? []).includes(actual)
+    if (expected !== null && typeof expected === 'object') {
+      const ops = expected as Rec
+      if ('$in' in ops) return ((ops.$in as unknown[]) ?? []).includes(actual)
+      if ('$ne' in ops) return actual !== ops.$ne
+      if ('$exists' in ops) return (actual !== undefined) === ops.$exists
+      if ('$gt' in ops) return (actual as number) > (ops.$gt as number)
+      if ('$gte' in ops) return (actual as number) >= (ops.$gte as number)
+      if ('$lt' in ops) return (actual as number) < (ops.$lt as number)
+      if ('$lte' in ops) return (actual as number) <= (ops.$lte as number)
     }
     return actual === expected
   })
