@@ -302,48 +302,6 @@ taladb inspect ./dev.db
 
 ---
 
-### `sync` — push entire database {#sync-push-entire-database}
-
-Push all documents in the database (or a single collection) to the HTTP endpoint configured in `taladb.config.yml`. Each document is sent as an `insert` event — same payload shape as the real-time push sync hook.
-
-Requires `sync.enabled: true` in the config. See the [HTTP Push Sync guide](/guide/http-sync) for full setup instructions.
-
-```sh
-# Push all collections to the configured endpoint
-taladb sync ./myapp.db
-
-# Push a single collection
-taladb sync ./myapp.db articles
-
-# Preview events without sending (prints JSON to stdout)
-taladb sync ./myapp.db articles --dry-run
-
-# Use an explicit config file instead of auto-discovery
-taladb sync ./myapp.db --config ./config/taladb.prod.yml
-```
-
-**Flags**
-
-| Flag | Description |
-|------|-------------|
-| `--dry-run` | Print each event as pretty-printed JSON without sending any HTTP requests |
-| `--config <path>` | Explicit path to a config file. Auto-discovers `taladb.config.yml` from the database file's directory when omitted |
-
-**Progress output** (stderr):
-
-```
-Syncing articles... 142/142 ✓
-Syncing users... 56/56 ✓
-Done. 198 event(s) sent.
-```
-
-**Notes:**
-- `exclude_fields` from the config is respected — embedding vectors and other large fields are stripped from payloads if configured.
-- HTTP failures on individual documents are propagated as errors — the command stops at the first failure. Re-run to resume.
-- If `sync.enabled: false` (or no config file is found), the command prints a message and exits cleanly without sending anything.
-
----
-
 ## Planned commands
 
 The following commands are planned for a future release:

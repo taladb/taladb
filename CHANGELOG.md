@@ -5,6 +5,80 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-15
+
+0.11.0 narrows TalaDB to its core: an embedded document + vector database, and
+the work to harden it. Dropping replication is the first step — it frees the
+surface area that hardening has to cover.
+
+### Removed — BREAKING
+
+All sync and replication, across every layer: the changeset APIs, conflict
+resolution, the replication coordinator and its React hooks, the sync-backend
+adapter packages, and the CLI's sync command.
+
+A half-built sync engine is worse than none. It put TalaDB on the most crowded
+shelf in the ecosystem while taking time from the vector core, where it is the
+only embedded database serving browser, React Native, and Node.js from one API.
+
+**Migrating:** use the change webhook for the push direction. There is no
+replacement for the pull direction — a database that does not replicate cannot
+pull. Hydrating from a server is now ordinary application code: fetch, then
+`insertMany`. In React, use `useFind` / `useFindOne` / `useAggregate`;
+`useMutation` remains as a plain local-write hook.
+
+### Added
+
+**Change webhook.** Every committed mutation fires one HTTP request — `POST` on
+insert, `PUT` on update, `DELETE` on delete.
+
+```ts
+const db = await openDB('app.db', {
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${token}` },
+    exclude_fields: ['embedding'],
+  },
+})
+```
+
+Per-document ordering is preserved, the bounded queue drops rather than blocking
+the writer, and failures retry with backoff on 5xx and network errors but never
+on 4xx. Delivery is **at most once** — a notification channel, not a replication
+log. Adds `db.webhookStats()` and `db.flushWebhook()`; `db.close()` drains.
+
+It replaces the previous Rust implementation, which existed in three variants
+across the runtimes and was entirely absent from the browser's in-memory
+fallback. The new one is a single `fetch`-based implementation in the TypeScript
+client, so all three runtimes behave identically. See [/api/webhook](https://taladb.dev/api/webhook).
+
+### Changed — BREAKING
+
+- **`_changed_at` is no longer auto-indexed.** The index was created behind the
+  caller's back to serve changeset exports. The field is still stamped; the index
+  is now opt-in via `createIndex('_changed_at')`. Create it explicitly if you
+  filter or sort on that field.
+- **Config: the `sync` block is now `webhook`,** read by the TypeScript client
+  rather than the engine. On browser and React Native, pass `openDB({ webhook })`.
+- **React Native:** webhook settings move from `TalaDBModule.initialize` to
+  `openDB(name, { webhook })`.
+- **Browser multi-tab:** a non-OPFS fallback tab's writes no longer merge into
+  the primary tab's OPFS file — that merge rode on the changeset machinery.
+  Reads and live queries are unaffected. Route writes through one tab if your app
+  writes from several.
+
+### Performance
+
+One fewer table write per delete and one fewer index maintained per write, both
+reclaimed from bookkeeping that existed only for replication.
+
+### Security & supply chain
+
+`reqwest` is gone from the dependency tree, and with it `rustls`, `hyper`, and
+the blocking HTTP stack — the engine makes no network calls at all. Nothing
+remains that accepts, validates, or merges data from a remote peer.
+
 ## [0.10.2] - 2026-08-02
 
 ### Fixed

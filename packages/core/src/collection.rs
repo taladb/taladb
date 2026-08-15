@@ -18,7 +18,7 @@ use crate::fts::{
 use crate::index::{
     CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, compound_meta_key,
     compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
-    meta_key, tomb_table_name,
+    meta_key,
 };
 use crate::query::executor::{execute, fetch_documents, index_ordered_entries};
 use crate::query::filter::Filter;
@@ -26,7 +26,7 @@ use crate::query::options::{
     FindOptions, SortDirection, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
-use crate::sync::{SyncEvent, SyncHook, now_ms};
+use crate::time::now_ms;
 use crate::vector::{
     CachedVectors, HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, SharedVectorCache, VectorDef,
     VectorMetric, VectorSearchResult, decode_f32_vec, encode_f32_vec,
@@ -56,7 +56,6 @@ pub(crate) struct CachedIndexes {
 /// Precomputed storage table names for one collection's indexes.
 pub(crate) struct IndexTables {
     docs: String,
-    tomb: String,
     /// One per entry of `CachedIndexes::indexes`, same order.
     btree: Vec<String>,
     /// `(postings, lengths, stats)` per entry of `fts_indexes`, same order.
@@ -77,7 +76,6 @@ impl IndexTables {
     ) -> Self {
         Self {
             docs: docs_table_name(collection),
-            tomb: tomb_table_name(collection),
             btree: indexes
                 .iter()
                 .map(|d| index_table_name(collection, &d.field))
@@ -129,34 +127,6 @@ pub struct CollectionIndexInfo {
     pub vector: Vec<String>,
 }
 
-/// Provenance marker stamped on every [`WriteOrigin::AuthoritativeRemote`] write.
-///
-/// A document carrying this field came *from* an authoritative origin, so it must
-/// never be replicated back out. `export_changes` skips it. Engine-owned: callers
-/// cannot set it, and it is stripped from local writes.
-pub const REMOTE_ORIGIN_FIELD: &str = "_remote";
-/// Monotonic revision supplied by an authoritative origin. When both the stored
-/// and incoming documents carry integer revisions, stale/equal replacements are
-/// ignored atomically inside the write transaction.
-pub const REMOTE_REVISION_FIELD: &str = "_remote_rev";
-
-/// Who authored a write, and therefore whether it is replicated outward.
-///
-/// This is the *write-authority* axis. It exists because a document pulled from
-/// a remote origin is **not** a local edit, and treating it as one corrupts
-/// replication in two distinct ways — see [`Collection::replace_many_with_ids`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteOrigin {
-    /// A local, user-authored write. Stamps `_changed_at` from the wall clock and
-    /// emits outbound [`SyncEvent`]s, so the change replicates to peers. This is
-    /// what every existing write path does.
-    Local,
-    /// A write replicated *in* from an authoritative remote origin (e.g. a REST
-    /// hydration or delta refresh). The origin already knows about these rows, so
-    /// they must never be replicated back out.
-    AuthoritativeRemote,
-}
-
 #[derive(Clone)]
 pub enum Update {
     /// Apply multiple update operators atomically, in document order.
@@ -183,7 +153,6 @@ pub struct Collection {
     /// successful write commit. Shared per collection name across all
     /// handles from the same `Database`.
     watch_registry: crate::watch::SharedRegistry,
-    sync_hook: Option<Arc<dyn SyncHook>>,
     /// If `Some`, every successful mutation appends an entry to the `_audit`
     /// table. The string is the caller identity recorded in each entry.
     audit_caller: Option<String>,
@@ -208,7 +177,6 @@ impl Collection {
             backend,
             index_cache: new_shared_index_cache(),
             watch_registry: crate::watch::new_registry(),
-            sync_hook: None,
             audit_caller: None,
             #[cfg(feature = "encryption")]
             field_encryption: None,
@@ -259,14 +227,13 @@ impl Collection {
 
     /// A read-only clone of this handle for watch callbacks: shares the
     /// backend and caches, carries the field-encryption config so snapshots
-    /// are decrypted like `find`, but drops hooks/audit (it never writes).
+    /// are decrypted like `find`, but drops audit (it never writes).
     fn clone_reader(&self) -> Self {
         Self {
             name: self.name.clone(),
             backend: Arc::clone(&self.backend),
             index_cache: Arc::clone(&self.index_cache),
             watch_registry: Arc::clone(&self.watch_registry),
-            sync_hook: None,
             audit_caller: None,
             #[cfg(feature = "encryption")]
             field_encryption: self.field_encryption.clone(),
@@ -274,13 +241,6 @@ impl Collection {
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: Arc::clone(&self.hnsw_cache),
         }
-    }
-
-    /// Attach a sync hook that receives a [`SyncEvent`] after every successful
-    /// write commit.  Pass `Arc::new(NoopSyncHook)` to disable (default).
-    pub fn with_sync_hook(mut self, hook: Arc<dyn SyncHook>) -> Self {
-        self.sync_hook = Some(hook);
-        self
     }
 
     /// Enable the append-only audit log for this collection handle.
@@ -483,22 +443,6 @@ impl Collection {
         let mut guard = self.index_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.insert(self.name.clone(), cached.clone());
         Ok(cached)
-    }
-
-    /// Ensure the `_changed_at` secondary index exists for this collection.
-    ///
-    /// Called automatically before every mutation so `export_changes` can use
-    /// an index range scan instead of a full table scan.  `create_index` is
-    /// idempotent, so this is a no-op after the first call.
-    fn ensure_changed_at_index(&self) -> Result<(), TalaDbError> {
-        // Consult the cached definitions first: opening a write transaction
-        // on every mutation just to re-check existence is wasteful, and the
-        // cache is invalidated by any index DDL on this Database.
-        let cache = self.load_indexes_cached()?;
-        if cache.indexes.iter().any(|d| d.field == "_changed_at") {
-            return Ok(());
-        }
-        self.create_index("_changed_at")
     }
 
     // ------------------------------------------------------------------
@@ -1745,17 +1689,15 @@ impl Collection {
     // ------------------------------------------------------------------
 
     pub fn insert(&self, mut fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
-        // Auto-stamp _changed_at so LWW merge works correctly without manual calls.
-        fields.retain(|(k, _)| {
-            k != "_changed_at" && k != REMOTE_ORIGIN_FIELD && k != REMOTE_REVISION_FIELD
-        });
+        // Auto-stamp `_changed_at` so callers always have a last-modified time.
+        // Engine-owned: a caller-supplied value is dropped.
+        fields.retain(|(k, _)| k != "_changed_at");
         fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
         let mut doc = Document::new(fields);
         // Encrypt nominated fields before writing indexes or the doc body.
         // Index entries are written from the plaintext doc, so encrypted fields
         // are not indexable (intentional — see `with_field_encryption` docs).
         self.encrypt_doc(&mut doc)?;
-        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
         self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
@@ -1772,13 +1714,6 @@ impl Collection {
         }
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            hook.on_event(SyncEvent::Insert {
-                collection: self.name.clone(),
-                id: id.to_string(),
-                document: doc,
-            });
-        }
         Ok(id)
     }
 
@@ -1787,9 +1722,7 @@ impl Collection {
         let mut docs: Vec<Document> = items
             .into_iter()
             .map(|mut fields| {
-                fields.retain(|(k, _)| {
-                    k != "_changed_at" && k != REMOTE_ORIGIN_FIELD && k != REMOTE_REVISION_FIELD
-                });
+                fields.retain(|(k, _)| k != "_changed_at");
                 fields.push(("_changed_at".into(), Value::Int(ts)));
                 Document::new(fields)
             })
@@ -1820,15 +1753,6 @@ impl Collection {
         }
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            for doc in &docs {
-                hook.on_event(SyncEvent::Insert {
-                    collection: self.name.clone(),
-                    id: doc.id.to_string(),
-                    document: doc.clone(),
-                });
-            }
-        }
         Ok(ids)
     }
 
@@ -2099,13 +2023,6 @@ impl Collection {
         self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            hook.on_event(SyncEvent::Insert {
-                collection: self.name.clone(),
-                id: id.to_string(),
-                document: doc,
-            });
-        }
         Ok(id)
     }
 
@@ -2115,12 +2032,7 @@ impl Collection {
     /// Unlike `delete_by_id` followed by `insert_with_id`, this:
     /// - maintains secondary/FTS/vector/compound indexes against the previous
     ///   version of the document,
-    /// - does **not** write a delete tombstone, and removes any existing
-    ///   tombstone for the ID — so a replaced document cannot later be
-    ///   exported to peers as a deletion,
     /// - is atomic (no window where the document is absent).
-    ///
-    /// Used by the sync adapters to apply remote upserts and merges.
     pub fn replace_with_id(&self, mut doc: Document) -> Result<Ulid, TalaDbError> {
         // Symmetric with the find/find_by_id read paths, which decrypt:
         // documents flowing through sync (find → export → import → replace)
@@ -2137,235 +2049,9 @@ impl Collection {
             None => None,
         };
         self.write_doc_and_indexes_with_compound(&doc, old_doc.as_ref(), &cache, wtxn.as_mut())?;
-        // Clear any tombstone: this ID is alive again. Without this, a
-        // replace performed during sync import would leave a tombstone newer
-        // than the document and the next export would delete it on peers.
-        wtxn.delete(&tomb_table_name(&self.name), &id.to_bytes())?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            hook.on_event(SyncEvent::Insert {
-                collection: self.name.clone(),
-                id: id.to_string(),
-                document: doc,
-            });
-        }
         Ok(id)
-    }
-
-    /// Upsert many documents **by caller-supplied id**, in a single commit.
-    ///
-    /// This is the write primitive behind replication from a remote origin. It is
-    /// [`Self::replace_with_id`]'s semantics (idempotent upsert, indexes maintained
-    /// against the *old* version, tombstone cleared) batched into `insert_many`'s
-    /// single-transaction shape. Existing rows are replaced in place; absent rows
-    /// are created. Rows not named in `docs` are untouched — so hydrating page 2
-    /// never disturbs page 1.
-    ///
-    /// # Why the origin matters
-    ///
-    /// Writing remote rows as if they were local edits corrupts replication two
-    /// separate ways, and [`WriteOrigin::AuthoritativeRemote`] closes both:
-    ///
-    /// 1. **The push hook.** [`Self::replace_with_id`] emits a [`SyncEvent`], which
-    ///    the HTTP sync hook fires at the server. Replaying the origin's own rows
-    ///    back at it is at best wasted traffic and at worst a write loop.
-    /// 2. **The export scan.** `export_changes` does *not* consult the sync hook —
-    ///    it scans the collection directly, and when the cursor is `0` (which is
-    ///    every pass today, since cursors are stubbed) it exports **everything**
-    ///    via `find(Filter::All)`. Suppressing events is therefore not enough on
-    ///    its own. Remote rows are stamped [`REMOTE_ORIGIN_FIELD`] and
-    ///    `export_changes` skips them, which makes "remote rows never replicate
-    ///    outward" an invariant of the storage layer rather than a property some
-    ///    caller has to remember. (See [`Self::delete_many_with_ids`] for the
-    ///    matching guard on deletions.)
-    ///
-    /// Row *version* for a remote write is the origin's business: the caller keeps
-    /// whatever revision field the origin supplied (`_rev`, say). We deliberately
-    /// do not invent one from the local clock — ordering two responses by the time
-    /// they happened to arrive is exactly the bug that lets a stale fetch overwrite
-    /// a fresh one. `_changed_at` is stripped for the same reason.
-    ///
-    /// Fires **one** watch notification for the whole batch: a 500-row hydration
-    /// page must not wake every live query 500 times.
-    pub fn replace_many_with_ids(
-        &self,
-        docs: Vec<Document>,
-        origin: WriteOrigin,
-    ) -> Result<Vec<Ulid>, TalaDbError> {
-        if docs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ts = now_ms() as i64;
-        let mut docs: Vec<Document> = docs
-            .into_iter()
-            .map(|mut doc| {
-                // Both fields are engine-owned provenance: never let a caller (or a
-                // remote payload that happens to carry these keys) set them.
-                doc.fields
-                    .retain(|(k, _)| k != "_changed_at" && k != REMOTE_ORIGIN_FIELD);
-                match origin {
-                    WriteOrigin::Local => {
-                        doc.remove(REMOTE_REVISION_FIELD);
-                        doc.fields.push(("_changed_at".into(), Value::Int(ts)));
-                    }
-                    WriteOrigin::AuthoritativeRemote => {
-                        doc.fields
-                            .push((REMOTE_ORIGIN_FIELD.into(), Value::Bool(true)));
-                    }
-                }
-                doc
-            })
-            .collect();
-        // Symmetric with the find/find_by_id read paths, which decrypt.
-        for doc in &mut docs {
-            self.encrypt_doc(doc)?;
-        }
-        if origin == WriteOrigin::Local {
-            self.ensure_changed_at_index()?;
-        }
-        let cache = self.load_indexes_cached()?;
-        let docs_table = docs_table_name(&self.name);
-        let tomb_table = tomb_table_name(&self.name);
-
-        let mut wtxn = self.backend.begin_write()?;
-
-        // Read every previous version in one batched pass inside the write txn,
-        // so old index entries are computed from the bytes actually being
-        // replaced without paying a table open per document.
-        let keys: Vec<[u8; 16]> = docs.iter().map(|d| d.id.to_bytes()).collect();
-        let key_refs: Vec<&[u8]> = keys.iter().map(<[u8; 16]>::as_slice).collect();
-        let old_docs: Vec<Option<Document>> = wtxn
-            .get_many(&docs_table, &key_refs)?
-            .into_iter()
-            .map(|bytes| match bytes {
-                Some(b) => postcard::from_bytes(&b).map(Some).map_err(TalaDbError::from),
-                None => Ok(None),
-            })
-            .collect::<Result<_, _>>()?;
-
-        let mut batch: Vec<(&Document, Option<&Document>)> = Vec::with_capacity(docs.len());
-        let mut ids = Vec::with_capacity(docs.len());
-        let mut tomb_clears: Vec<[u8; 16]> = Vec::with_capacity(docs.len());
-        for (doc, old_doc) in docs.iter().zip(&old_docs) {
-            if origin == WriteOrigin::AuthoritativeRemote
-                && let (Some(Value::Int(incoming)), Some(Value::Int(stored))) = (
-                    doc.get(REMOTE_REVISION_FIELD),
-                    old_doc.as_ref().and_then(|d| d.get(REMOTE_REVISION_FIELD)),
-                )
-                && incoming <= stored
-            {
-                continue;
-            }
-            batch.push((doc, old_doc.as_ref()));
-            tomb_clears.push(doc.id.to_bytes());
-            ids.push(doc.id);
-        }
-
-        self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
-        // Clear any tombstone: these ids are alive again. Without this, a replace
-        // would leave a tombstone newer than the document, and the next export
-        // would delete it on peers.
-        let tomb_ops: Vec<crate::engine::KvOp<'_>> = tomb_clears
-            .iter()
-            .map(|k| crate::engine::KvOp::Delete(k.as_slice()))
-            .collect();
-        wtxn.apply_batch(&tomb_table, &tomb_ops)?;
-        // Audit rows commit atomically with the batch.
-        if let Some(caller) = &self.audit_caller {
-            for id in &ids {
-                write_audit_entry(
-                    wtxn.as_mut(),
-                    &self.name,
-                    AuditOp::Insert,
-                    &id.to_string(),
-                    caller,
-                )?;
-            }
-        }
-        wtxn.commit()?;
-        crate::watch::notify(&self.watch_registry);
-
-        if origin == WriteOrigin::Local
-            && let Some(hook) = &self.sync_hook
-        {
-            for doc in docs {
-                hook.on_event(SyncEvent::Insert {
-                    collection: self.name.clone(),
-                    id: doc.id.to_string(),
-                    document: doc,
-                });
-            }
-        }
-        Ok(ids)
-    }
-
-    /// Delete many documents **by id**, in a single commit. Returns how many were
-    /// actually present and removed; unknown ids are silently skipped.
-    ///
-    /// This is the delete half of remote replication: a delta refresh reports the
-    /// origin's deleted primary keys, which the caller maps through
-    /// [`crate::derive_doc_id`] to reach the local rows.
-    ///
-    /// [`WriteOrigin::AuthoritativeRemote`] deletes write **no tombstone** and emit
-    /// no sync events, for the same reason remote upserts are marked
-    /// [`REMOTE_ORIGIN_FIELD`]: `export_changes` scans the tombstone table directly
-    /// and cannot filter it by provenance (the document is gone), so a tombstone
-    /// here would push the origin's own deletion straight back at it.
-    ///
-    /// Fires one watch notification for the whole batch.
-    pub fn delete_many_with_ids(
-        &self,
-        ids: &[Ulid],
-        origin: WriteOrigin,
-    ) -> Result<usize, TalaDbError> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-        let cache = self.load_indexes_cached()?;
-        let docs_table = docs_table_name(&self.name);
-        let deleted_at = match origin {
-            WriteOrigin::Local => Some(now_ms()),
-            WriteOrigin::AuthoritativeRemote => None,
-        };
-
-        let mut wtxn = self.backend.begin_write()?;
-        // Read inside the write txn so index cleanup is computed from the bytes
-        // actually being removed — batched, so the docs table opens once.
-        let keys: Vec<[u8; 16]> = ids.iter().map(ulid::Ulid::to_bytes).collect();
-        let key_refs: Vec<&[u8]> = keys.iter().map(<[u8; 16]>::as_slice).collect();
-        let mut docs: Vec<Document> = Vec::new();
-        for bytes in wtxn.get_many(&docs_table, &key_refs)?.into_iter().flatten() {
-            docs.push(postcard::from_bytes(&bytes)?);
-        }
-        let removed: Vec<Ulid> = docs.iter().map(|d| d.id).collect();
-        let batch: Vec<&Document> = docs.iter().collect();
-        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut(), deleted_at)?;
-        if let Some(caller) = &self.audit_caller {
-            for id in &removed {
-                write_audit_entry(
-                    wtxn.as_mut(),
-                    &self.name,
-                    AuditOp::Delete,
-                    &id.to_string(),
-                    caller,
-                )?;
-            }
-        }
-        wtxn.commit()?;
-        crate::watch::notify(&self.watch_registry);
-
-        if origin == WriteOrigin::Local
-            && let Some(hook) = &self.sync_hook
-        {
-            for id in &removed {
-                hook.on_event(SyncEvent::Delete {
-                    collection: self.name.clone(),
-                    id: id.to_string(),
-                });
-            }
-        }
-        Ok(removed.len())
     }
 
     pub fn find_by_id(&self, id: Ulid) -> Result<Option<Document>, TalaDbError> {
@@ -2383,13 +2069,6 @@ impl Collection {
     }
 
     pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
-        self.delete_by_id_at(id, now_ms())
-    }
-
-    /// Delete a document while preserving the timestamp of the deletion.
-    /// Used by sync import so forwarding a remote tombstone does not make an
-    /// old deletion appear to have happened at local receipt time.
-    pub(crate) fn delete_by_id_at(&self, id: Ulid, deleted_at: u64) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
@@ -2402,27 +2081,15 @@ impl Collection {
             None => Ok(false),
             Some(doc) => {
                 let mut wtxn = self.backend.begin_write()?;
-                self.delete_doc_and_indexes_with_compound_at(
-                    &doc,
-                    &cache,
-                    wtxn.as_mut(),
-                    deleted_at,
-                )?;
+                self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
                 wtxn.commit()?;
                 crate::watch::notify(&self.watch_registry);
-                if let Some(hook) = &self.sync_hook {
-                    hook.on_event(SyncEvent::Delete {
-                        collection: self.name.clone(),
-                        id: id.to_string(),
-                    });
-                }
                 Ok(true)
             }
         }
     }
 
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
-        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let qplan = plan_full(
             &filter,
@@ -2457,15 +2124,6 @@ impl Collection {
             self.decrypt_doc(&mut old_doc)?;
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update)?;
-            // A user edit makes this a local document again. Leaving `_remote`
-            // behind would make export_changes silently suppress the edit.
-            new_doc.remove(REMOTE_ORIGIN_FIELD);
-            new_doc.remove(REMOTE_REVISION_FIELD);
-            let (changes, removed) = if self.sync_hook.is_some() {
-                diff_documents(&old_doc, &new_doc)
-            } else {
-                (HashMap::new(), Vec::new())
-            };
             self.encrypt_doc(&mut new_doc)?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
@@ -2485,21 +2143,12 @@ impl Collection {
             }
             wtxn.commit()?;
             crate::watch::notify(&self.watch_registry);
-            if let Some(hook) = &self.sync_hook {
-                hook.on_event(SyncEvent::Update {
-                    collection: self.name.clone(),
-                    id: old_doc.id.to_string(),
-                    changes,
-                    removed,
-                });
-            }
             return Ok(true);
         }
         Ok(false)
     }
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
-        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let qplan = plan_full(
             &filter,
@@ -2512,12 +2161,6 @@ impl Collection {
         drop(rtxn);
 
         let mut count = 0u64;
-        let has_hook = self.sync_hook.is_some();
-        let mut events: Vec<SyncEvent> = if has_hook {
-            Vec::with_capacity(candidates.len())
-        } else {
-            Vec::new()
-        };
         // Re-fetch and re-check every candidate inside the write transaction:
         // the read snapshot used to gather them is already released, and a
         // concurrent writer may have changed or deleted them in between.
@@ -2544,17 +2187,6 @@ impl Collection {
             self.decrypt_doc(&mut plain_old)?;
             let mut new_doc = plain_old.clone();
             apply_update(&mut new_doc, update.clone())?;
-            new_doc.remove(REMOTE_ORIGIN_FIELD);
-            new_doc.remove(REMOTE_REVISION_FIELD);
-            if has_hook {
-                let (changes, removed) = diff_documents(&plain_old, &new_doc);
-                events.push(SyncEvent::Update {
-                    collection: self.name.clone(),
-                    id: stored_old.id.to_string(),
-                    changes,
-                    removed,
-                });
-            }
             self.encrypt_doc(&mut new_doc)?;
             // Audit row commits atomically with the batch.
             if let Some(caller) = &self.audit_caller {
@@ -2574,11 +2206,6 @@ impl Collection {
         self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            for event in events {
-                hook.on_event(event);
-            }
-        }
         Ok(count)
     }
 
@@ -2614,12 +2241,6 @@ impl Collection {
             }
             wtxn.commit()?;
             crate::watch::notify(&self.watch_registry);
-            if let Some(hook) = &self.sync_hook {
-                hook.on_event(SyncEvent::Delete {
-                    collection: self.name.clone(),
-                    id: doc_id,
-                });
-            }
             return Ok(true);
         }
         Ok(false)
@@ -2668,17 +2289,9 @@ impl Collection {
         }
         // One batched pass: each index table is opened once, not once per doc.
         let batch: Vec<&Document> = deleted.iter().collect();
-        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut(), Some(now_ms()))?;
+        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        if let Some(hook) = &self.sync_hook {
-            for doc in &deleted {
-                hook.on_event(SyncEvent::Delete {
-                    collection: self.name.clone(),
-                    id: doc.id.to_string(),
-                });
-            }
-        }
         Ok(count)
     }
 
@@ -2704,121 +2317,22 @@ impl Collection {
         crate::query::executor::count_matching(&qplan, &filter, rtxn.as_ref(), &self.name)
     }
 
-    /// Remove tombstones older than `before_ms` (milliseconds since Unix epoch).
-    ///
-    /// Tombstones record deleted document IDs so deletions can propagate via the
-    /// sync changeset API.  Once all replicas are known to have received a
-    /// deletion (i.e. after your retention window has elapsed), those tombstones
-    /// can be safely pruned to reclaim storage.
-    ///
-    /// Returns the number of tombstones removed.
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Prune tombstones older than 30 days
-    /// let cutoff = now_ms() - 30 * 24 * 60 * 60 * 1000;
-    /// let pruned = collection.compact_tombstones(cutoff)?;
-    /// ```
-    pub fn compact_tombstones(&self, before_ms: u64) -> Result<u64, TalaDbError> {
-        let tomb_table = tomb_table_name(&self.name);
-        let rtxn = self.backend.begin_read()?;
-        let all = rtxn.scan_all(&tomb_table)?;
-
-        // Collect candidate IDs whose tombstone timestamp is older than before_ms.
-        let candidates: Vec<Vec<u8>> = all
-            .into_iter()
-            .filter_map(|(key_bytes, val_bytes)| {
-                let ts: i64 = postcard::from_bytes(&val_bytes).ok()?;
-                if (ts as u64) < before_ms {
-                    Some(key_bytes)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if candidates.is_empty() {
-            return Ok(0);
-        }
-
-        drop(rtxn);
-
-        // Re-check each candidate inside the write txn: between the read and
-        // the write another writer may have resurrected the document (delete
-        // → insert with new ULID reusing the key) or overwritten the tombstone
-        // with a newer timestamp. Only prune entries whose stored timestamp
-        // still satisfies the cutoff at commit time.
-        let mut wtxn = self.backend.begin_write()?;
-        let key_refs: Vec<&[u8]> = candidates.iter().map(std::vec::Vec::as_slice).collect();
-        let stored = wtxn.get_many(&tomb_table, &key_refs)?;
-        let eligible: Vec<&Vec<u8>> = candidates
-            .iter()
-            .zip(&stored)
-            .filter(|(_, bytes)| match bytes {
-                Some(b) => postcard::from_bytes::<i64>(b)
-                    .map(|ts| (ts as u64) < before_ms)
-                    .unwrap_or(false),
-                None => false,
-            })
-            .map(|(k, _)| k)
-            .collect();
-        let count = eligible.len() as u64;
-        let ops: Vec<crate::engine::KvOp<'_>> = eligible
-            .iter()
-            .map(|k| crate::engine::KvOp::Delete(k.as_slice()))
-            .collect();
-        wtxn.apply_batch(&tomb_table, &ops)?;
-        wtxn.commit()?;
-        Ok(count)
-    }
-
     fn delete_doc_and_indexes_with_compound(
         &self,
         doc: &Document,
         cache: &CachedIndexes,
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
-        self.delete_doc_and_indexes_with_compound_at(doc, cache, wtxn, now_ms())
-    }
-
-    fn delete_doc_and_indexes_with_compound_at(
-        &self,
-        doc: &Document,
-        cache: &CachedIndexes,
-        wtxn: &mut dyn crate::engine::WriteTxn,
-        deleted_at: u64,
-    ) -> Result<(), TalaDbError> {
-        self.delete_doc_and_indexes_inner(doc, cache, wtxn, Some(deleted_at))
-    }
-
-    /// `deleted_at: None` deletes the document **without** writing a tombstone.
-    ///
-    /// Only [`WriteOrigin::AuthoritativeRemote`] deletes do this. A tombstone
-    /// exists to tell peers about a *local* deletion; the origin already knows it
-    /// deleted the row, and `export_changes` scans the tombstone table directly
-    /// (it cannot filter by document provenance, because the document is gone).
-    /// So writing one here would push the origin's own deletion back at it.
-    fn delete_doc_and_indexes_inner(
-        &self,
-        doc: &Document,
-        cache: &CachedIndexes,
-        wtxn: &mut dyn crate::engine::WriteTxn,
-        deleted_at: Option<u64>,
-    ) -> Result<(), TalaDbError> {
-        self.delete_docs_and_indexes(std::slice::from_ref(&doc), cache, wtxn, deleted_at)
+        self.delete_docs_and_indexes(std::slice::from_ref(&doc), cache, wtxn)
     }
 
     /// Delete `docs` and every index entry they own, grouped by table so each
     /// table is resolved once per batch. Mirror of [`Self::write_docs_and_indexes`].
-    ///
-    /// `deleted_at: None` deletes **without** writing tombstones — see
-    /// [`Self::delete_doc_and_indexes_inner`]'s caller notes.
     fn delete_docs_and_indexes(
         &self,
         docs: &[&Document],
         cache: &CachedIndexes,
         wtxn: &mut dyn crate::engine::WriteTxn,
-        deleted_at: Option<u64>,
     ) -> Result<(), TalaDbError> {
         use crate::engine::KvOp;
         if docs.is_empty() {
@@ -2830,21 +2344,6 @@ impl Collection {
         let body_ops: Vec<KvOp<'_>> =
             ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
         wtxn.apply_batch(&tables.docs, &body_ops)?;
-
-        // Write tombstones so these deletions can be exported via SyncAdapter
-        // and propagated to remote replicas that may not have received the
-        // HTTP push event.
-        if let Some(deleted_at) = deleted_at {
-            let deleted_at = i64::try_from(deleted_at).map_err(|_| {
-                TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
-            })?;
-            let ts_bytes = postcard::to_allocvec(&deleted_at)?;
-            let tomb_ops: Vec<KvOp<'_>> = ids
-                .iter()
-                .map(|k| KvOp::Put(k.as_slice(), ts_bytes.as_slice()))
-                .collect();
-            wtxn.apply_batch(&tables.tomb, &tomb_ops)?;
-        }
 
         for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
             let keys: Vec<Vec<u8>> = docs
@@ -3031,350 +2530,4 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     // Auto-advance _changed_at on every mutation so LWW always has a fresh timestamp.
     doc.set("_changed_at", Value::Int(now_ms() as i64));
     Ok(())
-}
-
-/// Compute the diff between `old` and `new`.
-///
-/// Returns `(changes, removed)`:
-/// - A field present in `new` but not in `old` → in `changes` with the new value.
-/// - A field present in both with a different value → in `changes` with the new value.
-/// - A field present in `old` but absent from `new` → listed in `removed`, and
-///   also in `changes` with `Value::Null` for backward compatibility with
-///   receivers that predate the explicit removed list.
-/// - Unchanged fields appear in neither.
-fn diff_documents(old: &Document, new: &Document) -> (HashMap<String, Value>, Vec<String>) {
-    let mut changes = HashMap::new();
-    for (k, new_val) in &new.fields {
-        match old.get(k) {
-            None => {
-                changes.insert(k.clone(), new_val.clone());
-            }
-            Some(old_val) if old_val != new_val => {
-                changes.insert(k.clone(), new_val.clone());
-            }
-            _ => {}
-        }
-    }
-    // Fields removed from old doc
-    let mut removed = Vec::new();
-    for (k, _) in &old.fields {
-        if new.get(k).is_none() {
-            changes.insert(k.clone(), Value::Null);
-            removed.push(k.clone());
-        }
-    }
-    (changes, removed)
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use crate::Database;
-    use crate::sync::RecordingSyncHook;
-
-    fn db() -> Database {
-        Database::open_in_memory().unwrap()
-    }
-
-    fn hooked(db: &Database, name: &str) -> (Collection, Arc<RecordingSyncHook>) {
-        let hook = Arc::new(RecordingSyncHook::new());
-        let col = db
-            .collection(name)
-            .unwrap()
-            .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
-        (col, hook)
-    }
-
-    // ── insert ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn insert_fires_insert_event() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        let id = col
-            .insert(vec![("name".into(), Value::Str("Alice".into()))])
-            .unwrap();
-        let events = hook.take();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            SyncEvent::Insert {
-                collection,
-                id: eid,
-                document,
-            } => {
-                assert_eq!(collection, "items");
-                assert_eq!(eid, &id.to_string());
-                assert_eq!(document.get("name"), Some(&Value::Str("Alice".into())));
-            }
-            other => panic!("expected Insert, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn no_hook_insert_no_panic() {
-        let db = db();
-        let col = db.collection("items").unwrap();
-        assert!(col.insert(vec![("x".into(), Value::Int(1))]).is_ok());
-    }
-
-    // ── insert_many ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn insert_many_fires_one_event_per_doc() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        let ids = col
-            .insert_many(vec![
-                vec![("n".into(), Value::Int(1))],
-                vec![("n".into(), Value::Int(2))],
-                vec![("n".into(), Value::Int(3))],
-            ])
-            .unwrap();
-        let events = hook.take();
-        assert_eq!(events.len(), 3);
-        for (i, event) in events.iter().enumerate() {
-            match event {
-                SyncEvent::Insert { id, .. } => assert_eq!(id, &ids[i].to_string()),
-                other => panic!("expected Insert, got {other:?}"),
-            }
-        }
-    }
-
-    // ── update_one ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn update_one_fires_update_event_with_delta() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.insert(vec![
-            ("name".into(), Value::Str("Alice".into())),
-            ("score".into(), Value::Int(10)),
-        ])
-        .unwrap();
-        hook.take(); // discard Insert event
-
-        col.update_one(
-            Filter::Eq("name".into(), Value::Str("Alice".into())),
-            Update::Set(vec![("score".into(), Value::Int(20))]),
-        )
-        .unwrap();
-
-        let events = hook.take();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            SyncEvent::Update {
-                collection,
-                changes,
-                ..
-            } => {
-                assert_eq!(collection, "items");
-                // Only the changed field
-                assert_eq!(changes.get("score"), Some(&Value::Int(20)));
-                // Unchanged field not present
-                assert!(!changes.contains_key("name"));
-            }
-            other => panic!("expected Update, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn update_one_no_match_fires_no_event() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.update_one(
-            Filter::Eq("missing".into(), Value::Bool(true)),
-            Update::Set(vec![("x".into(), Value::Int(1))]),
-        )
-        .unwrap();
-        assert_eq!(hook.len(), 0);
-    }
-
-    #[test]
-    fn update_diff_includes_removed_field_as_null() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.insert(vec![
-            ("a".into(), Value::Int(1)),
-            ("b".into(), Value::Int(2)),
-        ])
-        .unwrap();
-        hook.take();
-
-        col.update_one(
-            Filter::Eq("a".into(), Value::Int(1)),
-            Update::Unset(vec!["b".into()]),
-        )
-        .unwrap();
-
-        let events = hook.take();
-        match &events[0] {
-            SyncEvent::Update { changes, .. } => {
-                assert_eq!(changes.get("b"), Some(&Value::Null));
-                assert!(!changes.contains_key("a"));
-            }
-            other => panic!("expected Update, got {other:?}"),
-        }
-    }
-
-    // ── update_many ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn update_many_fires_one_event_per_doc() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.insert_many(vec![
-            vec![
-                ("active".into(), Value::Bool(true)),
-                ("v".into(), Value::Int(1)),
-            ],
-            vec![
-                ("active".into(), Value::Bool(true)),
-                ("v".into(), Value::Int(2)),
-            ],
-        ])
-        .unwrap();
-        hook.take();
-
-        let n = col
-            .update_many(
-                Filter::Eq("active".into(), Value::Bool(true)),
-                Update::Set(vec![("active".into(), Value::Bool(false))]),
-            )
-            .unwrap();
-        assert_eq!(n, 2);
-
-        let events = hook.take();
-        assert_eq!(events.len(), 2);
-        for event in &events {
-            match event {
-                SyncEvent::Update { changes, .. } => {
-                    assert_eq!(changes.get("active"), Some(&Value::Bool(false)));
-                    assert!(!changes.contains_key("v"));
-                }
-                other => panic!("expected Update, got {other:?}"),
-            }
-        }
-    }
-
-    // ── delete_one ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn delete_one_fires_delete_event() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
-        hook.take();
-
-        col.delete_one(Filter::Eq("x".into(), Value::Int(1)))
-            .unwrap();
-
-        let events = hook.take();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            SyncEvent::Delete {
-                collection,
-                id: eid,
-            } => {
-                assert_eq!(collection, "items");
-                assert_eq!(eid, &id.to_string());
-            }
-            other => panic!("expected Delete, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn delete_one_no_match_fires_no_event() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.delete_one(Filter::Eq("x".into(), Value::Int(999)))
-            .unwrap();
-        assert_eq!(hook.len(), 0);
-    }
-
-    // ── delete_many ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn delete_many_fires_one_event_per_doc() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        col.insert_many(vec![
-            vec![("tag".into(), Value::Str("old".into()))],
-            vec![("tag".into(), Value::Str("old".into()))],
-            vec![("tag".into(), Value::Str("new".into()))],
-        ])
-        .unwrap();
-        hook.take();
-
-        let n = col
-            .delete_many(Filter::Eq("tag".into(), Value::Str("old".into())))
-            .unwrap();
-        assert_eq!(n, 2);
-
-        let events = hook.take();
-        assert_eq!(events.len(), 2);
-        for event in &events {
-            assert!(matches!(event, SyncEvent::Delete { .. }));
-        }
-    }
-
-    // ── delete_by_id ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn delete_by_id_fires_delete_event() {
-        let db = db();
-        let (col, hook) = hooked(&db, "items");
-        let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
-        hook.take();
-
-        col.delete_by_id(id).unwrap();
-
-        let events = hook.take();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            SyncEvent::Delete { id: eid, .. } => assert_eq!(eid, &id.to_string()),
-            other => panic!("expected Delete, got {other:?}"),
-        }
-    }
-
-    // ── diff_documents ───────────────────────────────────────────────────────
-
-    #[test]
-    fn diff_unchanged_doc_is_empty() {
-        let doc = Document::new(vec![("a".into(), Value::Int(1))]);
-        let (diff, removed) = diff_documents(&doc, &doc);
-        assert!(diff.is_empty());
-        assert!(removed.is_empty());
-    }
-
-    #[test]
-    fn diff_new_field_included() {
-        let old = Document::new(vec![("a".into(), Value::Int(1))]);
-        let new = Document::new(vec![
-            ("a".into(), Value::Int(1)),
-            ("b".into(), Value::Int(2)),
-        ]);
-        let (diff, removed) = diff_documents(&old, &new);
-        assert_eq!(diff.len(), 1);
-        assert_eq!(diff.get("b"), Some(&Value::Int(2)));
-        assert!(removed.is_empty());
-    }
-
-    #[test]
-    fn diff_removed_field_is_null_tombstone() {
-        let old = Document::new(vec![
-            ("a".into(), Value::Int(1)),
-            ("b".into(), Value::Int(2)),
-        ]);
-        let new = Document::new(vec![("a".into(), Value::Int(1))]);
-        let (diff, removed) = diff_documents(&old, &new);
-        assert_eq!(diff.get("b"), Some(&Value::Null));
-        assert!(!diff.contains_key("a"));
-        assert_eq!(removed, vec!["b".to_string()]);
-    }
 }

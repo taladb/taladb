@@ -64,10 +64,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use std::collections::HashMap;
 use taladb_core::{
-    Database, Document, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
-    StructuralSchema, SyncHook, TalaDbConfig, Ulid, Update, Value, VectorMetric, WriteOrigin,
+    Database, Filter, HnswOptions, TalaDbConfig, Update, Value, VectorMetric,
 };
 
 thread_local! {
@@ -117,18 +115,11 @@ pub extern "C" fn taladb_last_error() -> *const c_char {
 #[derive(Clone)]
 pub struct TalaDbHandle {
     db: Database,
-    sync_hook: Option<Arc<HttpSyncHook>>,
 }
 
 impl TalaDbHandle {
-    /// Get a collection, attaching the sync hook when one is configured.
     fn collection(&self, name: &str) -> Result<taladb_core::Collection, taladb_core::TalaDbError> {
-        let col = self.db.collection(name)?;
-        if let Some(hook) = &self.sync_hook {
-            Ok(col.with_sync_hook(Arc::clone(hook) as Arc<dyn SyncHook>))
-        } else {
-            Ok(col)
-        }
+        self.db.collection(name)
     }
 }
 
@@ -155,10 +146,7 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
         }
     };
     match Database::open(Path::new(path_str)) {
-        Ok(db) => Box::into_raw(Box::new(TalaDbHandle {
-            db,
-            sync_hook: None,
-        })),
+        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db })),
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()
@@ -166,9 +154,11 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
     }
 }
 
-/// Open (or create) a TalaDB database at `path` with HTTP push sync config.
+/// Open (or create) a TalaDB database at `path` with an optional config.
 ///
-/// `config_json` — JSON-serialised `TalaDbConfig`, or NULL to open without sync.
+/// `config_json` — JSON-serialised `TalaDbConfig` (durability, plus an optional
+/// `passphrase` for encryption at rest), or NULL for defaults. Change webhooks
+/// are delivered by the `taladb` TypeScript client, not by this binding.
 ///
 /// Returns an opaque handle, or NULL on failure.
 /// The handle must be freed with `taladb_close`.
@@ -192,7 +182,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
 
     let mut passphrase: Option<String> = None;
     let mut durability_eventual = false;
-    let sync_hook: Option<Arc<HttpSyncHook>> = if !config_json.is_null() {
+    if !config_json.is_null() {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
             Ok(json_str) => {
                 passphrase = serde_json::from_str::<serde_json::Value>(json_str)
@@ -204,16 +194,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
                     });
                 match serde_json::from_str::<TalaDbConfig>(json_str) {
                     Ok(config) => {
-                        if let Err(e) = config.validate() {
-                            set_last_error(e.to_string());
-                            return std::ptr::null_mut();
-                        }
                         durability_eventual = !config.durability.flush_every_write;
-                        if config.sync.enabled {
-                            Some(Arc::new(HttpSyncHook::new(config.sync)))
-                        } else {
-                            None
-                        }
                     }
                     Err(e) => {
                         set_last_error(format!("invalid config JSON: {e}"));
@@ -226,9 +207,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
                 return std::ptr::null_mut();
             }
         }
-    } else {
-        None
-    };
+    }
 
     let opened = match passphrase {
         Some(passphrase) => Database::open_encrypted(Path::new(path_str), &passphrase),
@@ -237,41 +216,12 @@ pub unsafe extern "C" fn taladb_open_with_config(
     match opened {
         Ok(db) => {
             db.set_durability(durability_eventual);
-            Box::into_raw(Box::new(TalaDbHandle { db, sync_hook }))
+            Box::into_raw(Box::new(TalaDbHandle { db }))
         }
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()
         }
-    }
-}
-
-/// HTTP push delivery counters as `{ "dropped": n, "failed": n }`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_sync_status(handle: *mut TalaDbHandle) -> *mut c_char {
-    clear_last_error();
-    let Some(h) = (unsafe { ptr_to_ref(handle) }) else {
-        return std::ptr::null_mut();
-    };
-    let (dropped, failed) = h
-        .sync_hook
-        .as_ref()
-        .map(|hook| (hook.dropped_event_count(), hook.failed_event_count()))
-        .unwrap_or((0, 0));
-    to_cstring(serde_json::json!({ "dropped": dropped, "failed": failed }).to_string())
-}
-
-/// Wait for queued HTTP push events. Returns 1 on success, 0 on timeout, -1 on error.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_sync_flush(handle: *mut TalaDbHandle, timeout_ms: u64) -> i32 {
-    clear_last_error();
-    let Some(h) = (unsafe { ptr_to_ref(handle) }) else {
-        return -1;
-    };
-    match &h.sync_hook {
-        Some(hook) if hook.flush(std::time::Duration::from_millis(timeout_ms)) => 1,
-        Some(_) => 0,
-        None => 1,
     }
 }
 
@@ -412,148 +362,6 @@ pub unsafe extern "C" fn taladb_insert_many(
 
 // ---------------------------------------------------------------------------
 // Replication writes — id-addressed upsert / delete
-// ---------------------------------------------------------------------------
-
-/// Upsert many documents **by caller-supplied `_id`**, in one commit.
-///
-/// Unlike `taladb_insert_many` — which discards `_id` and mints a fresh ULID —
-/// this honours the id on each document. That is what lets replication address a
-/// remote row by a *derived* id, so repeated fetches converge on one document
-/// instead of duplicating it.
-///
-/// `origin` is `"remote"` (authoritative rows replicated in from an origin) or
-/// `"local"` (ordinary user writes). Remote rows are marked so they can never
-/// replicate back out.
-///
-/// # Safety
-/// All pointers must be valid, null-terminated C strings (or null); `handle` must
-/// be a live handle from `taladb_open`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_replace_many_with_ids(
-    handle: *mut TalaDbHandle,
-    collection: *const c_char,
-    docs_json: *const c_char,
-    origin: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, docs_json) } {
-        Some(t) => t,
-        None => return std::ptr::null_mut(),
-    };
-    let origin = match unsafe { cstr_to_string(origin) }
-        .as_deref()
-        .and_then(parse_write_origin)
-    {
-        Some(o) => o,
-        None => {
-            set_last_error("unknown write origin; expected \"local\" or \"remote\"".into());
-            return std::ptr::null_mut();
-        }
-    };
-    let arr = match serde_json::from_str::<Vec<serde_json::Value>>(&json) {
-        Ok(v) => v,
-        Err(e) => {
-            set_last_error(e.to_string());
-            return std::ptr::null_mut();
-        }
-    };
-    // Unlike insert_many's `filter_map`, a document that fails to parse must be a
-    // hard error, not silently dropped: a missing `_id` means we would otherwise
-    // skip a row and still report the page as fully replicated.
-    let mut docs = Vec::with_capacity(arr.len());
-    for v in &arr {
-        match json_to_doc(v) {
-            Some(doc) => docs.push(doc),
-            None => {
-                set_last_error(
-                    "replaceManyWithIds requires a string `_id` (a valid ULID) on every document"
-                        .into(),
-                );
-                return std::ptr::null_mut();
-            }
-        }
-    }
-    let col = match h.collection(&col_name) {
-        Ok(c) => c,
-        Err(e) => {
-            set_last_error(e.to_string());
-            return std::ptr::null_mut();
-        }
-    };
-    match col.replace_many_with_ids(docs, origin) {
-        Ok(ids) => {
-            let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
-            to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
-        }
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Delete many documents by id, in one commit. Returns a JSON number (the count
-/// removed), or NULL on error.
-///
-/// # Safety
-/// See [`taladb_replace_many_with_ids`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_delete_many_with_ids(
-    handle: *mut TalaDbHandle,
-    collection: *const c_char,
-    ids_json: *const c_char,
-    origin: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-    let (h, col_name, json) = match unsafe { parse_handle_args(handle, collection, ids_json) } {
-        Some(t) => t,
-        None => return std::ptr::null_mut(),
-    };
-    let origin = match unsafe { cstr_to_string(origin) }
-        .as_deref()
-        .and_then(parse_write_origin)
-    {
-        Some(o) => o,
-        None => {
-            set_last_error("unknown write origin; expected \"local\" or \"remote\"".into());
-            return std::ptr::null_mut();
-        }
-    };
-    let raw: Vec<String> = match serde_json::from_str(&json) {
-        Ok(v) => v,
-        Err(e) => {
-            set_last_error(e.to_string());
-            return std::ptr::null_mut();
-        }
-    };
-    let mut ids = Vec::with_capacity(raw.len());
-    for s in &raw {
-        match Ulid::from_string(s) {
-            Ok(id) => ids.push(id),
-            Err(_) => {
-                set_last_error(format!("\"{s}\" is not a valid ULID"));
-                return std::ptr::null_mut();
-            }
-        }
-    }
-    let col = match h.collection(&col_name) {
-        Ok(c) => c,
-        Err(e) => {
-            set_last_error(e.to_string());
-            return std::ptr::null_mut();
-        }
-    };
-    match col.delete_many_with_ids(&ids, origin) {
-        Ok(n) => to_cstring(n.to_string()),
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Find
 // ---------------------------------------------------------------------------
 
 /// Find all documents matching `filter_json`.
@@ -907,81 +715,6 @@ pub unsafe extern "C" fn taladb_aggregate(
 
 // ---------------------------------------------------------------------------
 // Bidirectional sync — changeset export / import (backs JS `db.sync()`)
-// ---------------------------------------------------------------------------
-
-/// Export a changeset for `collections_json` (a JSON array of collection
-/// names) with `changed_at > since_ms`, as a JSON string. NULL on error.
-/// Caller must free with `taladb_free_string`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_export_changes(
-    handle: *mut TalaDbHandle,
-    collections_json: *const c_char,
-    since_ms: f64,
-) -> *mut c_char {
-    clear_last_error();
-    let h = match unsafe { ptr_to_ref(handle) } {
-        Some(h) => h,
-        None => return std::ptr::null_mut(),
-    };
-    let cols_str = match unsafe { cstr_to_string(collections_json) } {
-        Some(s) => s,
-        None => return std::ptr::null_mut(),
-    };
-    let collections: Vec<String> = match serde_json::from_str(&cols_str) {
-        Ok(v) => v,
-        Err(e) => {
-            set_last_error(format!("invalid collections JSON: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-    let refs: Vec<&str> = collections.iter().map(String::as_str).collect();
-    match h.db.export_changes(&refs, since_ms as u64) {
-        Ok(changeset) => match serde_json::to_string(&changeset) {
-            Ok(s) => to_cstring(s),
-            Err(e) => {
-                set_last_error(e.to_string());
-                std::ptr::null_mut()
-            }
-        },
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Merge a JSON changeset (from a remote peer) via Last-Write-Wins. Returns the
-/// number of documents changed, or -1 on error.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_import_changes(
-    handle: *mut TalaDbHandle,
-    changeset_json: *const c_char,
-) -> i32 {
-    clear_last_error();
-    let h = match unsafe { ptr_to_ref(handle) } {
-        Some(h) => h,
-        None => return -1,
-    };
-    let json = match unsafe { cstr_to_string(changeset_json) } {
-        Some(s) => s,
-        None => return -1,
-    };
-    let changeset: taladb_core::Changeset = match serde_json::from_str(&json) {
-        Ok(c) => c,
-        Err(e) => {
-            set_last_error(format!("changeset parse failed: {e}"));
-            return -1;
-        }
-    };
-    match h.db.import_changes(changeset) {
-        Ok(n) => n as i32,
-        Err(e) => {
-            set_last_error(e.to_string());
-            -1
-        }
-    }
-}
-
 /// User collection names (reserved `_`-prefixed excluded), as a JSON array
 /// string. Backs the sync orchestration's "sync all collections" default.
 /// NULL on error. Caller must free with `taladb_free_string`.
@@ -1060,190 +793,6 @@ pub unsafe extern "C" fn taladb_flush(handle: *mut TalaDbHandle) -> i32 {
     }
 }
 
-/// Build the per-collection structural schema map from a
-/// `{ "<collection>": { version, required, types, defaults, renames } }` JSON
-/// object.
-///
-/// Every malformed input is an error, never a silently-empty map: a schema that
-/// fails to load would leave import *unvalidated*, so a typo'd field type on
-/// React Native would accept a document that Node and the browser quarantine —
-/// and two replicas reaching different decisions on the same document is exactly
-/// the divergence the `ImportValidator` determinism contract forbids.
-fn build_schemas(schemas_json: &str) -> Result<HashMap<String, StructuralSchema>, String> {
-    let root: serde_json::Value = serde_json::from_str(schemas_json)
-        .map_err(|e| format!("schema descriptor parse failed: {e}"))?;
-    let serde_json::Value::Object(obj) = root else {
-        return Err("schema descriptor must be a JSON object".to_string());
-    };
-    let parse_field_type = |col: &str, field: &str, name: &str| match name {
-        "bool" => Ok(FieldType::Bool),
-        "int" => Ok(FieldType::Int),
-        "float" => Ok(FieldType::Float),
-        "str" => Ok(FieldType::Str),
-        "bytes" => Ok(FieldType::Bytes),
-        "array" => Ok(FieldType::Array),
-        "object" => Ok(FieldType::Object),
-        "any" => Ok(FieldType::Any),
-        other => Err(format!(
-            "collection `{col}`: unknown field type \"{other}\" for `{field}` \
-             (expected bool|int|float|str|bytes|array|object|any)"
-        )),
-    };
-    let mut out = HashMap::with_capacity(obj.len());
-    for (col, desc) in &obj {
-        let version = desc
-            .get("version")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        let required = desc
-            .get("required")
-            .and_then(serde_json::Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut types = HashMap::new();
-        if let Some(map) = desc.get("types").and_then(serde_json::Value::as_object) {
-            for (field, v) in map {
-                let name = v.as_str().ok_or_else(|| {
-                    format!("collection `{col}`: schema type for `{field}` must be a string")
-                })?;
-                types.insert(field.clone(), parse_field_type(col, field, name)?);
-            }
-        }
-        let defaults = desc
-            .get("defaults")
-            .and_then(serde_json::Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), json_to_value(v)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let renames = desc
-            .get("renames")
-            .and_then(serde_json::Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.insert(
-            col.clone(),
-            StructuralSchema {
-                version,
-                required,
-                types,
-                defaults,
-                renames,
-            },
-        );
-    }
-    Ok(out)
-}
-
-/// Merge a JSON changeset through a tolerant structural validator built from
-/// `schemas_json`. Returns a JSON `{ "applied", "skipped", "quarantined" }`
-/// string, or NULL on error. Caller must free with `taladb_free_string`.
-///
-/// # Safety
-/// `handle` must be a live handle; `changeset_json` / `schemas_json` valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_import_changes_validated(
-    handle: *mut TalaDbHandle,
-    changeset_json: *const c_char,
-    schemas_json: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-    let h = match unsafe { ptr_to_ref(handle) } {
-        Some(h) => h,
-        None => return std::ptr::null_mut(),
-    };
-    let (Some(cs), Some(sj)) = (unsafe { cstr_to_string(changeset_json) }, unsafe { cstr_to_string(schemas_json) })
-    else {
-        return std::ptr::null_mut();
-    };
-    let changeset: taladb_core::Changeset = match serde_json::from_str(&cs) {
-        Ok(c) => c,
-        Err(e) => {
-            set_last_error(format!("changeset parse failed: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-    let schemas = match build_schemas(&sj) {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(e);
-            return std::ptr::null_mut();
-        }
-    };
-    let validator = match SchemaValidator::try_new(schemas) {
-        Ok(v) => Arc::new(v),
-        Err(e) => {
-            set_last_error(e.to_string());
-            return std::ptr::null_mut();
-        }
-    };
-    match h.db.import_changes_validated(changeset, validator) {
-        Ok(report) => {
-            let json = serde_json::json!({
-                "applied": report.applied,
-                "skipped": report.skipped,
-                "quarantined": report.quarantined,
-            });
-            to_cstring(json.to_string())
-        }
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Documents set aside in `collection`'s quarantine table, as a JSON array of
-/// `{ document, reason, changedAt }`. NULL on error. Free with `taladb_free_string`.
-///
-/// # Safety
-/// `handle` must be a live handle; `collection` a valid C string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn taladb_quarantined(
-    handle: *mut TalaDbHandle,
-    collection: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-    let h = match unsafe { ptr_to_ref(handle) } {
-        Some(h) => h,
-        None => return std::ptr::null_mut(),
-    };
-    let Some(col) = (unsafe { cstr_to_string(collection) }) else {
-        return std::ptr::null_mut();
-    };
-    match h.db.quarantined(&col) {
-        Ok(recs) => {
-            let arr: Vec<serde_json::Value> = recs
-                .into_iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "document": doc_to_json(&r.document),
-                        "reason": r.reason,
-                        "changedAt": r.changed_at,
-                    })
-                })
-                .collect();
-            to_cstring(serde_json::Value::Array(arr).to_string())
-        }
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Index management
 // ---------------------------------------------------------------------------
 
 /// Create a secondary index on `field`. No-op if already exists.
@@ -1717,37 +1266,6 @@ fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-fn parse_write_origin(origin: &str) -> Option<WriteOrigin> {
-    match origin {
-        "local" => Some(WriteOrigin::Local),
-        "remote" => Some(WriteOrigin::AuthoritativeRemote),
-        _ => None,
-    }
-}
-
-/// Parse a JSON object into a [`Document`], **honouring `_id`**.
-///
-/// [`json_to_fields`] deliberately drops `_id` (the engine mints its own ULID on
-/// insert). Replication needs the opposite: the id *is* the primary key, and it is
-/// what makes an upsert idempotent. Returns `None` if `_id` is absent or not a
-/// valid ULID — callers must treat that as an error, never skip the row.
-fn json_to_doc(v: &serde_json::Value) -> Option<Document> {
-    let obj = v.as_object()?;
-    let id = Ulid::from_string(obj.get("_id")?.as_str()?).ok()?;
-    let fields = obj
-        .iter()
-        .filter(|(k, _)| k.as_str() != "_id")
-        .map(|(k, v)| (k.clone(), json_to_value(v)))
-        .collect();
-    Some(Document::with_id(id, fields))
-}
-
-/// Parse one document from JSON into engine fields, dropping any `_id` (the
-/// engine mints its own).
-///
-/// Returns `None` for anything that is not a JSON object. Callers that report
-/// per-document context (`taladb_insert_many` names the offending index) set
-/// their own message; the plain document path is covered here.
 fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = v.as_object()?;
@@ -2396,14 +1914,28 @@ mod tests {
     }
 
     #[test]
-    fn open_with_config_rejects_invalid_http_endpoint() {
+    fn open_with_config_ignores_unknown_blocks() {
+        // The `webhook` block belongs to the TypeScript client, which reads the
+        // same config object. This binding must skip it, not reject the open.
+        let dir = tempfile::tempdir().unwrap();
+        let path = CString::new(dir.path().join("cfg.db").to_str().unwrap()).unwrap();
+        let config = CString::new(
+            r#"{"durability":{"flush_every_write":false},"webhook":{"enabled":true,"endpoint":"https://x.test/h"}}"#,
+        )
+        .unwrap();
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), config.as_ptr()) };
+        assert!(!handle.is_null());
+        unsafe { taladb_close(handle) };
+    }
+
+    #[test]
+    fn open_with_config_rejects_malformed_json() {
         let path = CString::new("unused.db").unwrap();
-        let config =
-            CString::new(r#"{"sync":{"enabled":true,"endpoint":"file:///not-http"}}"#).unwrap();
+        let config = CString::new("{not json").unwrap();
         let handle = unsafe { taladb_open_with_config(path.as_ptr(), config.as_ptr()) };
         assert!(handle.is_null());
         let error = unsafe { CStr::from_ptr(taladb_last_error()) }.to_string_lossy();
-        assert!(error.contains("must start with http:// or https://"));
+        assert!(error.contains("invalid config JSON"), "{error}");
     }
 
     // -----------------------------------------------------------------------

@@ -4,18 +4,19 @@ import type {
   CollectionOptions,
   Document,
   TalaDB,
-  SyncAdapter,
-  SyncOptions,
   SyncSchema,
-  QuarantinedDocument,
   AggregatePipeline,
   Update,
   Filter,
-  WriteOrigin,
 } from './types';
 import { loadConfig, validateConfig } from './config';
-import type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
-import { runSync, unsupportedSync, type SyncHandle } from './sync';
+import type { TalaDbConfig, DurabilityConfig } from './config';
+import {
+  createWebhookDispatcher,
+  wrapCollectionWithWebhook,
+  type WebhookConfig,
+  type WebhookDispatcher,
+} from './webhook';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
 export type {
@@ -37,46 +38,19 @@ export type {
   HybridSearchOptions,
   AggregateStage,
   AggregatePipeline,
-  SyncAdapter,
-  SyncOptions,
-  SyncResult,
-  SyncDirection,
-  SerializedChangeset,
-  WriteOrigin,
-  CursorSyncAdapter,
-  PullResult,
 } from './types';
 
-export { HttpSyncAdapter } from './http-adapter';
 export { deriveDocId } from './derive-id';
 
-// --------------- Replication (coverage-first) ---------------
 export {
-  ReplicationCoordinator,
-  REPLICA_SCOPE_FIELD,
-  REPLICA_REVISION_FIELD,
-  type CoordinatorOptions,
-  type BridgeResult,
-} from './replication/coordinator';
-export {
-  CoverageStore,
-  COVERAGE_COLLECTION,
-  coverageKey,
-  isAuthoritative,
-  progress,
-  rowsApplied,
-  type CoverageKey,
-  type CoverageState,
-} from './replication/coverage';
-export { createRestSource, type RestSourceOptions } from './replication/rest';
-export type {
-  BootstrapPage,
-  BootstrapRequest,
-  BridgeQuery,
-  DeltaPage,
-  RemoteKey,
-  ReplicationSource,
-} from './replication/source';
+  createWebhookDispatcher,
+  validateWebhookConfig,
+  type WebhookConfig,
+  type WebhookDispatcher,
+  type WebhookEvent,
+  type WebhookOp,
+  type WebhookStats,
+} from './webhook';
 
 // ============================================================
 // Validation
@@ -267,12 +241,6 @@ export function applySchema<T extends Document>(
     return { ...doc, _v: targetVersion };
   }
 
-  /** As {@link stamp}, but for writes that carry their own `_id` (replication). */
-  function stampDoc(doc: T): T {
-    if (!stampVersion || (doc as Document)._v !== undefined) return doc;
-    return { ...doc, _v: targetVersion };
-  }
-
   /**
    * `$set` (and, only under `allowFieldRemoval`, `$unset`) that turns `original`
    * into `migrated`, ignoring `_id`.
@@ -429,44 +397,6 @@ export function applySchema<T extends Document>(
           return col.insertMany(docs.map(stamp));
         }
       : col.insertMany.bind(col),
-    // Rows arriving from a remote origin are validated like any other write. This
-    // is the "parse, don't assert" boundary: the compile-time generic and the
-    // runtime schema check have to be the same seam, or a malformed server
-    // response walks straight into a typed collection.
-    replaceManyWithIds: wrapWrites
-      ? async (docs, origin) => {
-          if (origin !== 'remote') {
-            docs.forEach((doc, i) => assertWritableDocument(doc, `replaceManyWithIds[${i}]`));
-            if (targetVersion > 0) {
-              throw new Error(
-                'local replaceManyWithIds is disabled on versioned collections; ' +
-                  'use updateOne/updateMany so schema-version guards are atomic',
-              );
-            }
-          }
-          if (schema) docs.forEach((doc, i) => {
-            const { _replica_scope, _remote_rev, ...schemaDoc } = doc as T & {
-              _replica_scope?: unknown;
-              _remote_rev?: unknown;
-            };
-            void _replica_scope;
-            void _remote_rev;
-            parseWrite(schemaDoc, `replaceManyWithIds[${i}]`);
-          });
-          return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
-        }
-      : col.replaceManyWithIds.bind(col),
-    deleteManyWithIds: stampVersion
-      ? async (ids, origin) => {
-          if (origin !== 'remote') {
-            throw new Error(
-              'local deleteManyWithIds is disabled on versioned collections; ' +
-                'use deleteOne/deleteMany so schema-version guards are atomic',
-            );
-          }
-          return col.deleteManyWithIds(ids, origin);
-        }
-      : col.deleteManyWithIds.bind(col),
     updateOne: wrapWrites
       ? async (filter, update) => {
           assertSafeUpdate(update);
@@ -557,7 +487,7 @@ export function applySchema<T extends Document>(
   };
 }
 
-export type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
+export type { TalaDbConfig, DurabilityConfig } from './config';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -702,8 +632,6 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
     const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc),
       insertMany: async (docs) => col.insertMany(docs),
-      replaceManyWithIds: async (docs, origin = 'local') => col.replaceManyWithIds(docs, origin),
-      deleteManyWithIds: async (ids, origin = 'local') => col.deleteManyWithIds(ids, origin),
       find: async (filter?) => col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
@@ -752,20 +680,12 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
-  // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
-  // internal SyncHandle, not part of the public interface) doesn't trip the
-  // excess-property check. Structurally still a TalaDB.
-  const handle = {
+  const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => {},
     close: async () => {},
-    exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections) as string,
-    importChanges: async (changeset: string) => db.importChanges(changeset) as number,
-    listCollectionNames: async () => db.listCollectionNames() as string[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options),
   };
-  return handle satisfies TalaDB;
+  return handle;
 }
 
 async function createBrowserDB(
@@ -833,17 +753,6 @@ async function createBrowserDB(
         return JSON.parse(json) as string[];
       },
 
-      replaceManyWithIds: async (docs, origin = 'local') => {
-        const json = await proxy.send<string>('replaceManyWithIds', {
-          collection: name, docsJson: s(docs), origin,
-        });
-        return JSON.parse(json) as string[];
-      },
-
-      deleteManyWithIds: (ids, origin = 'local') =>
-        proxy.send<number>('deleteManyWithIds', {
-          collection: name, idsJson: s(ids), origin,
-        }),
 
       find: async (filter?) => {
         const json = await proxy.send<string>('find', {
@@ -1086,8 +995,6 @@ async function createBrowserDB(
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
     flush: async () => { await proxy.send<void>('flush'); },
-    syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
-    flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
     close: async () => {
       channel?.close();
       try {
@@ -1097,24 +1004,8 @@ async function createBrowserDB(
         proxy.abort(new Error('taladb worker closed'));
       }
     },
-    // All engine work (export scan, LWW merge) runs inside the worker, off the
-    // main thread — a sync pass never blocks rendering, whatever its size.
-    exportChanges: (collections: string[], sinceMs: number) =>
-      proxy.send<string>('exportChangeset', { collectionsJson: JSON.stringify(collections), sinceMs }),
-    importChanges: (changeset: string) =>
-      proxy.send<number>('importChangeset', { changesetJson: changeset }),
-    importChangesValidated: async (changeset: string, schemasJson: string) =>
-      JSON.parse(await proxy.send<string>('importChangesetValidated', { changesetJson: changeset, schemasJson })) as {
-        applied: number;
-        skipped: number;
-        quarantined: number;
-      },
     listCollectionNames: async () =>
       JSON.parse(await proxy.send<string>('listCollections')) as string[],
-    quarantined: async <T extends Document = Document>(collection: string) =>
-      JSON.parse(await proxy.send<string>('quarantined', { collection })) as QuarantinedDocument<T>[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
   if (migrations?.length) {
     // Version accessors run inside the worker, alongside the engine, so the
@@ -1167,14 +1058,6 @@ async function createNodeDB(
         col.insertAsync ? col.insertAsync(doc as Record<string, unknown>) : col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) =>
         col.insertManyAsync ? col.insertManyAsync(docs as Record<string, unknown>[]) : col.insertMany(docs as Record<string, unknown>[]),
-      replaceManyWithIds: async (docs, origin = 'local') =>
-        col.replaceManyWithIdsAsync
-          ? col.replaceManyWithIdsAsync(docs as Record<string, unknown>[], origin)
-          : col.replaceManyWithIds(docs as Record<string, unknown>[], origin),
-      deleteManyWithIds: async (ids, origin = 'local') =>
-        col.deleteManyWithIdsAsync
-          ? col.deleteManyWithIdsAsync(ids, origin)
-          : col.deleteManyWithIds(ids, origin),
       find: async (filter?) =>
         col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
@@ -1233,23 +1116,7 @@ async function createNodeDB(
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
     flush: db.flush ? async () => { db.flush(); } : undefined,
-    exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections),
-    importChanges: async (changeset: string) => db.importChanges(changeset),
-    // Feature-detected: only present when the loaded .node binary supports it,
-    // so older prebuilt binaries fall back to plain importChanges.
-    importChangesValidated: db.importChangesValidated
-      ? async (changeset: string, schemasJson: string) =>
-          db.importChangesValidated(changeset, schemasJson) as {
-            applied: number;
-            skipped: number;
-            quarantined: number;
-          }
-      : undefined,
     listCollectionNames: async () => db.listCollectionNames(),
-    quarantined: async <T extends Document = Document>(collection: string) =>
-      (db.quarantined ? db.quarantined(collection) : []) as QuarantinedDocument<T>[],
-    sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
   if (migrations?.length) {
     if (typeof db.userVersion !== 'function' || typeof db.setUserVersion !== 'function') {
@@ -1274,8 +1141,6 @@ async function createNodeDB(
 interface NativeDB {
   insert(collection: string, doc: Record<string, unknown>): string;
   insertMany(collection: string, docs: Record<string, unknown>[]): string[];
-  replaceManyWithIds(collection: string, docs: Record<string, unknown>[], origin: WriteOrigin): string[];
-  deleteManyWithIds(collection: string, ids: string[], origin: WriteOrigin): number;
   find(collection: string, filter: Record<string, unknown>): Record<string, unknown>[];
   findOne(collection: string, filter: Record<string, unknown>): Record<string, unknown> | null;
   updateOne(collection: string, filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
@@ -1347,10 +1212,6 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
     const wrapped: Collection<T> = {
       insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
       insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
-      replaceManyWithIds: async (docs, origin = 'local') =>
-        native.replaceManyWithIds(name, docs as Record<string, unknown>[], origin),
-      deleteManyWithIds: async (ids, origin = 'local') =>
-        native.deleteManyWithIds(name, ids, origin),
       find: async (filter?) => native.find(name, filter ?? {}) as T[],
       findOne: async (filter) => native.findOne(name, filter ?? {}) as T | null,
       updateOne: async (filter, update) => native.updateOne(name, filter, update),
@@ -1409,42 +1270,11 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
   // Bidirectional sync is available only when the native module exposes the
   // changeset primitives (0.9.x+ JSI HostObject). Feature-detect so an older
   // prebuilt binary degrades to a clear error instead of a hard crash.
-  const syncSurface =
-    typeof native.exportChanges === 'function' &&
-    typeof native.importChanges === 'function' &&
-    typeof native.listCollectionNames === 'function'
-      ? (() => {
-          const handle = {
-            collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
-            exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
-            importChanges: async (changeset: string) => native.importChanges!(changeset),
-            // Feature-detected: present on 0.9.2+ JSI HostObjects; when absent,
-            // runSync falls back to unvalidated importChanges.
-            importChangesValidated: native.importChangesValidated
-              ? async (changeset: string, schemasJson: string) => native.importChangesValidated!(changeset, schemasJson)
-              : undefined,
-            listCollectionNames: async () => native.listCollectionNames!(),
-            sync: (adapter: SyncAdapter, options: SyncOptions) =>
-              runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
-          };
-          return {
-            exportChanges: handle.exportChanges,
-            importChanges: handle.importChanges,
-            sync: handle.sync,
-          };
-        })()
-      : unsupportedSync('react-native');
-
   const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
     flush: native.flush ? async () => { native.flush!(); } : undefined,
-    quarantined: native.quarantined
-      ? async <T extends Document = Document>(collection: string) =>
-          native.quarantined!(collection) as QuarantinedDocument<T>[]
-      : undefined,
-    ...syncSurface,
   };
   if (migrations?.length) {
     // Feature-detected: the JSI HostObject exposes these once the native glue
@@ -1555,6 +1385,25 @@ export interface OpenDBOptions {
    */
   config?: TalaDbConfig;
   /**
+   * Outbound change webhook. Every committed mutation fires one HTTP request:
+   * `POST` on insert, `PUT` on update, `DELETE` on delete.
+   *
+   * Takes precedence over `config.webhook`. This is the only way to enable the
+   * webhook on the browser and React Native, where there is no config file to
+   * discover. Delivery is at most once — see `webhook.ts`.
+   *
+   * @example
+   * const db = await openDB('app.db', {
+   *   webhook: {
+   *     enabled: true,
+   *     endpoint: 'https://api.example.com/taladb',
+   *     headers: { Authorization: `Bearer ${token}` },
+   *     exclude_fields: ['embedding'],
+   *   },
+   * });
+   */
+  webhook?: WebhookConfig;
+  /**
    * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
    * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
    * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
@@ -1599,19 +1448,58 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
     };
   }
 
+  // One dispatcher per database, built before the platform split so every
+  // runtime gets identical webhook behaviour from identical code.
+  const webhook = createWebhookDispatcher(options?.webhook ?? resolvedConfig?.webhook);
+
   const platform = detectPlatform();
   const migrations = options?.migrations;
+  let db: TalaDB;
   switch (platform) {
     case 'browser':
       // Browser encryption is applied inside the OPFS worker (AES-GCM-256, salt
       // in an OPFS sidecar). The worker fails closed if OPFS is unavailable, so
       // an encrypted DB is never silently downgraded to a plaintext fallback.
-      return createBrowserDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createBrowserDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      break;
     case 'react-native':
       if (options?.passphrase !== undefined) {
         throw new Error('On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted');
       }
-      return createNativeDB(dbName, migrations);
-    case 'node':         return createNodeDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createNativeDB(dbName, migrations);
+      break;
+    case 'node':
+      db = await createNodeDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      break;
   }
+  return webhook ? attachWebhook(db, webhook) : db;
+}
+
+/**
+ * Decorate a platform database so every collection reports its writes, and
+ * `close()` drains the queue first.
+ *
+ * Wrapping here rather than inside each of the four platform adapters is
+ * deliberate: it is the single seam every runtime already passes through, so
+ * webhook behaviour cannot drift between Node, the browser worker, the browser
+ * in-memory fallback, and React Native — which is exactly how the previous
+ * Rust-side implementation ended up with three variants and one runtime
+ * (the Safari no-SharedWorker fallback) silently supporting none.
+ */
+function attachWebhook(db: TalaDB, webhook: WebhookDispatcher): TalaDB {
+  return {
+    ...db,
+    collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>) {
+      const col = db.collection<T>(name, options);
+      return wrapCollectionWithWebhook(col, name, webhook) as Collection<T>;
+    },
+    webhookStats: () => webhook.stats(),
+    flushWebhook: (timeoutMs?: number) => webhook.flush(timeoutMs),
+    async close() {
+      // Best-effort drain before teardown: an event queued by the last write
+      // has nowhere to go once the handle is gone.
+      await webhook.flush();
+      await db.close();
+    },
+  };
 }

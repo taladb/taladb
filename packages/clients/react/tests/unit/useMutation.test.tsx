@@ -1,168 +1,139 @@
 /**
- * Unit tests for useMutation — the write path of scoped replication.
+ * Unit tests for useMutation — the local write hook.
  *
  * Behaviours under test:
- *   - writes local first (insert/update/delete), then drains via push
+ *   - insert / update / delete reach the collection
  *   - update translates { set } to a $set update
- *   - pending reflects an in-flight write
- *   - on drain failure: retries, surfaces error, and does NOT roll back local
- *   - auth is resolved per drain pass (send-time)
- *   - drainOnMount flushes on mount
- *   - missing endpoint throws
+ *   - pending reflects an in-flight write and always clears
+ *   - a failing write surfaces on `error` rather than throwing to render
+ *   - mutateAsync rejects so a caller can await and handle it
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { TalaDBProvider } from '../../src/context'
-import { ReplicationProvider, type ReplicationConfig } from '../../src/replication/config'
 import { useMutation } from '../../src/useMutation'
-import { __resetInflight, setSleep } from '../../src/replication/engine'
-import { createSyncMockDB } from '../helpers/mockSyncDB'
+import { createMockDB } from '../helpers/mockCollection'
 import type { TalaDB } from 'taladb'
 
-beforeEach(() => {
-  __resetInflight()
-  setSleep(async () => {})
-})
-
-const noopFetch = vi.fn() as unknown as typeof fetch
-
-function makeWrapper(db: TalaDB, providerProps: Partial<ReplicationConfig> = {}) {
+function makeWrapper(db: TalaDB) {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <TalaDBProvider db={db}>
-        <ReplicationProvider endpoint="/api/sync" fetch={noopFetch} {...providerProps}>
-          {children}
-        </ReplicationProvider>
-      </TalaDBProvider>
-    )
+    return <TalaDBProvider db={db}>{children}</TalaDBProvider>
   }
 }
 
-describe('useMutation — local-first write then push', () => {
-  it('inserts locally, then drains via a push pass', async () => {
-    const { db, sync } = createSyncMockDB()
-    const col = db.collection('orders')
-    const insertSpy = vi.spyOn(col, 'insert')
-    const { result } = renderHook(
-      () => useMutation({ collection: 'orders', drainOnMount: false }),
-      { wrapper: makeWrapper(db) },
-    )
-    await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { item: 'A' } })
+describe('useMutation', () => {
+  it('inserts through the collection', async () => {
+    const { db, getHandle } = createMockDB()
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
     })
-    expect(insertSpy).toHaveBeenCalledWith({ item: 'A' })
-    expect(sync).toHaveBeenCalledTimes(1)
-    expect(sync.mock.calls[0][1]).toMatchObject({ collections: ['orders'], direction: 'push' })
+
+    await act(async () => {
+      await result.current.mutateAsync({ type: 'insert', doc: { sku: 'A1' } })
+    })
+
+    expect(getHandle('orders').docs()).toContainEqual(expect.objectContaining({ sku: 'A1' }))
   })
 
-  it('translates an update to a $set', async () => {
-    const { db } = createSyncMockDB()
-    const col = db.collection('orders')
-    const updateSpy = vi.spyOn(col, 'updateOne')
-    const { result } = renderHook(
-      () => useMutation({ collection: 'orders', drainOnMount: false }),
-      { wrapper: makeWrapper(db) },
-    )
+  it('translates { set } into a $set update', async () => {
+    const { db, getHandle } = createMockDB()
+    const updateOne = vi.spyOn(getHandle('orders').collection, 'updateOne')
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
+    })
+
     await act(async () => {
       await result.current.mutateAsync({
         type: 'update',
-        where: { _id: '1' },
+        where: { _id: 'o1' },
         set: { status: 'shipped' },
       })
     })
-    expect(updateSpy).toHaveBeenCalledWith({ _id: '1' }, { $set: { status: 'shipped' } })
+
+    expect(updateOne).toHaveBeenCalledWith({ _id: 'o1' }, { $set: { status: 'shipped' } })
   })
 
-  it('deletes locally then drains', async () => {
-    const { db, sync } = createSyncMockDB()
-    const col = db.collection('orders')
-    const deleteSpy = vi.spyOn(col, 'deleteOne')
-    const { result } = renderHook(
-      () => useMutation({ collection: 'orders', drainOnMount: false }),
-      { wrapper: makeWrapper(db) },
-    )
+  it('deletes through the collection', async () => {
+    const { db, getHandle } = createMockDB()
+    const deleteOne = vi.spyOn(getHandle('orders').collection, 'deleteOne')
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
+    })
+
     await act(async () => {
-      await result.current.mutateAsync({ type: 'delete', where: { _id: '1' } })
+      await result.current.mutateAsync({ type: 'delete', where: { _id: 'o1' } })
     })
-    expect(deleteSpy).toHaveBeenCalledWith({ _id: '1' })
-    expect(sync).toHaveBeenCalledTimes(1)
-  })
-})
 
-describe('useMutation — pending', () => {
-  it('is true while a write is in flight, false after', async () => {
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
-    const { db, sync } = createSyncMockDB()
-    sync.mockImplementation(async () => {
-      await gate
-      return { pushed: 0, pulled: 0, cursor: 0 }
+    expect(deleteOne).toHaveBeenCalledWith({ _id: 'o1' })
+  })
+
+  it('surfaces a write failure on `error` without throwing from mutate', async () => {
+    const { db, getHandle } = createMockDB()
+    vi.spyOn(getHandle('orders').collection, 'insert').mockRejectedValue(new Error('disk full'))
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
     })
-    const { result } = renderHook(
-      () => useMutation({ collection: 'orders', drainOnMount: false }),
-      { wrapper: makeWrapper(db) },
-    )
-    let p!: Promise<void>
+
+    // `mutate` is fire-and-forget: it must not produce an unhandled rejection.
     act(() => {
-      p = result.current.mutateAsync({ type: 'insert', doc: { item: 'A' } })
+      result.current.mutate({ type: 'insert', doc: { sku: 'A1' } })
     })
-    await waitFor(() => expect(result.current.pending).toBe(true))
+
+    await waitFor(() => {
+      expect(result.current.error).toBeInstanceOf(Error)
+    })
+    expect((result.current.error as Error).message).toBe('disk full')
+  })
+
+  it('rejects from mutateAsync so an awaiting caller can handle it', async () => {
+    const { db, getHandle } = createMockDB()
+    vi.spyOn(getHandle('orders').collection, 'insert').mockRejectedValue(new Error('nope'))
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
+    })
+
     await act(async () => {
-      release()
-      await p
+      await expect(
+        result.current.mutateAsync({ type: 'insert', doc: { sku: 'A1' } }),
+      ).rejects.toThrow('nope')
+    })
+  })
+
+  it('clears `pending` after a failed write, not just a successful one', async () => {
+    const { db, getHandle } = createMockDB()
+    vi.spyOn(getHandle('orders').collection, 'insert').mockRejectedValue(new Error('nope'))
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
+    })
+
+    act(() => {
+      result.current.mutate({ type: 'insert', doc: { sku: 'A1' } })
+    })
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull()
     })
     expect(result.current.pending).toBe(false)
   })
-})
 
-describe('useMutation — durable write-behind', () => {
-  it('retries the drain, surfaces the error, and does not roll back the local write', async () => {
-    const getAuth = vi.fn(async () => ({ Authorization: 'Bearer x' }))
-    const { db, sync } = createSyncMockDB()
-    sync.mockImplementation(async () => {
-      throw new Error('offline')
+  it('resets a previous error on the next successful write', async () => {
+    const { db, getHandle } = createMockDB()
+    const insert = vi.spyOn(getHandle('orders').collection, 'insert')
+    insert.mockRejectedValueOnce(new Error('transient'))
+
+    const { result } = renderHook(() => useMutation({ collection: 'orders' }), {
+      wrapper: makeWrapper(db as unknown as TalaDB),
     })
-    const col = db.collection('orders')
-    const insertSpy = vi.spyOn(col, 'insert')
-    const { result } = renderHook(
-      () => useMutation({ collection: 'orders', drainOnMount: false }),
-      { wrapper: makeWrapper(db, { getAuth }) },
-    )
+
+    act(() => {
+      result.current.mutate({ type: 'insert', doc: { sku: 'A1' } })
+    })
+    await waitFor(() => expect(result.current.error).not.toBeNull())
+
     await act(async () => {
-      await expect(
-        result.current.mutateAsync({ type: 'insert', doc: { item: 'A' } }),
-      ).rejects.toThrow('offline')
+      await result.current.mutateAsync({ type: 'insert', doc: { sku: 'A2' } })
     })
-    // Local write happened exactly once and was never undone.
-    expect(insertSpy).toHaveBeenCalledTimes(1)
-    // 1 attempt + 3 backoff retries.
-    expect(sync).toHaveBeenCalledTimes(4)
-    // Auth resolved at send time — once per pass.
-    expect(getAuth).toHaveBeenCalledTimes(4)
-    await waitFor(() => expect(result.current.error).toBeTruthy())
-  })
-})
-
-describe('useMutation — drainOnMount', () => {
-  it('flushes a push pass on mount by default', async () => {
-    const { db, sync } = createSyncMockDB()
-    renderHook(() => useMutation({ collection: 'orders' }), { wrapper: makeWrapper(db) })
-    await waitFor(() => expect(sync).toHaveBeenCalled())
-    expect(sync.mock.calls[0][1]).toMatchObject({ collections: ['orders'], direction: 'push' })
-  })
-})
-
-describe('useMutation — misconfiguration', () => {
-  it('throws when there is no endpoint', () => {
-    const { db } = createSyncMockDB()
-    const onlyDb = ({ children }: { children: ReactNode }) => (
-      <TalaDBProvider db={db}>{children}</TalaDBProvider>
-    )
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(() =>
-      renderHook(() => useMutation({ collection: 'orders' }), { wrapper: onlyDb }),
-    ).toThrow(/endpoint/)
-    spy.mockRestore()
+    expect(result.current.error).toBeNull()
   })
 })

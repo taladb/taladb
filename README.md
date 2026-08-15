@@ -112,7 +112,6 @@ pnpm add @taladb/react               # optional — the same hooks work in React
 
 ```bash
 pnpm add taladb @taladb/node                 # required
-pnpm add @taladb/sync-mongodb mongodb        # optional — sync to MongoDB (server-side only)
 ```
 
 | Package | Web | Mobile (RN) | Node | Role |
@@ -122,10 +121,7 @@ pnpm add @taladb/sync-mongodb mongodb        # optional — sync to MongoDB (ser
 | `@taladb/react-native` | — | ✅ required | — | React Native (JSI) binding |
 | `@taladb/node` | — | — | ✅ required | Node.js native binding |
 | `@taladb/react` | ⭕ optional | ⭕ optional | — | React / React Native hooks |
-| `@taladb/sync-mongodb` | — | — | ⭕ optional | MongoDB sync ([server-side only](https://taladb.dev/guide/bidirectional-sync#mongodb-adapter)) |
 | `@taladb/cloudflare` | — | — | ⭕ optional | Cloudflare Workers deploy target |
-
-Bidirectional HTTP sync (`HttpSyncAdapter`) ships inside `taladb` — no extra install. Database sync adapters like `@taladb/sync-mongodb` hold DB credentials and run **server-side only**; a web or mobile app syncs through your own API, never a direct database connection.
 
 ### Quick start
 
@@ -295,6 +291,26 @@ const unsub = articles.subscribe({ category: 'support' }, (docs) => {
 unsub()
 ```
 
+### Change webhook
+
+TalaDB does not replicate. When a backend needs to know about local writes, every
+committed mutation can fire one HTTP request — `POST` on insert, `PUT` on update,
+`DELETE` on delete:
+
+```ts
+const db = await openDB('app.db', {
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${token}` },
+    exclude_fields: ['embedding'],   // keep 768-float vectors out of the payload
+  },
+})
+```
+
+Identical on all three runtimes. Delivery is at most once — it is a notification
+channel, not a replication log. See [/api/webhook](https://taladb.dev/api/webhook).
+
 ## Documentation
 
 Full documentation is at **[taladb.dev](https://taladb.dev)**.
@@ -314,6 +330,7 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 | Migrations | [/api/migrations](https://taladb.dev/api/migrations) |
 | Encryption | [/api/encryption](https://taladb.dev/api/encryption) |
 | Live queries | [/api/live-queries](https://taladb.dev/api/live-queries) |
+| Change webhook | [/api/webhook](https://taladb.dev/api/webhook) |
 
 ## Development
 

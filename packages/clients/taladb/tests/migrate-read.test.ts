@@ -510,18 +510,6 @@ describe('version drift: an old client must not narrow a newer document', () => 
     expect(doc._v).toBe(2);
   });
 
-  it('rejects replacing the same downcast compatibility view', async () => {
-    const replaceManyWithIds = vi.fn(async () => ['u1']);
-    const base = { ...stub([{ _id: 'u1', _v: 2, fullName: 'Ada' } as DriftDoc]), replaceManyWithIds } as Collection<DriftDoc>;
-    const col = applySchema(base, {
-      syncSchema: { version: 1 },
-      downgradeDocument: (d) => ({ name: d.fullName } as DriftDoc),
-    });
-    const [view] = await col.find();
-    await expect(col.replaceManyWithIds([view], 'local')).rejects.toThrow(/read-only compatibility view/);
-    expect(replaceManyWithIds).not.toHaveBeenCalled();
-  });
-
   it('guards updates and deletes so an old client cannot mutate a future document', async () => {
     const updateOne = vi.fn(async () => false);
     const deleteOne = vi.fn(async () => false);
@@ -534,20 +522,6 @@ describe('version drift: an old client must not narrow a newer document', () => 
     expect(JSON.stringify(updateOne.mock.calls[0]?.[0])).toContain('$lte');
   });
 
-  it('rejects local bulk replacement/deletion on versioned collections', async () => {
-    const replaceManyWithIds = vi.fn(async () => ['u1']);
-    const deleteManyWithIds = vi.fn(async () => 1);
-    const base = { ...stub([]), replaceManyWithIds, deleteManyWithIds } as Collection<DriftDoc>;
-    const col = applySchema(base, { syncSchema: { version: 1 } });
-    await expect(
-      col.replaceManyWithIds([{ _id: 'u1', name: 'Ada' } as DriftDoc], 'local'),
-    ).rejects.toThrow(/disabled on versioned collections/);
-    await expect(col.deleteManyWithIds(['u1'], 'local')).rejects.toThrow(
-      /disabled on versioned collections/,
-    );
-    expect(replaceManyWithIds).not.toHaveBeenCalled();
-    expect(deleteManyWithIds).not.toHaveBeenCalled();
-  });
 
   it('allows remote replication bulk writes on versioned collections', async () => {
     const replaceManyWithIds = vi.fn(async () => ['u1']);

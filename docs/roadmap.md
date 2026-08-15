@@ -15,16 +15,36 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### Sync
+### Change webhook
 
-- 🟡 **Bidirectional sync — React Native** *(implemented, pending on-device verification)* — the changeset primitives (`exportChanges` / `importChanges` / `listCollectionNames`) are now wired through the full stack: Rust FFI → C header → JSI HostObject (C++) → the TS adapter, which feature-detects them and enables the same `db.sync()` used on Node/web (falling back to a clear error on older binaries). The Rust FFI and TS layers are compiled/typechecked; **the JSI native glue has not yet been built or run on a device/simulator** — that verification (iOS Simulator + Android emulator) is the remaining gate before it's marked shipped. Still to follow: an `AppState`-driven sync example and background-sync integration docs (iOS BGTaskScheduler / Android WorkManager via e.g. `react-native-background-fetch`) — mobile background execution is OS-scheduled, so the guide will teach "opportunistic background catch-up, guaranteed reconciliation on launch".
-- 🟡 **Schema evolution + migrations on React Native — pending on-device verification** — the validate-on-import path (`importChangesValidated` / `quarantined`) and the `openDB({ migrations })` version accessors (`userVersion` / `setUserVersion`) are now wired through the full React Native stack — Rust FFI, C header, and the JSI HostObject (C++) — and feature-detected by the TS client so an older native module degrades gracefully. As with RN bidirectional sync, the Rust and TS layers compile/typecheck but the JSI native glue has **not** yet been built or exercised on a device or simulator; that verification (iOS + Android) is the remaining gate. *(Read-time `migrateDocument` + `persistMigrations`, structural `syncSchema.renames`, validate-on-import, and `_v` upgrades ship on browser + Node — see [Schema & Sync Standards](/guide/schema-and-sync-standards).)*
-- **Application schema migrations — React Native + optional transactional mode** — expose the `userVersion`/`setUserVersion` accessors on the React Native JSI HostObject (the Rust FFI is already in place), and add an optional whole-batch-atomic mode once a multi-write transaction primitive exists in the high-level API. *(`openDB({ migrations })` already ships on browser + Node with per-version checkpointing — see [Migrations](/api/migrations).)*
-- **Server-assigned sync sequence cursor** — pull filtering currently relies on `changed_at` timestamps (see the two-watermark design in the guide); a server-assigned monotonic sequence would make pull cursors fully robust against clock skew between peers. Requires a small `SyncAdapter` contract extension.
-- **HTTP sync — configurable push batching & pull interval** — today neither direction is coalescible. The Rust-core `SyncConfig` / `HttpSyncHook` (see [HTTP Push Sync](/guide/http-sync)) POSTs on *every* committed write with no debounce or flush window — the only existing timing knob is per-request retry backoff (200/400/800 ms × 3), which is unrelated. The JS `HttpSyncAdapter` (see [Bidirectional Sync](/guide/bidirectional-sync)) has no polling loop of its own at all; every guide example hand-rolls `setInterval(syncNow, 30_000)`, and `@taladb/next/client`'s `<SyncProvider interval={30_000}>` just wraps that same pattern one layer up rather than exposing it from core. Proposed:
-  - Push: a `flushMs` option on `SyncConfig`, mirroring the existing storage-layer `durability.flushMs` knob — coalesce writes inside the window into one POST instead of one-per-write. Default `flushMs: 0` keeps today's immediate behavior so this is additive, not breaking.
-  - Pull: a `pollMs` option so `db.sync()` (or a new `db.startSync()`) owns a cancellable, cron-like interval loop instead of every app re-implementing `setInterval`. No default exists anywhere today — ship one (30 s matches the guide's own example and `SyncProvider`'s default) so `pollMs` works unset.
-- Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.) `@taladb/sync-mongodb` shipped; `@taladb/sync-firestore` and `@taladb/sync-dynamodb` are next, same `SyncAdapter` interface.
+The [change webhook](/api/webhook) shipped in **v0.11.0**, replacing the sync
+engine. Remaining work:
+
+- **Coalescing.** Delivery fires one request per affected document, with no
+  debounce or batch window; the only timing knob is per-request retry backoff
+  (200/400/800 ms × 3), which is unrelated. A `batch: { maxEvents, maxWaitMs }`
+  option would let a bulk import send one request instead of five hundred.
+- **A durable outbox, opt-in.** Delivery is at most once — a crash or a closed
+  tab drops in-flight events. Some applications genuinely need at-least-once;
+  those need events written to a reserved collection inside the mutation's own
+  transaction and drained separately. Deliberately opt-in: it re-adds the
+  per-write cost that removing tombstones just reclaimed.
+- **Multi-tab write election.** Removing the changeset machinery also removed
+  cross-tab write merging in the browser IndexedDB-fallback path (see the
+  [web guide](/guide/web#multi-tab-behaviour)). A Web-Locks-based leader
+  election that routes writes through the primary tab would restore it without
+  reintroducing a merge protocol.
+
+### Schema evolution on React Native — pending on-device verification
+
+The `openDB({ migrations })` version accessors (`userVersion` / `setUserVersion`)
+are wired through the full React Native stack — Rust FFI, C header, and the JSI
+HostObject (C++) — and feature-detected by the TS client so an older native
+module degrades gracefully. The Rust and TS layers compile and typecheck, but the
+JSI native glue has **not** been built or exercised on a device or simulator;
+that verification (iOS + Android) is the remaining gate. Read-time
+`migrateDocument` + `persistMigrations` and `_v` upgrades ship on browser + Node
+— see [Schema Validation](/api/schema).
 
 ### Compound indexes — remaining work
 
@@ -44,17 +64,6 @@ Inspect a live database and emit TypeScript interfaces for each collection, infe
 - **`@taladb/vue`** — `useFind` and `useFindOne` composables built on Vue's `ref` + `watchEffect`, mirroring the `@taladb/react` hook API.
 
 Both packages are thin wrappers over the same event model used by the React hooks.
-
-### First-party sync backend adapters
-
-Thin adapter packages that implement the `SyncAdapter` interface for popular backends, so no custom server is required:
-
-- **`@taladb/sync-recached`** — uses [Recached](https://recached.dev), our sibling sync fabric, as the transport. Unlike the poll-based adapters below, this one is push-native: scoped live queries deliver changes in real time, and Recached's durable outbox provides offline queueing and exactly-once delivery, so the adapter inherits reconnect and conflict handling rather than reimplementing them. The flagship adapter for real-time, multi-user apps.
-- **`@taladb/sync-supabase`** — uses a Supabase table + Realtime channel as the changeset transport
-- **`@taladb/sync-turso`** — writes changesets to a Turso (libSQL) table; useful for Electron and server-side apps
-- **`@taladb/sync-d1`** — Cloudflare D1 table as the sync relay; pairs naturally with `@taladb/cloudflare`
-
-Each adapter handles auth, changeset serialisation, and incremental polling/push. CRDT or LWW merge is still applied client-side.
 
 ### VS Code extension
 
@@ -103,15 +112,7 @@ Run the Node and browser suites in CI on a fixed runner class per release and pu
 
 ---
 
-## 3 · Advanced sync
-
-### Sync over WebSockets
-
-The CRDT merge protocol (field-level logical clocks, `CrdtSyncAdapter`) shipped in **v0.7.11**. What remains is the transport: a reference sync server (`taladb-sync-server`) that accepts changesets over a persistent WebSocket connection and fans them out to connected peers, enabling multi-device sync without a managed cloud database. Merge logic stays client-side via `import_crdt_changes`.
-
----
-
-## 4 · Storage
+## 3 · Storage
 
 Internal improvements that improve efficiency and interoperability.
 
@@ -125,11 +126,10 @@ Set an expiry on any document at write time:
 
 - `collection.insert({ ...doc, _ttl: Date.now() + 60_000 })` — document auto-deleted after the TTL elapses
 - Background reaper runs on a configurable interval (default: 60 s in Node.js, on next open in browser)
-- Tombstone generated for TTL deletions so expiry propagates correctly through sync
 
 ---
 
-## 5 · Platform
+## 4 · Platform
 
 Expanding the runtimes TalaDB can target.
 

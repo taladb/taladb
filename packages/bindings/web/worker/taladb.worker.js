@@ -53,9 +53,6 @@
  * hybridSearch      { collection, textField, text, vectorField, vectorJson, topK, filterJson?, optionsJson? }
  * listCollections   {}                             → JSON string[]
  * compact           {}                             → null
- * compactTombstones { collection, beforeMs }       → number pruned
- * exportChangeset   { collectionsJson, sinceMs? }  → JSON changeset string
- * importChangeset   { changesetJson }              → number of applied changes
  * close             {}
  *
  * Multi-tab live queries (BroadcastChannel)
@@ -65,15 +62,13 @@
  * `"taladb:<dbName>"`.  Other tabs listening on the same channel re-trigger
  * their active `subscribe()` pollers immediately, bypassing the 300 ms tick.
  *
- * Secondary-tab write propagation
- * --------------------------------
- * Fallback (non-OPFS) tabs can also make writes that need to reach the primary
- * tab's OPFS-backed database.  After every mutating op a fallback tab exports a
- * mini-changeset (all collections, since the previous sync point) and posts it
- * as `{ type: 'taladb:secondary-write', changeset }` on the BroadcastChannel.
- * The primary (OPFS) tab receives it, calls importChangeset(), and runs the
- * normal onWriteCommitted() path — so all other tabs are notified and the OPFS
- * file stays authoritative.  LWW merge handles any concurrent edits.
+ * Fallback tabs are isolated (0.11.0)
+ * -----------------------------------
+ * A fallback tab's writes go to its own in-memory database and its own
+ * IndexedDB snapshot; they do NOT reach the primary tab's OPFS file. Merging
+ * them rode on the changeset/LWW machinery that 0.11.0 removed along with the
+ * rest of sync. `taladb:changed` still crosses tabs, so live queries stay
+ * reactive — only cross-tab write *merging* is gone.
  *
  * IndexedDB fallback (no OPFS)
  * ----------------------------
@@ -155,15 +150,6 @@ const warn = isDev ? console.warn.bind(console, '[TalaDB Worker]') : () => {};
 const WORKER_ORIGIN = typeof location !== 'undefined' ? location.origin : null;
 
 /**
- * Per-worker-instance random token. Included in every `taladb:secondary-write`
- * BroadcastChannel message so the primary tab can reject unauthenticated
- * injections that omit a token.
- */
-const SESSION_TOKEN = (typeof self.crypto !== 'undefined' && typeof self.crypto.randomUUID === 'function')
-  ? self.crypto.randomUUID()
-  : Array.from(self.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-
-/**
  * Resolving this releases the Web Lock and closes the sync handle.
  * Set inside doInit; called by the 'close' op or when the worker terminates.
  * @type {(() => void) | null}
@@ -198,12 +184,6 @@ let snapshotWriter = false;
  */
 let encrypted = false;
 
-/**
- * Timestamp (ms) of the last changeset we exported and broadcast to the
- * primary tab.  Used as `sinceMs` for the next export so we only send the
- * delta, not the entire database on every write.
- * @type {number}
- */
 // ---------------------------------------------------------------------------
 // IndexedDB helpers (used only when OPFS is unavailable)
 // ---------------------------------------------------------------------------
@@ -339,43 +319,11 @@ function applyDurability(inst) {
 }
 
 /**
- * When running as a fallback (non-OPFS) tab, export the changes made since
- * the last push and broadcast them to the primary tab for merging into OPFS.
- *
- * Uses exportChangeset with all known collections to keep the delta small.
- * The primary tab's BroadcastChannel handler calls importChangeset() and runs
- * its own onWriteCommitted(), which notifies all tabs (including this one) via
- * taladb:changed so reads stay consistent.
- */
-function pushChangesetToPrimary() {
-  if (!idbFallback || !db || !broadcastChannel || !activeDbName) return;
-  try {
-    // Collect all collection names from the current in-memory state.
-    // exportChangeset accepts a JSON array of collection names.
-    const collections = db.listCollections();
-    // Wall-clock timestamps are not safe incremental cursors: a write can be
-    // stamped before an export but commit after its snapshot. Replay is
-    // idempotent under LWW and cannot skip such a write.
-    const changeset = db.exportChangeset(collections, 0);
-    // Only broadcast if there is actually something to send.
-    const parsed = JSON.parse(changeset);
-    if (parsed.length === 0) return;
-    broadcastChannel.postMessage({ type: 'taladb:secondary-write', token: SESSION_TOKEN, changeset });
-    log(`Broadcast ${parsed.length} change(s) to primary tab`);
-  } catch (err) {
-    warn('Failed to export changeset for primary tab:', err);
-  }
-}
-
-/**
  * Notify sibling tabs of a write and schedule IDB persistence.
  * Must be called after every mutating op.
  */
 function onWriteCommitted() {
   broadcastChannel?.postMessage('taladb:changed');
-  // Fallback tab: push local changes to the primary (OPFS) tab so they are
-  // merged into the authoritative database file.
-  pushChangesetToPrimary();
   // Debounced IDB flush — keeps other tabs' fallback instances in sync via
   // BroadcastChannel + snapshotDirty reload without writing to IDB on every op.
   if (snapshotWriter) scheduleSnapshot();
@@ -450,18 +398,6 @@ async function dispatch(op, args) {
 
     case 'insertMany': {
       const result = db.insertMany(args.collection, args.docsJson);
-      onWriteCommitted();
-      return result;
-    }
-
-    case 'replaceManyWithIds': {
-      const result = db.replaceManyWithIds(args.collection, args.docsJson, args.origin);
-      onWriteCommitted();
-      return result;
-    }
-
-    case 'deleteManyWithIds': {
-      const result = db.deleteManyWithIds(args.collection, args.idsJson, args.origin);
       onWriteCommitted();
       return result;
     }
@@ -599,52 +535,6 @@ async function dispatch(op, args) {
       await flushSnapshot();
       return null;
 
-    case 'syncStatus':
-      return db.syncStatus();
-
-    case 'flushSync': {
-      const deadline = Date.now() + (args.timeoutMs ?? 5000);
-      while (db.syncPending() > 0 && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      return db.syncPending() === 0;
-    }
-
-    case 'compactTombstones':
-      // Prune tombstones older than beforeMs from a collection.
-      // Returns the count of tombstones removed.
-      return db.compactTombstones(args.collection, args.beforeMs ?? 0);
-
-    case 'exportChangeset':
-      // Export a LWW changeset for the given collections since sinceMs.
-      // Returns a JSON string the caller can POST to a sync server.
-      return db.exportChangeset(args.collectionsJson, args.sinceMs ?? 0);
-
-    case 'importChangeset': {
-      // Apply a remote changeset (JSON string from sync server) using LWW.
-      // Triggers onWriteCommitted so multi-tab peers get notified.
-      const applied = db.importChangeset(args.changesetJson);
-      if (applied > 0) onWriteCommitted();
-      return applied;
-    }
-
-    case 'importChangesetValidated': {
-      // Tolerant validated import: normalize/skip/quarantine per schema, LWW.
-      // Returns a JSON string { applied, skipped, quarantined }.
-      const reportJson = db.importChangesetValidated(args.changesetJson, args.schemasJson);
-      const report = JSON.parse(reportJson);
-      // Quarantined documents are written to the quarantine table, so a batch
-      // that only quarantines still dirties the database. Without this, the IDB
-      // fallback would never snapshot them and they would be lost on reload —
-      // the opposite of the "never dropped on the floor" guarantee.
-      if ((report.applied ?? 0) > 0 || (report.quarantined ?? 0) > 0) onWriteCommitted();
-      return reportJson;
-    }
-
-    case 'quarantined':
-      // JSON array of documents set aside by a validated import.
-      return db.quarantined(args.collection);
-
     case 'userVersion':
       // Current application migration version (backs openDB({ migrations })).
       return db.userVersion();
@@ -654,13 +544,6 @@ async function dispatch(op, args) {
       return null;
 
     case 'close':
-      // Give accepted HTTP push events a bounded opportunity to finish.
-      {
-        const deadline = Date.now() + 5000;
-        while (db.syncPending() > 0 && Date.now() < deadline) {
-          await new Promise(resolve => setTimeout(resolve, 20));
-        }
-      }
       // Flush any pending debounced snapshot before releasing the lock so
       // no writes are lost when the tab closes or navigates away.
       await flushSnapshot();
@@ -758,33 +641,13 @@ async function doInit(dbName, configJson, passphrase = null) {
         resolve();
       } else if (e.data === 'taladb:snapshot-ready' && idbFallback) {
         snapshotDirty = true;
-      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && db && !encrypted) {
-        // `!encrypted`: encrypted databases are single-tab, so there are no
-        // legitimate secondary-tab writes — accepting them would let any
-        // same-origin script inject documents into an encrypted DB without
-        // knowing the passphrase.
-        // Merge peer writes in every mode. This also makes multiple tabs
-        // converge when OPFS is entirely unavailable and every tab uses IDB.
-        // The token requirement rejects unauthenticated injection attempts that
-        // omit the SESSION_TOKEN field (not a guarantee against same-origin attackers
-        // who observe the token, but defence-in-depth against naive injection).
-        try {
-          const applied = db.importChangeset(e.data.changeset);
-          if (applied > 0) {
-            log(`Merged ${applied} change(s) from secondary tab`);
-            onWriteCommitted();
-          }
-        } catch (err) {
-          warn('Failed to import secondary-tab changeset:', err);
-        }
       }
     };
     log('BroadcastChannel opened:', `taladb:${dbName}`);
   }
 
-  // Helpers to open DB with or without sync config.
-  // Uses the config-aware constructors when configJson is provided so that
-  // HTTP push sync is wired up from the first write.
+  // Helpers to open DB with or without a config. The config-aware
+  // constructors carry durability and encryption settings.
   function openWithSnapshot(snapshot) {
     const inst = configJson
       ? WorkerDB.openWithConfigAndSnapshot(snapshot, configJson)

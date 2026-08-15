@@ -37,7 +37,7 @@ use ulid::Ulid;
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::sync::now_ms;
+use crate::time::now_ms;
 
 /// Internal table name for audit log entries.
 pub(crate) const AUDIT_TABLE: &str = "docs::_audit";

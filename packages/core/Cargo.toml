@@ -46,14 +46,11 @@ getrandom = "0.3"
 # NOTE: endpoint validation deliberately does not use the `url` crate — it pulls
 # in `idna` and its Unicode tables, which is significant permanent weight in a
 # WASM bundle. See `config::split_http_endpoint`.
-# HTTP push sync — only pulled in when the `sync-http` feature is enabled.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 
 [features]
 default      = ["config-yaml"]
 encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = ["dep:instant-distance"]
-sync-http    = ["dep:reqwest"]
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
 # Native builds turn it off (`default-features = false`) to drop serde_yaml and
 # unsafe-libyaml from the bundle. JSON config works either way.
@@ -66,6 +63,4 @@ harness = false
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3.10"
-wiremock = "0.6"
-tokio    = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 zeroize  = { version = "1.7", features = ["derive"] }

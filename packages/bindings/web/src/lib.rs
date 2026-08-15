@@ -5,12 +5,11 @@ pub use worker_db::WorkerDB;
 
 use std::sync::Arc;
 
-use std::collections::HashMap;
 
 use serde::Serialize;
 use serde_wasm_bindgen::{from_value, to_value};
 use taladb_core::{
-    Collection, Database, Document, FieldType, Filter, HnswOptions, StructuralSchema, TalaDbError,
+    Collection, Database, Filter, HnswOptions, TalaDbError,
     Update, Value, VectorMetric,
 };
 use wasm_bindgen::prelude::*;
@@ -106,35 +105,7 @@ impl TalaDBWasm {
         Ok(CollectionWasm { inner: col })
     }
 
-    /// Export changes to `collections` after `sinceMs` (exclusive) as a JSON
-    /// changeset string, for bidirectional sync. `sinceMs` is a millisecond
-    /// epoch timestamp (the persisted sync cursor).
-    #[wasm_bindgen(js_name = exportChanges)]
-    pub fn export_changes(
-        &self,
-        since_ms: f64,
-        collections: Vec<String>,
-    ) -> Result<String, JsValue> {
-        let refs: Vec<&str> = collections.iter().map(String::as_str).collect();
-        let changeset = self
-            .inner
-            .export_changes(&refs, since_ms as u64)
-            .map_err(err_to_js)?;
-        serde_json::to_string(&changeset).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    /// Merge a JSON changeset string (from a remote peer) into the local
-    /// database via Last-Write-Wins. Returns the number of documents changed.
-    #[wasm_bindgen(js_name = importChanges)]
-    pub fn import_changes(&self, changeset_json: &str) -> Result<u32, JsValue> {
-        let changeset: taladb_core::Changeset =
-            serde_json::from_str(changeset_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let n = self.inner.import_changes(changeset).map_err(err_to_js)?;
-        Ok(n as u32)
-    }
-
     /// User collection names (reserved `_`-prefixed collections excluded).
-    /// Backs the sync orchestration's "sync all collections" default.
     #[wasm_bindgen(js_name = listCollectionNames)]
     pub fn list_collection_names(&self) -> Result<Vec<String>, JsValue> {
         self.inner.list_collection_names().map_err(err_to_js)
@@ -182,40 +153,6 @@ impl CollectionWasm {
         let ids = self.inner.insert_many(items?).map_err(err_to_js)?;
         let id_strings: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    /// Upsert many documents **by caller-supplied `_id`**, in one commit.
-    ///
-    /// Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
-    /// this honours the id on each document, which is what lets replication address
-    /// a remote row by a *derived* id so repeated fetches converge on one document
-    /// instead of duplicating it.
-    ///
-    /// `origin` is `"remote"` for authoritative rows replicated in from an origin,
-    /// or `"local"` for ordinary user writes.
-    #[wasm_bindgen(js_name = replaceManyWithIds)]
-    pub fn replace_many_with_ids(&self, docs: JsValue, origin: &str) -> Result<JsValue, JsValue> {
-        let arr = js_sys::Array::from(&docs);
-        let items: Result<Vec<Document>, JsValue> = arr.iter().map(js_object_to_doc).collect();
-        let ids = self
-            .inner
-            .replace_many_with_ids(items?, parse_write_origin(origin)?)
-            .map_err(err_to_js)?;
-        let id_strings: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
-        to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    /// Delete many documents by id, in one commit. Returns the number removed.
-    #[wasm_bindgen(js_name = deleteManyWithIds)]
-    pub fn delete_many_with_ids(&self, ids: JsValue, origin: &str) -> Result<u32, JsValue> {
-        let ids: Vec<String> = from_value(ids).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let ids: Result<Vec<taladb_core::Ulid>, JsValue> =
-            ids.iter().map(|s| parse_ulid(s.as_str())).collect();
-        let n = self
-            .inner
-            .delete_many_with_ids(&ids?, parse_write_origin(origin)?)
-            .map_err(err_to_js)?;
-        Ok(n as u32)
     }
 
     /// Find documents matching the filter. Returns a JS array of plain objects.
@@ -511,52 +448,6 @@ fn js_object_to_fields(val: JsValue) -> Result<Vec<(String, Value)>, JsValue> {
     }
 }
 
-fn parse_ulid(s: &str) -> Result<taladb_core::Ulid, JsValue> {
-    taladb_core::Ulid::from_string(s).map_err(|_| {
-        JsValue::from_str(&format!(
-            "\"{s}\" is not a valid ULID. Ids for replicated rows come from \
-             deriveDocId(collection, remoteKey)."
-        ))
-    })
-}
-
-fn parse_write_origin(origin: &str) -> Result<taladb_core::WriteOrigin, JsValue> {
-    match origin {
-        "local" => Ok(taladb_core::WriteOrigin::Local),
-        "remote" => Ok(taladb_core::WriteOrigin::AuthoritativeRemote),
-        other => Err(JsValue::from_str(&format!(
-            "unknown write origin \"{other}\"; expected \"local\" or \"remote\""
-        ))),
-    }
-}
-
-/// Parse a JS object into a [`Document`], **honouring `_id`**.
-///
-/// [`js_object_to_fields`] keeps `_id` only as an ordinary field (the engine mints
-/// its own ULID on insert). Replication needs the id to *be* the primary key —
-/// that is what makes an upsert idempotent — so a missing or malformed `_id` is a
-/// hard error here rather than a silently-generated new row.
-fn js_object_to_doc(val: JsValue) -> Result<Document, JsValue> {
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let serde_json::Value::Object(map) = json else {
-        return Err(JsValue::from_str("document must be a plain object"));
-    };
-    let id = match map.get("_id") {
-        Some(serde_json::Value::String(s)) => parse_ulid(s)?,
-        _ => {
-            return Err(JsValue::from_str(
-                "replaceManyWithIds requires a string `_id` on every document",
-            ));
-        }
-    };
-    let fields = map
-        .into_iter()
-        .filter(|(k, _)| k.as_str() != "_id")
-        .map(|(k, v)| (k, json_to_value(v)))
-        .collect();
-    Ok(Document::with_id(id, fields))
-}
-
 fn json_to_value(j: serde_json::Value) -> Value {
     match j {
         serde_json::Value::Null => Value::Null,
@@ -578,94 +469,6 @@ fn json_to_value(j: serde_json::Value) -> Value {
     }
 }
 
-/// Parse one `FieldType` name for a sync-schema descriptor.
-pub(crate) fn parse_field_type(name: &str) -> Result<FieldType, JsValue> {
-    Ok(match name {
-        "bool" => FieldType::Bool,
-        "int" => FieldType::Int,
-        "float" => FieldType::Float,
-        "str" => FieldType::Str,
-        "bytes" => FieldType::Bytes,
-        "array" => FieldType::Array,
-        "object" => FieldType::Object,
-        "any" => FieldType::Any,
-        other => {
-            return Err(JsValue::from_str(&format!(
-                "unknown field type \"{other}\" (expected bool|int|float|str|bytes|array|object|any)"
-            )));
-        }
-    })
-}
-
-/// Parse a `{ "<collection>": { version, required, types, defaults } }` JSON
-/// object into the per-collection schema map backing the import validator.
-pub(crate) fn build_schemas(
-    schemas_json: &str,
-) -> Result<HashMap<String, StructuralSchema>, JsValue> {
-    let root: serde_json::Value = serde_json::from_str(schemas_json)
-        .map_err(|e| JsValue::from_str(&format!("schema descriptor parse failed: {e}")))?;
-    let obj = root
-        .as_object()
-        .ok_or_else(|| JsValue::from_str("schema descriptor must be a JSON object"))?;
-    let mut out = HashMap::with_capacity(obj.len());
-    for (col, desc) in obj {
-        let version = desc
-            .get("version")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0);
-        let required = desc
-            .get("required")
-            .and_then(serde_json::Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let types = match desc.get("types").and_then(serde_json::Value::as_object) {
-            Some(map) => {
-                let mut t = HashMap::with_capacity(map.len());
-                for (k, v) in map {
-                    let name = v
-                        .as_str()
-                        .ok_or_else(|| JsValue::from_str("schema type must be a string"))?;
-                    t.insert(k.clone(), parse_field_type(name)?);
-                }
-                t
-            }
-            None => HashMap::new(),
-        };
-        let defaults = desc
-            .get("defaults")
-            .and_then(serde_json::Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let renames = desc
-            .get("renames")
-            .and_then(serde_json::Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.insert(
-            col.clone(),
-            StructuralSchema {
-                version,
-                required,
-                types,
-                defaults,
-                renames,
-            },
-        );
-    }
-    Ok(out)
-}
 
 fn value_to_json(v: &Value) -> serde_json::Value {
     match v {

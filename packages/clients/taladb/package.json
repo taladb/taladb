@@ -1,6 +1,6 @@
 {
   "name": "taladb",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "The embedded vector database for on-device AI — documents, similarity search, and offline sync for browser, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

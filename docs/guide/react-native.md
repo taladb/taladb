@@ -67,56 +67,63 @@ const all = await users.find()
 
 That's it. The `taladb` package detects React Native automatically — the same code you write for the browser or Node.js works here too.
 
-## HTTP push sync
+## Change webhook
 
-Pass a sync config as the second argument to `TalaDBModule.initialize` to automatically push mutation events to a remote endpoint after every write:
+Report every committed write to a backend over HTTP. Configure it on `openDB` —
+not on `TalaDBModule.initialize`, which now carries only storage settings
+(durability, encryption passphrase):
 
 ```ts
-// App.tsx
 import { TalaDBModule } from '@taladb/react-native'
 import { openDB } from 'taladb'
 
-await TalaDBModule.initialize('myapp.db', JSON.stringify({
-  sync: {
+await TalaDBModule.initialize('myapp.db')
+
+const db = await openDB('myapp.db', {
+  webhook: {
     enabled: true,
-    endpoint: 'https://api.example.com/taladb-events',
+    endpoint: 'https://api.example.com/taladb',
     headers: { Authorization: `Bearer ${myToken}` },
     exclude_fields: ['embedding'],  // omit large vector fields
   },
-}))
-
-const db = await openDB('myapp.db')
-// Every write now fires an HTTP event in the background
+})
+// Every write now fires an HTTP request after the commit
 ```
 
-After every committed write, TalaDB queues the event on a fixed Rust worker pool and POSTs it with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). The write path is never blocked. The queue is bounded: saturation drops events, and exhausted retries are recorded as permanent failures.
+`POST` on insert, `PUT` on update, `DELETE` on delete. Delivery happens after the
+commit on a bounded in-memory queue with 3 retries and exponential backoff
+(200 / 400 / 800 ms) on 5xx and network errors. The write path is never blocked;
+a saturated queue drops events rather than applying back-pressure.
 
-You can observe delivery health and wait for accepted work before logout or shutdown:
+Observe delivery health and drain before logout or backgrounding:
 
 ```ts
-const { dropped, failed } = TalaDBModule.syncStatus()
-const drained = TalaDBModule.flushSync(5_000)
-await TalaDBModule.close() // also attempts a bounded five-second flush
+db.webhookStats?.()          // { pending, delivered, failed, dropped }
+await db.flushWebhook?.(5_000)
+await db.close()             // drains automatically
 ```
 
-HTTP push sync is a best-effort event stream, not a durable replication queue. Use bidirectional sync or a persisted application outbox when events must survive process termination, prolonged offline operation, or queue saturation.
+The webhook is a best-effort event stream with **at-most-once** delivery, not a
+durable replication queue. If events must survive process termination or a long
+offline period, your app needs its own outbox or a reconciliation pass.
 
-Per-event endpoint overrides are supported:
+Per-op endpoint overrides are supported:
 
 ```ts
-await TalaDBModule.initialize('myapp.db', JSON.stringify({
-  sync: {
+const db = await openDB('myapp.db', {
+  webhook: {
     enabled: true,
     endpoint: 'https://api.example.com/events',
     insert_endpoint: 'https://api.example.com/events/insert',
     update_endpoint: 'https://api.example.com/events/update',
     delete_endpoint: 'https://api.example.com/events/delete',
-    headers: { Authorization: 'Bearer YOUR_TOKEN' },
   },
-}))
+})
 ```
 
-See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, and retry behaviour.
+Delivery runs in the `taladb` TypeScript client on `fetch`, so it behaves exactly
+as it does on the browser and Node.js. See the
+[Change Webhook reference](/api/webhook).
 
 ## Full example
 

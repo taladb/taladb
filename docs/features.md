@@ -1,6 +1,6 @@
 ---
 title: Features
-description: Vector similarity search, ULID document IDs, MongoDB-like queries, aggregation pipelines, bidirectional sync, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
+description: Vector similarity search, ULID document IDs, MongoDB-like queries, aggregation pipelines, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, change webhooks, and more.
 ---
 
 # Features
@@ -234,7 +234,7 @@ Document IDs and index keys are not encrypted (they must remain comparable for l
 
 ## OPFS-backed browser persistence
 
-In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: the first tab's worker holds an exclusive lock on the OPFS file; other tabs coordinate through a `BroadcastChannel`, which also powers instant cross-tab live-query updates and merges secondary-tab writes back into the primary.
+In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: the first tab's worker holds an exclusive lock on the OPFS file; other tabs coordinate through a `BroadcastChannel`, which also powers instant cross-tab live-query updates.
 
 The engine is memory-resident and snapshots to OPFS on a short debounce (see [benchmarks](/benchmarks) for the durability trade-off this buys). When OPFS is unavailable (cross-origin iframes, older browsers), TalaDB falls back to an in-memory database seeded from an IndexedDB snapshot, so data still survives page reloads.
 
@@ -290,77 +290,41 @@ await products.find({ price: { $lte: 99.99 }, inStock: true })
 await products.updateOne({ name: 'Widget' }, { $set: { price: 49.99 } })
 ```
 
-## Bidirectional sync
+## Change webhook
 
-Since v0.8.4, a local TalaDB can pull remote changes and push local ones in one call — with automatic Last-Write-Wins conflict resolution and a persisted incremental cursor, so each sync only transfers what changed:
+TalaDB is an embedded database — it does not replicate. When a backend needs to
+know about local writes, enable the change webhook: every committed mutation
+fires one HTTP request, keyed by verb.
 
 ```ts
-import { HttpSyncAdapter } from 'taladb'
-
-const adapter = new HttpSyncAdapter({
-  endpoint: 'https://api.example.com/sync', // POST {endpoint}/push · GET {endpoint}/pull?since=
-  headers: { Authorization: 'Bearer my-token' },
+const db = await openDB('app.db', {
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${token}` },
+    exclude_fields: ['embedding'],   // keep 768-float vectors out of every payload
+  },
 })
-
-await db.sync(adapter, {})                              // push + pull, all collections
-await db.sync(adapter, { direction: 'pull' })           // one direction only
-await db.sync(adapter, { collections: ['notes'] })      // allow-list
-await db.sync(adapter, { exclude: ['logs'] })           // deny-list
 ```
 
-Any backend becomes a sync peer by implementing the two-method `SyncAdapter` interface — `push(changeset)` and `pull(sinceMs)`. The reference `HttpSyncAdapter` ships inside the `taladb` package; **[`@taladb/sync-mongodb`](/guide/bidirectional-sync#mongodb-adapter)** syncs straight into a MongoDB collection with no intermediate API (server-side only — it holds a database credential). Under the hood everything is built on `db.exportChanges()` / `db.importChanges()`, which are idempotent under LWW, so replays and at-least-once transports are safe.
+| Mutation | Method | Body |
+|---|---|---|
+| `insert`, `insertMany` | `POST` | `{ collection, id, document, timestamp }` |
+| `updateOne`, `updateMany` | `PUT` | `{ collection, id, document, timestamp }` |
+| `deleteOne`, `deleteMany` | `DELETE` | `{ collection, id, timestamp }` |
 
-`db.sync()` runs on Node.js and in the browser (since v0.9.0), where all sync engine work happens inside the Dedicated Worker — a pass never blocks the UI. React Native support is implemented across the stack and pending on-device verification. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
+Delivery happens after the commit, on a bounded in-memory queue that **drops
+rather than blocking** — a slow endpoint can never stall a write. Failed
+deliveries retry three times with backoff on 5xx and network errors; a 4xx is
+permanent and is not retried. Events for one document always arrive in order.
 
-## HTTP push sync
+The guarantee is **at most once**: a crash or a closed tab drops whatever is in
+flight. This is a notification channel, not a replication log — a receiver that
+must not miss a write needs its own reconciliation pass.
 
-After every committed write, TalaDB fires a background HTTP POST to a configured endpoint — no infrastructure required on TalaDB's side. Works with any existing REST API, webhook receiver, or analytics pipeline.
-
-```yaml
-# taladb.config.yml
-sync:
-  enabled: true
-  endpoint: "https://api.example.com/events"
-  headers:
-    Authorization: "Bearer my-token"
-  exclude_fields:
-    - embedding   # strip large vectors from the payload
-```
-
-The background thread is completely detached from the write path. **No transaction is ever delayed or blocked by sync.** Payload shapes:
-
-- **insert** — `{ _taladb_event, collection, id, document, timestamp }`
-- **update** — `{ _taladb_event, collection, id, changes, timestamp }` (delta only — changed fields)
-- **delete** — `{ _taladb_event, collection, id, timestamp }`
-
-Retries up to 3 times with 200 / 400 / 800 ms backoff on 5xx or network errors. The `taladb sync` CLI command pushes the full local state for initial seeding or recovery.
-
-See the [HTTP Push Sync guide](/guide/http-sync) for full documentation.
-
-## CRDT multi-device sync
-
-`CrdtSyncAdapter` provides conflict-free sync across multiple devices using per-field LWW-registers. Unlike [HTTP Push Sync](#http-push-sync), CRDT sync is bidirectional and merge-based: two devices can write the same document independently and both changes are preserved when they sync.
-
-```rust
-let adapter = CrdtSyncAdapter::new("device-alice");
-
-// Stamp fields with per-field clocks before inserting
-let fields = adapter.stamp_insert(vec![
-    ("title".into(), Value::Str("Hello".into())),
-    ("price".into(), Value::Int(99)),
-]);
-col.insert(fields)?;
-
-// Export changes since last sync and import a peer's changes
-let outgoing = adapter.export_crdt_changes(&db, &["docs"], since_ms)?;
-let applied  = adapter.import_crdt_changes(&db, peer_changeset)?;
-```
-
-The core property: if device A writes `title` and device B writes `price` on the same document at the same time, both fields survive after sync — neither is lost. When the same field is written concurrently, the higher timestamp wins; ties are broken by `node_id` lexicographic order.
-
-Array fields can optionally use **grow-only set** (G-Set) semantics via `.with_g_set_fields(["tags"])` — elements are merged by union across replicas and can never be removed.
-
-See the [CRDT Sync guide](/guide/crdt-sync) for full documentation.
+Delivery is implemented once in the `taladb` client on top of `fetch`, above the
+platform bindings, so Node.js, the browser, and React Native behave identically.
+See the [Change Webhook reference](/api/webhook).
 
 ## CLI dev tools
 
