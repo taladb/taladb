@@ -230,7 +230,9 @@ of the write's success.
 ::: tip Why not `useMutation`?
 Because this hook is exactly a local write. The React Query-shaped name carries
 an expectation of a network round-trip that it would borrow and then fail to
-meet. It was renamed from `useMutation` in 0.11.0.
+meet — so it belongs to
+[`@taladb/react/query`](/guide/query#writing), which does perform one. Renamed
+from `useMutation` in 0.11.0.
 :::
 
 ---
@@ -368,3 +370,13 @@ const { data } = useFind(articles, { locale: 'en' })
 ```
 
 Filter and update types are inferred from the document type — typos on field names are caught at compile time.
+
+---
+
+## Talking to a server
+
+The hooks above are local-only: they read and write the database on the device
+and never touch the network. To hydrate a collection from your API and queue
+writes back to it, see
+[Local-First Data (`@taladb/react/query`)](/guide/query) — `useQuery` and
+`useMutation` in the React Query shape, with the local collection as the cache.

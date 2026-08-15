@@ -43,9 +43,12 @@ export function createFakeCollection<T extends Document>(seed: T[] = []) {
     subscribe(filter: Rec | undefined, callback: (docs: T[]) => void) {
       const entry = { filter, cb: callback }
       subscribers.add(entry)
-      const first = snapshot(filter)
+      // The first snapshot is taken when it is delivered, not when subscribe
+      // was called. Capturing it earlier lets a write that lands in between be
+      // clobbered by a stale empty snapshot arriving after it — the real engine
+      // re-runs the query at receive time for exactly this reason.
       void Promise.resolve().then(() => {
-        if (subscribers.has(entry)) callback(first)
+        if (subscribers.has(entry)) callback(snapshot(filter))
       })
       return () => subscribers.delete(entry)
     },
@@ -85,6 +88,24 @@ export function createFakeCollection<T extends Document>(seed: T[] = []) {
       return before - docs.length
     },
     updateMany: async () => 0,
+    // Enough of the pipeline for the drain's queue selection:
+    // $match -> $sort -> $limit.
+    aggregate: async (pipeline: Rec[]) => {
+      let out = docs.map((d) => ({ ...d }))
+      for (const stage of pipeline) {
+        if (stage.$match) out = out.filter((d) => matches(d, stage.$match as Rec))
+        if (stage.$sort) {
+          const [field, dir] = Object.entries(stage.$sort as Rec)[0]
+          out.sort((a, b) => {
+            const x = a[field] as number
+            const y = b[field] as number
+            return (x === y ? 0 : x < y ? -1 : 1) * (dir === -1 ? -1 : 1)
+          })
+        }
+        if (typeof stage.$limit === 'number') out = out.slice(0, stage.$limit)
+      }
+      return out as T[]
+    },
     createIndex: async () => {},
     dropIndex: async () => {},
     listIndexes: async () => ({ btree: [], fts: [], vector: [] }),

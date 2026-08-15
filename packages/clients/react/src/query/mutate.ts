@@ -1,7 +1,28 @@
 import type { Collection, Document } from 'taladb'
 import { coalesce, stampPending, stampSynced } from './envelope'
 import type { Enveloped } from './envelope'
+import { DEFAULT_METHODS } from './endpoint'
 import type { MutationOp, SyncEnvelope, SyncOp } from './types'
+
+/** Where a queued write should be sent, stamped onto the document. */
+export interface Route {
+  url?: string
+  method?: Partial<Record<SyncOp, string>>
+}
+
+/**
+ * Stamp the route onto a queued document.
+ *
+ * Only when a url is given: without one the drain falls back to the provider's
+ * backend, and writing `_endpoint: undefined` would shadow that.
+ */
+function stampRoute(route: Route | undefined, op: SyncOp): Record<string, unknown> {
+  if (route?.url === undefined) return {}
+  return {
+    _endpoint: route.url,
+    _method: route.method?.[op] ?? DEFAULT_METHODS[op],
+  }
+}
 
 /** What a local write did, for tests and for `useSyncStatus` to count. */
 export interface LocalWriteResult {
@@ -36,9 +57,10 @@ export async function writeLocal<T extends Document>(
   collection: Collection<T>,
   op: MutationOp<T>,
   now: number,
+  route?: Route,
 ): Promise<LocalWriteResult> {
   if (op.type === 'insert') {
-    const doc = stampPending(op.doc as T, 'insert')
+    const doc = { ...stampPending(op.doc as T, 'insert'), ...stampRoute(route, 'insert') }
     const id = await collection.insert(doc)
     return { id, op: 'insert', cancelled: false }
   }
@@ -66,6 +88,9 @@ export async function writeLocal<T extends Document>(
     _op: next,
     _attempt: 0,
     _error: null,
+    // The verb follows the coalesced operation, not the one just requested:
+    // editing an unsent insert still POSTs.
+    ...stampRoute(route, next),
   }
   await collection.updateOne({ _id: id } as never, { $set: fields } as never)
   return { id, op: next, cancelled: false }

@@ -48,6 +48,19 @@ export interface SyncEnvelope {
    * eligible now; the drain pushes it forward as it backs off.
    */
   _retry_at: number
+  /**
+   * Where this write is going, as a URL template — `/api/v2/todos/:id`.
+   *
+   * Stamped when the write is queued, because a queued write outlives the
+   * component that made it: the drain may send it after a route change, a
+   * reload, or a week later, when no closure survives to ask. A template is
+   * data and can be stored; a function cannot.
+   *
+   * Absent falls back to the provider's backend.
+   */
+  _endpoint?: string
+  /** HTTP verb for the current `_op`, recomputed whenever `_op` changes. */
+  _method?: string
 }
 
 /**
@@ -127,10 +140,16 @@ export interface ResolvedBackend extends BackendDefinition {
  * call site expresses *intent*, the provider expresses *timing*. "Write now,
  * sync later on a schedule" is this knob, not a third mutation mode.
  */
-export type DrainPolicy = 'immediate' | 'interval' | 'manual' | 'online-only'
+export type DrainPolicy = 'auto' | 'interval' | 'online-only' | 'manual'
 
 export interface DrainOptions {
-  /** Default `'immediate'`. */
+  /**
+   * `auto` (default) sends an `optimistic` write as soon as it commits.
+   * `interval` and `online-only` wait for their trigger. `manual` never drains
+   * on its own.
+   *
+   * A `queued` mutation ignores `auto` and waits for a trigger either way.
+   */
   policy?: DrainPolicy
   /** For `'interval'`. */
   intervalMs?: number
@@ -180,16 +199,32 @@ export interface QueryResult<T extends Document> {
 }
 
 /**
- * `optimistic` — commit locally and return; the network happens in the drain
- * loop and `pending` stays false. The no-spinner path, and the default.
+ * When the network happens, relative to the local write.
  *
- * `remote-first` — await the request, write locally on success. For writes the
- * user would be misled by if they turned out to fail: checkout, payment.
+ * - `optimistic` (default) — commit locally, return, and send in the
+ *   background as soon as possible. `pending` stays false: the UI never waits.
+ * - `immediate` — send first and write locally only once the server agrees.
+ *   `pending` reflects the request. For writes the user would be misled by if
+ *   they silently failed: checkout, payment, anything irreversible.
+ * - `queued` — commit locally and wait for the provider's schedule rather than
+ *   sending straight away. For high-volume writes worth batching.
  */
-export type MutationMode = 'optimistic' | 'remote-first'
+export type MutationMode = 'optimistic' | 'immediate' | 'queued'
 
 export interface UseMutationOptions {
   collection: string
+  /**
+   * URL template for this collection's writes — `/api/v2/todos/:id`.
+   *
+   * `:id` and `:collection` interpolate; an insert drops a trailing `/:id`.
+   * A template rather than a function because a queued write is sent long
+   * after its component is gone, so the route has to be storable.
+   *
+   * Omitted falls back to the provider's backend.
+   */
+  url?: string
+  /** Verb overrides. Defaults to POST / PUT / DELETE. */
+  method?: Partial<Record<SyncOp, string>>
   /** Default `'optimistic'`. */
   mode?: MutationMode
 }

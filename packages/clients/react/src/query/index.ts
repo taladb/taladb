@@ -20,9 +20,10 @@ export type { QueryProviderProps, QueryContextValue } from './context'
 
 export { useQuery } from './useQuery'
 export { useMutation } from './useMutation'
+export { useSyncStatus } from './useSyncStatus'
 
 export { writeLocal, writeConfirmed } from './mutate'
-export type { LocalWriteResult } from './mutate'
+export type { LocalWriteResult, Route } from './mutate'
 
 export { drainOnce, backoffMs } from './drain'
 export type { DrainStats, DrainDeps } from './drain'
@@ -33,7 +34,12 @@ export type { SendResult } from './send'
 export { hydrate } from './hydrate'
 export type { HydrateResult } from './hydrate'
 
-export { defineBackend } from './defineBackend'
+export {
+  checkResponseId,
+  checkResponseBody,
+  checkClassification,
+  checkMutationFilter,
+} from './validate'
 
 export {
   ENVELOPE_FIELDS,
@@ -46,6 +52,8 @@ export {
 export type { Enveloped } from './envelope'
 
 export { QUERY_COLLECTION, hashQueryKey, queryRecordId, newDocId } from './keys'
+
+export { resolveUrl, defaultClassify, DEFAULT_METHODS } from './endpoint'
 
 export {
   ensureEnvelopeIndexes,

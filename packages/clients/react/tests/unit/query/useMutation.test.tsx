@@ -13,9 +13,7 @@ import type { Document } from 'taladb'
 import { TalaDBProvider } from '../../../src/context'
 import { QueryProvider } from '../../../src/query/context'
 import { useMutation } from '../../../src/query/useMutation'
-import { defineBackend } from '../../../src/query/defineBackend'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
-import type { ResolvedBackend } from '../../../src/query/types'
 
 interface Todo extends Document {
   _id?: string
@@ -30,11 +28,15 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-function setup(backend?: ResolvedBackend) {
+type Policy = { classify?: (r: Response) => 'ok' | 'applied' | 'retry' | 'terminal'; fetch?: unknown }
+
+function setup(policy?: Policy) {
   const { db, docsIn } = createFakeDB()
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <TalaDBProvider db={db}>
-      <QueryProvider backend={backend}>{children}</QueryProvider>
+      <QueryProvider classify={policy?.classify as never} fetch={policy?.fetch as never}>
+        {children}
+      </QueryProvider>
     </TalaDBProvider>
   )
   return { wrapper, docsIn }
@@ -80,17 +82,12 @@ describe('useMutation — optimistic', () => {
   })
 })
 
-describe('useMutation — remote-first', () => {
+describe('useMutation — immediate', () => {
   it('writes nothing locally until the server agrees', async () => {
     const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'server said so', done: true }))
-    const backend = defineBackend({
-      url: () => '/api/todos',
-      classify: (r) => (r.ok ? 'ok' : 'terminal'),
-      fetch: fetch as never,
-    })
-    const { wrapper, docsIn } = setup(backend)
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'remote-first' }),
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
       { wrapper },
     )
 
@@ -113,14 +110,9 @@ describe('useMutation — remote-first', () => {
       sent = JSON.parse(init.body as string) as Record<string, unknown>
       return jsonResponse(sent)
     })
-    const backend = defineBackend({
-      url: () => '/api/todos',
-      classify: () => 'ok',
-      fetch: fetch as never,
-    })
-    const { wrapper } = setup(backend)
+    const { wrapper } = setup({ fetch: fetch as never })
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'remote-first' }),
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
       { wrapper },
     )
 
@@ -133,14 +125,10 @@ describe('useMutation — remote-first', () => {
   })
 
   it('leaves the database untouched when the server rejects', async () => {
-    const backend = defineBackend({
-      url: () => '/api/todos',
-      classify: () => 'terminal',
-      fetch: (async () => jsonResponse({ message: 'nope' }, 422)) as never,
-    })
-    const { wrapper, docsIn } = setup(backend)
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ message: 'nope' }, 422))
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'remote-first' }),
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
       { wrapper },
     )
 
@@ -154,18 +142,38 @@ describe('useMutation — remote-first', () => {
     expect(result.current.pending).toBe(false)
   })
 
-  it('explains itself when no backend is configured', async () => {
+  it('explains itself when no url is given', async () => {
     const { wrapper } = setup(undefined)
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'remote-first' }),
+      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate' }),
       { wrapper },
     )
 
     await act(async () => {
       await expect(
         result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } }),
-      ).rejects.toThrow(/backend/i)
+      ).rejects.toThrow(/url/i)
     })
+  })
+
+  it('works as a plain fetch with no provider backend at all', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'saved' }))
+    const original = globalThis.fetch
+    globalThis.fetch = fetch as never
+    try {
+      const { wrapper, docsIn } = setup(undefined)
+      const { result } = renderHook(
+        () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+        { wrapper },
+      )
+      await act(async () => {
+        await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
+      })
+      expect(fetch).toHaveBeenCalledWith('/api/todos', expect.objectContaining({ method: 'POST' }))
+      expect(docsIn('todos')[0].title).toBe('saved')
+    } finally {
+      globalThis.fetch = original
+    }
   })
 
   it('uses the verb the backend maps for each operation', async () => {
@@ -174,15 +182,15 @@ describe('useMutation — remote-first', () => {
       calls.push(init.method as string)
       return jsonResponse({ title: 'x' })
     })
-    const backend = defineBackend({
-      url: () => '/api/todos',
-      method: { update: 'PATCH' },
-      classify: () => 'ok',
-      fetch: fetch as never,
-    })
-    const { wrapper, docsIn } = setup(backend)
+    const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'remote-first' }),
+      () =>
+        useMutation<Todo>({
+          collection: 'todos',
+          mode: 'immediate',
+          url: '/api/todos/:id',
+          method: { update: 'PATCH' },
+        }),
       { wrapper },
     )
 

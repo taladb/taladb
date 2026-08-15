@@ -151,6 +151,7 @@ export default defineConfig({
         text: "Packages",
         items: [
           { text: "React Hooks (@taladb/react)", link: "/guide/react" },
+          { text: "Local-First Data (@taladb/react/query)", link: "/guide/query" },
         ],
       },
       {

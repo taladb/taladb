@@ -1,7 +1,9 @@
 import type { Collection, Document, TalaDB } from 'taladb'
 import { ENVELOPE_FIELDS } from './envelope'
+import { defaultClassify, resolveUrl } from './endpoint'
 import { sendWrite, toPendingWrite } from './send'
 import type { ResolvedBackend, SyncOp } from './types'
+import { isDev, warnDrainNotPrimary } from './validate'
 
 export interface DrainStats {
   sent: number
@@ -28,7 +30,8 @@ const EMPTY: DrainStats = {
 
 export interface DrainDeps {
   db: TalaDB
-  backend: ResolvedBackend
+  /** Fallback for documents queued without their own route. */
+  backend: ResolvedBackend | null
   /** Collections this layer manages, resolved fresh each cycle. */
   collections: () => string[]
   batch?: number
@@ -64,6 +67,7 @@ export async function drainOnce(deps: DrainDeps): Promise<DrainStats> {
   const batch = deps.batch ?? 25
 
   if (!((await db.isPrimary?.()) ?? true)) {
+    if (isDev()) warnDrainNotPrimary()
     return { ...EMPTY, skippedNotPrimary: true }
   }
 
@@ -100,10 +104,18 @@ async function sendOne(
   // afterwards as a changed value.
   const sentAt = doc._changed_at
 
+  const backend = routeFor(doc, name, id, op, deps.backend)
+  if (backend === null) {
+    // Queued with no route and no provider fallback. Leaving it pending is the
+    // honest outcome: the write is safe, and it will send once a backend exists.
+    return
+  }
+
   stats.sent++
   let result
   try {
-    result = await sendWrite(deps.backend, toPendingWrite(name, id, op, toWire(doc)))
+    const attempt = (doc._attempt as number) ?? 0
+    result = await sendWrite(backend, toPendingWrite(name, id, op, toWire(doc)), undefined, attempt)
   } catch {
     // A transport failure is indistinguishable from a 5xx: both may recover.
     await defer(collection, id, doc, stats, now, random)
@@ -183,6 +195,36 @@ async function defer(
     { $set: { _attempt: attempt, _retry_at: now() + backoffMs(attempt, random) } } as never,
   )
   stats.deferred++
+}
+
+/**
+ * Where this document should be sent.
+ *
+ * A route stamped at write time wins, so a per-hook `url` survives the
+ * component that set it. The provider's backend is the fallback, and supplies
+ * `headers` and `classify` either way — those are resolved at send time on
+ * purpose, so a write queued offline carries a current token rather than the
+ * one it was made with.
+ */
+function routeFor(
+  doc: Document,
+  collection: string,
+  id: string,
+  op: SyncOp,
+  fallback: ResolvedBackend | null,
+): ResolvedBackend | null {
+  const template = doc._endpoint as string | undefined
+  if (template === undefined) return fallback
+
+  const url = resolveUrl(template, collection, id, op)
+  const method = (doc._method as string | undefined) ?? fallback?.method[op] ?? 'POST'
+  return {
+    url: () => url,
+    method: { insert: method, update: method, delete: method },
+    headers: fallback?.headers,
+    classify: fallback?.classify ?? defaultClassify,
+    fetch: fallback?.fetch,
+  }
 }
 
 /**

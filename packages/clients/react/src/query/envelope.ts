@@ -18,6 +18,8 @@ export const ENVELOPE_FIELDS = [
   '_error',
   '_fetched_at',
   '_retry_at',
+  '_endpoint',
+  '_method',
 ] as const
 
 /**

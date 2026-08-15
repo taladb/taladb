@@ -1,4 +1,5 @@
 import type { PendingWrite, ResolvedBackend, WriteOutcome } from './types'
+import { checkClassification, checkResponseBody, checkResponseId, isDev } from './validate'
 
 export interface SendResult {
   outcome: WriteOutcome
@@ -17,6 +18,7 @@ export async function sendWrite(
   backend: ResolvedBackend,
   op: PendingWrite,
   signal?: AbortSignal,
+  attempt = 0,
 ): Promise<SendResult> {
   const doFetch = backend.fetch ?? globalThis.fetch
   const headers = new Headers(backend.headers ? await backend.headers() : undefined)
@@ -33,7 +35,17 @@ export async function sendWrite(
   })
 
   const outcome = backend.classify(response, op)
-  return { outcome, document: await readDocument(response, outcome), status: response.status }
+  const document = await readDocument(response, outcome)
+
+  if (isDev()) {
+    checkClassification(op, response.status, outcome)
+    if (outcome === 'ok') {
+      checkResponseId(op, document, attempt)
+      checkResponseBody(op, document)
+    }
+  }
+
+  return { outcome, document, status: response.status }
 }
 
 /**

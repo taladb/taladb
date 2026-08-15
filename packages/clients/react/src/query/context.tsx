@@ -11,16 +11,27 @@ import {
 import type { Collection } from 'taladb'
 import { useTalaDB } from '../context'
 import { drainOnce } from './drain'
+import { DEFAULT_METHODS, defaultClassify } from './endpoint'
 import { openQueryCollection } from './queries'
-import type { DrainOptions, QueryRecord, ResolvedBackend } from './types'
+import type {
+  DrainOptions,
+  PendingWrite,
+  QueryRecord,
+  ResolvedBackend,
+  WriteOutcome,
+} from './types'
 
 export interface QueryContextValue {
   /** The `taladb_queries` collection, or `null` until it has opened. */
   queries: Collection<QueryRecord> | null
-  backend: ResolvedBackend | null
+  backend: ResolvedBackend
   drain: Required<Pick<DrainOptions, 'policy'>> & DrainOptions
   /** Declare a collection as managed, so the drain looks at it. */
   register: (collection: string) => void
+  /** Collections currently managed. Stable identity until one is added. */
+  collections: string[]
+  /** A drain cycle is in flight. */
+  draining: boolean
   /** Ask for a drain cycle soon. A no-op under the `manual` policy. */
   requestDrain: () => void
 }
@@ -47,8 +58,22 @@ export function useQueryContext(): QueryContextValue {
 
 export interface QueryProviderProps {
   children: ReactNode
-  /** Where writes go. Required once mutations are in play; unused by reads. */
-  backend?: ResolvedBackend
+  /**
+   * Headers for every outbound write, resolved **at send time**.
+   *
+   * That timing is the reason this lives here rather than on the hook: a write
+   * queued while offline and drained an hour later must carry a current token,
+   * not the one it was made with.
+   */
+  headers?: () => HeadersInit | Promise<HeadersInit>
+  /**
+   * Map a response onto what the queue should do. Optional — by default `2xx`
+   * succeeds, `409` is already-applied, `5xx`/`408`/`429` retry, and any other
+   * `4xx` is terminal.
+   */
+  classify?: (response: Response, op: PendingWrite) => WriteOutcome
+  /** Override the fetch implementation (tests, instrumentation). */
+  fetch?: typeof globalThis.fetch
   drain?: DrainOptions
 }
 
@@ -58,7 +83,13 @@ export interface QueryProviderProps {
  * Nested rather than merged into `TalaDBProvider` so an application using only
  * the local hooks never opens the query-record collection at all.
  */
-export function QueryProvider({ children, backend, drain }: QueryProviderProps) {
+export function QueryProvider({
+  children,
+  headers,
+  classify,
+  fetch,
+  drain,
+}: QueryProviderProps) {
   const db = useTalaDB()
   const [queries, setQueries] = useState<Collection<QueryRecord> | null>(null)
 
@@ -80,22 +111,42 @@ export function QueryProvider({ children, backend, drain }: QueryProviderProps) 
     }
   }, [db])
 
-  const policy = drain?.policy ?? 'immediate'
+  // Assembled once from the three policy props. Routing is not here — it lives
+  // on each `useMutation`, stamped onto the write so it survives the component.
+  const backend = useMemo<ResolvedBackend>(
+    () => ({
+      url: () => '',
+      method: DEFAULT_METHODS,
+      headers,
+      classify: classify ?? defaultClassify,
+      fetch,
+    }),
+    [headers, classify, fetch],
+  )
+
+  const policy = drain?.policy ?? 'auto'
   const intervalMs = drain?.intervalMs
   const batch = drain?.batch
 
   // Which collections the drain should look at. A ref, not state: registering
   // is a side effect of rendering a hook and must not itself cause a render.
   const managedRef = useRef<Set<string>>(new Set())
+  const [collections, setCollections] = useState<string[]>([])
   const register = useCallback((collection: string) => {
+    if (managedRef.current.has(collection)) return
     managedRef.current.add(collection)
+    // Only on a genuinely new collection, so re-registering on every render
+    // cannot thrash subscribers of `collections`.
+    setCollections([...managedRef.current])
   }, [])
 
   const runningRef = useRef(false)
+  const [draining, setDraining] = useState(false)
   const runDrain = useCallback(async () => {
-    if (backend === undefined || runningRef.current) return
+    if (runningRef.current) return
     if (managedRef.current.size === 0) return
     runningRef.current = true
+    setDraining(true)
     try {
       await drainOnce({
         db,
@@ -107,6 +158,7 @@ export function QueryProvider({ children, backend, drain }: QueryProviderProps) 
       console.error('[@taladb/react/query] Drain cycle failed.', error)
     } finally {
       runningRef.current = false
+      setDraining(false)
     }
   }, [db, backend, batch])
 
@@ -133,14 +185,16 @@ export function QueryProvider({ children, backend, drain }: QueryProviderProps) 
   const value = useMemo<QueryContextValue>(
     () => ({
       queries,
-      backend: backend ?? null,
+      backend,
       drain: { policy, intervalMs, batch },
       register,
+      collections,
+      draining,
       requestDrain,
     }),
     // Spread by field: an inline `drain={{…}}` object would otherwise produce a
     // new context value on every render and re-run every consumer's effects.
-    [queries, backend, policy, intervalMs, batch, register, requestDrain],
+    [queries, backend, policy, intervalMs, batch, register, collections, draining, requestDrain],
   )
 
   return <QueryContext.Provider value={value}>{children}</QueryContext.Provider>

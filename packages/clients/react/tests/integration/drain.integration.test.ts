@@ -17,7 +17,6 @@ import { join } from 'node:path'
 import { rm } from 'node:fs/promises'
 import type { Collection, Document, TalaDB } from 'taladb'
 import { backoffMs, drainOnce } from '../../src/query/drain'
-import { defineBackend } from '../../src/query/defineBackend'
 import { writeLocal } from '../../src/query/mutate'
 import type { ResolvedBackend } from '../../src/query/types'
 
@@ -55,13 +54,14 @@ function json(body: unknown, status = 200) {
 }
 
 function backendOf(fetch: unknown, classify?: ResolvedBackend['classify']): ResolvedBackend {
-  return defineBackend({
+  return {
     url: (op) => `/api/${op.collection}/${op.id}`,
+    method: { insert: 'POST', update: 'PUT', delete: 'DELETE' },
     classify:
       classify ??
       ((r) => (r.ok ? 'ok' : r.status === 409 ? 'applied' : r.status >= 500 ? 'retry' : 'terminal')),
     fetch: fetch as never,
-  })
+  }
 }
 
 const deps = (backend: ResolvedBackend, extra: Record<string, unknown> = {}) => ({
@@ -250,5 +250,93 @@ describe('backoffMs', () => {
     // Spread retries so a fleet of clients does not reconnect in lockstep.
     expect(backoffMs(1, () => 0)).toBe(750)
     expect(backoffMs(1, () => 1)).toBe(1_250)
+  })
+})
+
+describe.skipIf(db === null)('per-hook routing', () => {
+  it('sends a queued write to the url stamped on it, not the provider default', async () => {
+    // The point of the template: the component that chose this url is long gone
+    // by the time the drain runs, so the route has to live on the document.
+    await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1, {
+      url: '/api/v2/todos/:id',
+    })
+    let called = ''
+    const fetch = vi.fn().mockImplementation(async (url: string) => {
+      called = url
+      return json({})
+    })
+
+    await drainOnce(deps(backendOf(fetch)))
+    expect(called).toBe('/api/v2/todos')
+  })
+
+  it('resolves :id for an update', async () => {
+    const { id } = await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1)
+    await todos.updateOne({ _id: id }, { $set: { _sync: 'synced', _op: null } })
+    await writeLocal(todos, { type: 'update', where: { _id: id }, set: { title: 'y' } }, 2, {
+      url: '/api/v2/todos/:id',
+      method: { update: 'PATCH' },
+    })
+
+    let called = ''
+    let verb = ''
+    const fetch = vi.fn().mockImplementation(async (url: string, init: RequestInit) => {
+      called = url
+      verb = init.method as string
+      return json({})
+    })
+
+    await drainOnce(deps(backendOf(fetch)))
+    expect(called).toBe(`/api/v2/todos/${id}`)
+    expect(verb).toBe('PATCH')
+  })
+
+  it('falls back to the provider backend when no url was stamped', async () => {
+    await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1)
+    let called = ''
+    const fetch = vi.fn().mockImplementation(async (url: string) => {
+      called = url
+      return json({})
+    })
+
+    await drainOnce(deps(backendOf(fetch)))
+    expect(called).toContain('/api/')
+  })
+
+  it('leaves a write pending when it has neither a route nor a fallback', async () => {
+    // Safe rather than lost: it will send as soon as a backend exists.
+    await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1)
+    const stats = await drainOnce({ db: db!, backend: null, collections: () => [name] })
+
+    expect(stats.sent).toBe(0)
+    expect((await todos.find())[0]._sync).toBe('pending')
+  })
+
+  it('keeps the insert verb when an unsent insert is edited', async () => {
+    // Coalescing keeps `_op: 'insert'`, so `_method` must follow it — a PUT
+    // to a record the server has never seen would 404.
+    const { id } = await writeLocal(todos, { type: 'insert', doc: { title: 'a' } }, 1, {
+      url: '/api/todos/:id',
+    })
+    await writeLocal(todos, { type: 'update', where: { _id: id }, set: { title: 'b' } }, 2, {
+      url: '/api/todos/:id',
+    })
+
+    const doc = await todos.findOne({ _id: id })
+    expect(doc?._op).toBe('insert')
+    expect(doc?._method).toBe('POST')
+  })
+
+  it('never sends the route fields to the backend', async () => {
+    await writeLocal(todos, { type: 'insert', doc: { title: 'x' } }, 1, { url: '/api/todos/:id' })
+    let body: Record<string, unknown> = {}
+    const fetch = vi.fn().mockImplementation(async (_u: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string) as Record<string, unknown>
+      return json({})
+    })
+
+    await drainOnce(deps(backendOf(fetch)))
+    expect(body).not.toHaveProperty('_endpoint')
+    expect(body).not.toHaveProperty('_method')
   })
 })
