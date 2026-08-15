@@ -34,7 +34,10 @@ fn index_and_matches_both_conjuncts() {
     let mut items = Vec::new();
     for i in 0..300 {
         items.push(vec![
-            ("status".into(), s(if i % 10 == 0 { "archived" } else { "active" })),
+            (
+                "status".into(),
+                s(if i % 10 == 0 { "archived" } else { "active" }),
+            ),
             ("team".into(), s(if i % 50 == 0 { "core" } else { "other" })),
             ("n".into(), Value::Int(i)),
         ]);
@@ -50,7 +53,11 @@ fn index_and_matches_both_conjuncts() {
 
     // i % 50 == 0 gives 0,50,100,150,200,250; of those i % 10 == 0 for all,
     // so every "core" row is also "archived" — the intersection is empty.
-    assert!(hits.is_empty(), "expected no active+core rows, got {}", hits.len());
+    assert!(
+        hits.is_empty(),
+        "expected no active+core rows, got {}",
+        hits.len()
+    );
 
     // The complementary query must find all six.
     let archived_core = col
@@ -205,7 +212,11 @@ fn find_one_no_match_is_none() {
     let db = db();
     let col = db.collection("t").unwrap();
     col.insert(vec![("n".into(), Value::Int(1))]).unwrap();
-    assert!(col.find_one(Filter::Eq("n".into(), Value::Int(99))).unwrap().is_none());
+    assert!(
+        col.find_one(Filter::Eq("n".into(), Value::Int(99)))
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// Field encryption is applied on the way out of `find_one` exactly as it is
@@ -226,7 +237,10 @@ fn find_one_decrypts_like_find() {
     ])
     .unwrap();
 
-    let one = col.find_one(Filter::Eq("tag".into(), s("x"))).unwrap().unwrap();
+    let one = col
+        .find_one(Filter::Eq("tag".into(), s("x")))
+        .unwrap()
+        .unwrap();
     assert_eq!(one.get("secret"), Some(&s("classified")));
 }
 
@@ -293,7 +307,11 @@ fn count_nan_equality_agrees_with_find() {
 
     let filter = Filter::Eq("f".into(), Value::Float(f64::NAN));
     assert_eq!(col.find(filter.clone()).unwrap().len(), 0);
-    assert_eq!(col.count(filter).unwrap(), 0, "count counted a NaN Eq that find rejects");
+    assert_eq!(
+        col.count(filter).unwrap(),
+        0,
+        "count counted a NaN Eq that find rejects"
+    );
 }
 
 /// `0.0 == -0.0` in IEEE 754, so an `Eq` on either must find both — the planner
@@ -313,7 +331,11 @@ fn count_signed_zero_equality_agrees_with_find() {
     for probe in [0.0f64, -0.0f64] {
         let filter = Filter::Eq("f".into(), Value::Float(probe));
         let found = col.find(filter.clone()).unwrap().len() as u64;
-        assert_eq!(col.count(filter).unwrap(), found, "disagreement for {probe}");
+        assert_eq!(
+            col.count(filter).unwrap(),
+            found,
+            "disagreement for {probe}"
+        );
         assert_eq!(found, 2, "both signed zeros should match {probe}");
     }
 }
@@ -493,11 +515,19 @@ fn batched_insert_keeps_indexes_consistent() {
     ] {
         let got = col.find(filter.clone()).unwrap().len();
         let want = control.find(filter.clone()).unwrap().len();
-        assert_eq!(got, want, "indexed result disagreed with scan for {filter:?}");
+        assert_eq!(
+            got, want,
+            "indexed result disagreed with scan for {filter:?}"
+        );
         assert!(got > 0, "test would be vacuous for {filter:?}");
     }
 
-    assert_eq!(col.find(Filter::Contains("body".into(), "beta".into())).unwrap().len(), 150);
+    assert_eq!(
+        col.find(Filter::Contains("body".into(), "beta".into()))
+            .unwrap()
+            .len(),
+        150
+    );
     // Corpus stats must reflect the whole batch, not just the last document.
     assert_eq!(col.search_text("body", "gamma", 200).unwrap().len(), 150);
 }
@@ -525,10 +555,16 @@ fn batched_delete_clears_every_index() {
     )
     .unwrap();
 
-    let removed = col.delete_many(Filter::Eq("a".into(), Value::Int(1))).unwrap();
+    let removed = col
+        .delete_many(Filter::Eq("a".into(), Value::Int(1)))
+        .unwrap();
     assert_eq!(removed, 20);
 
-    assert!(col.find(Filter::Eq("a".into(), Value::Int(1))).unwrap().is_empty());
+    assert!(
+        col.find(Filter::Eq("a".into(), Value::Int(1)))
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         col.find(Filter::And(vec![
             Filter::Eq("a".into(), Value::Int(1)),
@@ -589,8 +625,15 @@ fn update_moving_index_key_clears_the_old_entry() {
     )
     .unwrap();
 
-    assert!(col.find(Filter::Eq("k".into(), s("before"))).unwrap().is_empty());
-    assert_eq!(col.find(Filter::Eq("k".into(), s("after"))).unwrap().len(), 2);
+    assert!(
+        col.find(Filter::Eq("k".into(), s("before")))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        col.find(Filter::Eq("k".into(), s("after"))).unwrap().len(),
+        2
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -601,8 +644,8 @@ fn update_moving_index_key_clears_the_old_entry() {
 /// scorer. It must rank identically to the general `compute_similarity`.
 #[test]
 fn hoisted_query_norm_scores_match_compute_similarity() {
-    use taladb_core::vector::{compute_similarity, l2_norm, score_with_query_norm};
     use taladb_core::VectorMetric;
+    use taladb_core::vector::{compute_similarity, l2_norm, score_with_query_norm};
 
     let query = vec![0.3f32, -1.5, 2.0, 0.0];
     let norm = l2_norm(&query);
@@ -612,7 +655,11 @@ fn hoisted_query_norm_scores_match_compute_similarity() {
         vec![-0.3, 1.5, -2.0, 0.0],
         vec![0.0, 0.0, 0.0, 0.0],
     ];
-    for metric in [VectorMetric::Cosine, VectorMetric::Dot, VectorMetric::Euclidean] {
+    for metric in [
+        VectorMetric::Cosine,
+        VectorMetric::Dot,
+        VectorMetric::Euclidean,
+    ] {
         for c in &candidates {
             let a = compute_similarity(&metric, &query, c);
             let b = score_with_query_norm(&metric, &query, norm, c);
@@ -633,15 +680,36 @@ fn find_nearest_ranks_by_similarity() {
     col.insert_many(vec![
         vec![
             ("name".into(), s("exact")),
-            ("emb".into(), Value::Array(vec![Value::Float(1.0), Value::Float(0.0), Value::Float(0.0)])),
+            (
+                "emb".into(),
+                Value::Array(vec![
+                    Value::Float(1.0),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                ]),
+            ),
         ],
         vec![
             ("name".into(), s("orthogonal")),
-            ("emb".into(), Value::Array(vec![Value::Float(0.0), Value::Float(1.0), Value::Float(0.0)])),
+            (
+                "emb".into(),
+                Value::Array(vec![
+                    Value::Float(0.0),
+                    Value::Float(1.0),
+                    Value::Float(0.0),
+                ]),
+            ),
         ],
         vec![
             ("name".into(), s("opposite")),
-            ("emb".into(), Value::Array(vec![Value::Float(-1.0), Value::Float(0.0), Value::Float(0.0)])),
+            (
+                "emb".into(),
+                Value::Array(vec![
+                    Value::Float(-1.0),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                ]),
+            ),
         ],
     ])
     .unwrap();

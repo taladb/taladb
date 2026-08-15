@@ -1,0 +1,20 @@
+{
+  // Typechecks the parity fixtures, which the package tsconfig deliberately
+  // leaves out (it includes only `src`).
+  //
+  // Most of the parity claim is a *compile-time* claim: TanStack code reads
+  // `error.message`, narrows `data` through an `isPending` guard, and passes
+  // options that must exist on the type. None of that is observable at runtime,
+  // so `pnpm test:parity` alone would grade half the work. Expected to fail
+  // until P1–P3 land.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "taladb": ["../taladb/src/index.ts"],
+      "@taladb/react": ["./src/index.ts"],
+      "@taladb/react/query": ["./src/query/index.ts"]
+    },
+    "types": ["vitest/globals", "node"]
+  },
+  "include": ["tests/parity", "src"]
+}

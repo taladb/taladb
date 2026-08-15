@@ -288,6 +288,15 @@ impl<'a> WriteTxn for EncryptedWriteTxn<'a> {
         self.inner.commit()
     }
 
+    // Table names are not encrypted, so both pass straight through.
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
+        self.inner.list_tables()
+    }
+
+    fn delete_table(&mut self, table: &str) -> Result<bool, TalaDbError> {
+        self.inner.delete_table(table)
+    }
+
     fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
         self.inner
             .get_many(table, keys)?
@@ -404,15 +413,18 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
         // first. Keys stay borrowed, and the caller still avoids materialising
         // the whole range.
         let mut err = None;
-        self.inner.scan(table, start, end, &mut |k, v| {
-            match decrypt(self.key, table, k, v) {
+        self.inner.scan(
+            table,
+            start,
+            end,
+            &mut |k, v| match decrypt(self.key, table, k, v) {
                 Ok(plain) => f(k, &plain),
                 Err(e) => {
                     err = Some(e);
                     Ok(crate::engine::ScanFlow::Stop)
                 }
-            }
-        })?;
+            },
+        )?;
         match err {
             Some(e) => Err(e),
             None => Ok(()),

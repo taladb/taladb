@@ -152,9 +152,15 @@ fn plan_inner(
         Filter::In(field, values) if indexed_fields.contains(&field.as_str()) => {
             let mut ranges: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(values.len());
             for v in values {
-                if let Some(range) = index_range_eq(v) {
-                    ranges.push(range);
-                }
+                // `$in` can compare whole arrays/objects during post-filtering,
+                // but those values have no index encoding. Using the ranges for
+                // only the encodable candidates would silently produce a subset
+                // of the full-scan answer, so one such candidate invalidates the
+                // entire index plan.
+                let Some(range) = index_range_eq(v) else {
+                    return QueryPlan::FullScan;
+                };
+                ranges.push(range);
                 // 0.0 and -0.0 compare equal but encode to different keys.
                 if let Value::Float(f) = v
                     && *f == 0.0
@@ -274,12 +280,12 @@ fn plan_inner(
                     matches!(f, Filter::Eq(field, _)
                         if field != "_id" && indexed_fields.contains(&field.as_str()))
                 })
-                .filter_map(|f| {
-                    match plan_inner(f, indexed_fields, fts_fields, compound_indexes) {
+                .filter_map(
+                    |f| match plan_inner(f, indexed_fields, fts_fields, compound_indexes) {
                         QueryPlan::FullScan => None,
                         plan => Some(plan),
-                    }
-                })
+                    },
+                )
                 .collect();
             if indexed_eq.len() > 1 {
                 return QueryPlan::IndexAnd { plans: indexed_eq };

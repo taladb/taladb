@@ -57,6 +57,40 @@ pub fn encode_index_key(value: &Value, id: Ulid) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// Every index key a document's value contributes — one per element for an
+/// array, one for anything else, none for a value that cannot be indexed.
+///
+/// This is what makes an array *queryable*. `{ tags: ['rust', 'db'] }` is
+/// indexed under both `'rust'` and `'db'`, so `find({ tags: 'rust' })` is an
+/// ordinary index lookup that happens to land on a document whose field is a
+/// list. Without per-element keys the array is unindexable, and a containment
+/// match would find only the documents a full scan reached — silently missing
+/// every document the planner answered from the index.
+///
+/// A document contributes at most one key per *distinct* element: repeated
+/// elements encode identically (the key is `value ++ ulid`), so `['a', 'a']`
+/// yields the single key `'a'`. Counting entries in an exact-value range is
+/// therefore still counting documents, which `count_plan_entries` relies on.
+///
+/// Nested arrays and objects are skipped, as they are elsewhere: they have no
+/// order-preserving byte encoding.
+pub fn encode_index_keys(value: &Value, id: Ulid) -> Vec<Vec<u8>> {
+    match value {
+        Value::Array(items) => {
+            let mut keys: Vec<Vec<u8>> = Vec::with_capacity(items.len());
+            for item in items {
+                if let Some(key) = encode_index_key(item, id)
+                    && !keys.contains(&key)
+                {
+                    keys.push(key);
+                }
+            }
+            keys
+        }
+        other => encode_index_key(other, id).into_iter().collect(),
+    }
+}
+
 fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
     match value {
         Value::Null => {
@@ -193,21 +227,12 @@ pub fn docs_table_name(collection: &str) -> String {
     format!("docs::{collection}")
 }
 
-/// Table that stores delete tombstones so deletions can propagate via sync.
-/// Key: ULID bytes (16 B).  Value: postcard-encoded `i64` wall-clock timestamp (ms).
-pub fn tomb_table_name(collection: &str) -> String {
-    format!("tomb::{collection}")
-}
-
-/// Table that holds documents rejected by an import-time validator.
+/// Table-name prefixes left behind by the replication engine removed in 0.11.
 ///
-/// Sync import is *tolerant*: a document that fails validation is never dropped
-/// on the floor and never hard-rejects the batch — it is set aside here so an
-/// operator (or a later migration) can inspect and recover it.
-/// Key: ULID bytes (16 B).  Value: postcard-encoded [`crate::sync::QuarantineRecord`].
-pub fn quarantine_table_name(collection: &str) -> String {
-    format!("quarantine::{collection}")
-}
+/// Nothing reads or writes these any more. They are named here only so the v1→v2
+/// migration can find and drop them in databases created by an earlier release —
+/// see [`crate::migration::BUILTIN_MIGRATIONS`].
+pub(crate) const REMOVED_TABLE_PREFIXES: [&str; 2] = ["tomb::", "quarantine::"];
 
 pub const META_INDEXES_TABLE: &str = "meta::indexes";
 pub const META_COMPOUND_TABLE: &str = "meta::compound_indexes";
@@ -258,6 +283,60 @@ pub fn encode_compound_key(values: &[&Value], id: Ulid) -> Option<Vec<u8>> {
     }
     buf.extend_from_slice(&id.to_bytes());
     Some(buf)
+}
+
+/// Every compound key a document's values contribute.
+///
+/// A single array member expands to one key per element, so a compound index
+/// answers `{ role: 'admin', tags: 'urgent' }` for a document whose `tags` is a
+/// list — the same containment semantics the matcher applies. Without this, an
+/// indexed compound query would return fewer documents than the identical query
+/// on an unindexed collection, which is the worst kind of index bug: correct
+/// until somebody adds an index.
+///
+/// **At most one member may be an array**, as in MongoDB. Two arrays would make
+/// the key count their product, so a pair of modest lists could put thousands of
+/// entries in the index for one document. That is refused at write time
+/// ([`CompoundIndexMultipleArrays`](crate::TalaDbError)) rather than silently
+/// admitted.
+pub fn encode_compound_keys(
+    values: &[&Value],
+    id: Ulid,
+) -> Result<Vec<Vec<u8>>, crate::TalaDbError> {
+    let array_members = values
+        .iter()
+        .filter(|v| matches!(v, Value::Array(_)))
+        .count();
+    if array_members > 1 {
+        return Err(crate::TalaDbError::CompoundIndexMultipleArrays);
+    }
+    if array_members == 0 {
+        return Ok(encode_compound_key(values, id).into_iter().collect());
+    }
+
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    let position = values
+        .iter()
+        .position(|v| matches!(v, Value::Array(_)))
+        .expect("array_members == 1");
+    let Value::Array(items) = values[position] else {
+        unreachable!("position found an array")
+    };
+    for item in items {
+        // Nested arrays and objects have no encoding; skipping one element is
+        // the same rule `encode_index_keys` follows.
+        if matches!(item, Value::Array(_) | Value::Object(_)) {
+            continue;
+        }
+        let mut expanded: Vec<&Value> = values.to_vec();
+        expanded[position] = item;
+        if let Some(key) = encode_compound_key(&expanded, id)
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
 }
 
 /// Range bounds for an exact-equality scan on the given prefix values.

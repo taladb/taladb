@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "React hooks for TalaDB — useFind, useFindOne, and useCollection for React and React Native",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -11,9 +11,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./query": {
+      "types": "./dist/query/index.d.ts",
+      "import": "./dist/query/index.mjs",
+      "require": "./dist/query/index.js"
     }
   },
   "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "dist"
   ],
   "scripts": {
@@ -21,7 +28,9 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:parity": "vitest run --config vitest.parity.config.ts",
+    "typecheck:parity": "tsc --noEmit -p tsconfig.parity.json"
   },
   "keywords": [
     "database",
@@ -33,7 +42,7 @@
     "vector",
     "live-queries"
   ],
-  "license": "Apache-2.0",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/taladb/taladb.git",
@@ -48,7 +57,7 @@
   },
   "peerDependencies": {
     "react": ">=18.0.0",
-    "taladb": "^0.10.2"
+    "taladb": "^0.11.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.0.0",

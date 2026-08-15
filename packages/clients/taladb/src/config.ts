@@ -1,47 +1,16 @@
 // ============================================================
-// TalaDB config loader — Phase 1
+// TalaDB config loader
 //
 // Parses and validates `taladb.config.yml` / `taladb.config.json`.
-// In Phase 1 the parsed config is available but drives no behaviour —
-// the HTTP sync adapter is wired up in Phase 3.
+//
+// The engine (Rust) reads only the `durability` block from this same file and
+// ignores everything else; the `webhook` block is read here. One file, two
+// readers, neither rejecting the other's keys.
 // ============================================================
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { validateWebhookConfig, type WebhookConfig } from './webhook';
 
-/** HTTP push sync settings. */
-export interface SyncConfig {
-  /**
-   * Enable HTTP push sync. Defaults to `false`.
-   * Everything is a no-op when disabled, so a config block without
-   * `enabled: true` is safe to ship.
-   */
-  enabled?: boolean;
-  /**
-   * Default endpoint URL that receives all mutation events.
-   * Required when `enabled: true`.
-   */
-  endpoint?: string;
-  /** HTTP headers sent with every outgoing request (e.g. `Authorization`). */
-  headers?: Record<string, string>;
-  /** Override the endpoint for `insert` events only. */
-  insert_endpoint?: string;
-  /** Override the endpoint for `update` events only. */
-  update_endpoint?: string;
-  /** Override the endpoint for `delete` events only. */
-  delete_endpoint?: string;
-  /**
-   * Document fields to omit from every outgoing sync payload.
-   *
-   * Useful for stripping large computed fields such as embedding vectors
-   * that the remote endpoint doesn't need.
-   *
-   * @example
-   * exclude_fields: ['embedding', 'clip_vector']
-   */
-  exclude_fields?: string[];
-}
+export type { WebhookConfig };
 
 /** Storage durability settings. */
 export interface DurabilityConfig {
@@ -62,8 +31,8 @@ export interface DurabilityConfig {
 
 /** Top-level TalaDB configuration. */
 export interface TalaDbConfig {
-  /** HTTP push sync configuration. Disabled by default. */
-  sync?: SyncConfig;
+  /** Outbound change-webhook configuration. Disabled by default. */
+  webhook?: WebhookConfig;
   /** Storage durability configuration. */
   durability?: DurabilityConfig;
 }
@@ -72,48 +41,15 @@ export interface TalaDbConfig {
 // Validation
 // ---------------------------------------------------------------------------
 
-const ENDPOINT_FIELDS = [
-  'endpoint',
-  'insert_endpoint',
-  'update_endpoint',
-  'delete_endpoint',
-] as const;
-
-const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
-function isLocalhostUrl(url: string): boolean {
-  try {
-    return LOCALHOST_HOSTS.has(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Validate a parsed `TalaDbConfig`.
+ * Validate a parsed `TalaDbConfig`. Throws on the first invalid value.
  *
- * Checks that every endpoint URL (if present) starts with `http://` or
- * `https://`. Throws a plain `Error` on the first invalid value.
- * Logs a warning when a non-localhost `http://` endpoint is used — changesets
- * will be transmitted without encryption.
+ * Endpoint checks live in `webhook.ts` alongside the code that uses them, so a
+ * config built inline and passed to `openDB({ webhook })` — which never goes
+ * through this loader — is validated by exactly the same rules.
  */
 export function validateConfig(config: TalaDbConfig): void {
-  const sync = config.sync;
-  if (!sync) return;
-  for (const key of ENDPOINT_FIELDS) {
-    const url = sync[key];
-    if (url !== undefined && !url.startsWith('http://') && !url.startsWith('https://')) {
-      throw new Error(
-        `TalaDB config: invalid endpoint URL "${url}" — must start with http:// or https://`,
-      );
-    }
-    if (url?.startsWith('http://') && !isLocalhostUrl(url)) {
-      console.warn(
-        `[TalaDB] sync endpoint "${url}" uses plaintext HTTP — ` +
-        `use HTTPS in production to prevent changeset interception`,
-      );
-    }
-  }
+  if (config.webhook) validateWebhookConfig(config.webhook);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,14 +62,14 @@ export function validateConfig(config: TalaDbConfig): void {
  * - Supports `.json`, `.yml`, and `.yaml` extensions.
  * - YAML parsing requires `js-yaml` (already in `taladb`'s dependencies).
  * - Only runs in Node.js. Returns `{}` silently on browser / React Native.
- * - Returns `{}` (sync disabled) when no config file is found — **not an error**.
+ * - Returns `{}` (webhook disabled) when no config file is found — **not an error**.
  *
  * @param configPath  Explicit path to the config file. If omitted, auto-discovers
  *                    `taladb.config.yml`, `taladb.config.yaml`, or
  *                    `taladb.config.json` from `process.cwd()`.
  */
 export async function loadConfig(configPath?: string): Promise<TalaDbConfig> {
-  // Non-Node platforms: sync is silently disabled.
+  // Non-Node platforms: no config file to read; pass `config` to openDB instead.
   if (typeof process === 'undefined' || typeof process.cwd !== 'function') {
     return {};
   }
@@ -179,6 +115,6 @@ export async function loadConfig(configPath?: string): Promise<TalaDbConfig> {
     }
   }
 
-  // No config file found — sync is disabled, which is the default.
+  // No config file found — the webhook is disabled, which is the default.
   return {};
 }

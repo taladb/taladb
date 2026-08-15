@@ -61,4 +61,4 @@ If you have questions or want to discuss the roadmap, feel free to open a [GitHu
 
 ---
 
-*By contributing to TalaDB, you agree that your contributions will be licensed under the Apache License 2.0.*
+*By contributing to TalaDB, you agree that your contributions will be dual-licensed under the MIT license and the Apache License 2.0, at the recipient's option, without any additional terms or conditions.*

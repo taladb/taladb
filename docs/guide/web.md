@@ -16,8 +16,6 @@ core used on every other platform. Data is persisted to the
 [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)
 (OPFS) — a fast, private storage area built into modern browsers.
 
-> Building with **Next.js**? There's a dedicated [Next.js guide](/guide/nextjs) covering providers, the RSC boundary, and using your API routes as the sync backend.
-
 ## Browser support
 
 | Feature | Chrome | Firefox | Safari |
@@ -288,146 +286,120 @@ lock on the OPFS file. All writes go directly to the persistent file.
 
 **Secondary tabs** — additional tabs open an in-memory copy seeded from an
 IndexedDB snapshot. They stay read-consistent within ~500 ms of any primary-tab
-write via BroadcastChannel. Writes made on a secondary tab are automatically
-merged into the primary tab's OPFS database using Last-Write-Wins — no extra
-code required.
+write via BroadcastChannel.
 
 ```
 Tab A (primary, OPFS)          Tab B (secondary, in-memory)
       │                                    │
-      │←── write from Tab B ───────────────┤  BroadcastChannel changeset
-      │    importChangeset()               │
-      │    write to OPFS                   │
       │─── taladb:changed ────────────────→│  Tab B reloads snapshot
 ```
 
+Writes made on a secondary tab are forwarded to the primary tab over the same
+BroadcastChannel and applied there, so the OPFS file stays authoritative — no
+extra code required.
+
+```
+Tab A (primary, OPFS)          Tab B (secondary, in-memory)
+      │                                    │
+      │←── taladb:tab-write ───────────────┤  forwarded write
+      │    apply + write to OPFS           │
+      │─── taladb:changed ────────────────→│  Tab B reloads snapshot
+```
+
+Inserts are forwarded as whole documents carrying their `_id`s, so an id your
+code already holds stays valid after the hand-off. Filter-based updates and
+deletes forward the filter and update instead, and the primary re-evaluates them
+against authoritative data. Concurrent edits resolve by arrival order at the
+primary — two tabs on one device share a clock, so there is no skew to arbitrate.
+
 For bulk write workloads across many tabs, prefer routing mutations through the
-primary tab. The merge path adds one BroadcastChannel round-trip per write batch.
+primary tab. Forwarding adds one BroadcastChannel round-trip per write.
 
-## HTTP push sync
+### `isPrimary()`
 
-Pass a `config` option to `openDB` to push mutation events to a remote endpoint
-after every write:
+Ask whether this tab's writes land authoritatively:
+
+```ts
+if (await db.isPrimary?.() ?? true) {
+  await drainOutbox();
+}
+```
+
+Use it for work that must not run in more than one tab at once, or that depends
+on reading its own writes straight back — a background queue drainer, a
+scheduled cleanup pass, an outbound sync loop. On a secondary tab both
+assumptions fail: other tabs' writes arrive up to ~500 ms late, and its own
+writes only become visible to everyone once the primary has applied them. A
+drainer running there will re-send work it has already sent.
+
+Primary status changes during a session — closing the owning tab promotes
+another — so **re-check it rather than caching the answer**. A per-cycle check
+at the top of a loop is enough.
+
+It returns `true` on Node.js and React Native, where a single process owns the
+database, and on the in-memory Safari fallback, where each tab holds its own
+isolated database and forwards nothing. It may be absent on older `@taladb/web`
+builds, so treat absence as `true`.
+
+## Change webhook
+
+Report every committed write to a backend over HTTP:
 
 ```ts
 import { openDB } from 'taladb'
 
 const db = await openDB('myapp.db', {
-  config: {
-    sync: {
-      enabled: true,
-      endpoint: 'https://api.example.com/taladb-events',
-      headers: { Authorization: `Bearer ${myToken}` },
-      exclude_fields: ['embedding'],  // omit large vector fields from payloads
-    },
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb',
+    headers: { Authorization: `Bearer ${myToken}` },
+    exclude_fields: ['embedding'],  // omit large vector fields from payloads
   },
 })
 
-// Every write now fires an HTTP POST in the background
+// Every write now fires an HTTP request after the commit
 const users = db.collection('users')
-await users.insert({ name: 'Alice', role: 'admin' })
+await users.insert({ name: 'Alice', role: 'admin' })   // → POST
 ```
 
-After every committed write, TalaDB fires a background `fetch` on the JS
-microtask queue and POSTs the event payload to the configured endpoint with up
-to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). Writes are
-never blocked.
+`POST` on insert, `PUT` on update, `DELETE` on delete. Requests are dispatched
+after the commit with 3 retries and exponential backoff (200 / 400 / 800 ms) on
+5xx and network errors. Writes are never blocked.
 
 ::: warning Tab lifetime
-In-flight sync requests are subject to normal browser fetch constraints. If the
-user closes the tab during a retry sequence, any remaining attempts are lost.
-HTTP push sync is best-effort by design.
+Delivery is **best effort**. Closing the tab can lose queued events; a lost
+response can cause a retry. Retries carry a stable `event_id` and
+`Idempotency-Key` so the receiver can deduplicate them.
 
-The worker bounds its HTTP queue and times each attempt out after 10 seconds.
-You can inspect delivery health and drain accepted events before closing:
+Drain the queue at a moment you control:
 
 ```ts
-const health = await db.syncStatus?.() // { pending, dropped, failed }
-const drained = await db.flushSync?.(5_000)
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') void db.flushWebhook?.(2_000)
+})
+
+db.webhookStats?.()   // { pending, delivered, failed, dropped }
 ```
+
+`db.close()` drains automatically.
 :::
 
-Per-event endpoint overrides are supported:
+Per-op endpoint overrides are supported:
 
 ```ts
 const db = await openDB('myapp.db', {
-  config: {
-    sync: {
-      enabled: true,
-      endpoint: 'https://api.example.com/events',
-      insert_endpoint: 'https://api.example.com/events/insert',
-      update_endpoint: 'https://api.example.com/events/update',
-      delete_endpoint: 'https://api.example.com/events/delete',
-      headers: { Authorization: 'Bearer YOUR_TOKEN' },
-    },
+  webhook: {
+    enabled: true,
+    endpoint: 'https://api.example.com/events',
+    insert_endpoint: 'https://api.example.com/events/insert',
+    update_endpoint: 'https://api.example.com/events/update',
+    delete_endpoint: 'https://api.example.com/events/delete',
   },
 })
 ```
 
-See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference,
-payload shapes, and retry behaviour.
-
-## Bidirectional sync
-
-HTTP push sync sends local writes to your server. To pull remote changes back
-into the browser — for multi-device or offline-first scenarios — use the
-changeset API:
-
-```ts
-let lastSyncMs = 0
-
-async function sync() {
-  // Push local changes since last sync
-  const outgoing = await db.exportChangeset(['users', 'posts'], lastSyncMs)
-  await fetch('/sync/push', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: outgoing,
-  })
-
-  // Pull remote changes since last sync
-  const resp = await fetch(`/sync/pull?since=${lastSyncMs}`)
-  const applied = await db.importChangeset(await resp.text())
-  if (applied > 0) console.log(`Merged ${applied} remote change(s)`)
-
-  lastSyncMs = Date.now()
-}
-
-// Sync on load, then every 30 s
-sync()
-setInterval(sync, 30_000)
-```
-
-`exportChangeset` and `importChangeset` use Last-Write-Wins conflict resolution
-with ULID tie-breaking for deterministic merge across any number of replicas.
-Deletes are tombstoned so they propagate correctly through every sync cycle.
-You supply the transport — fetch polling, WebSocket, SSE, or WebRTC data
-channel.
-
-### Conflict resolution
-
-Every document carries an internal `_changed_at` timestamp (set automatically
-on every insert and update — no manual stamping required). When two replicas
-both modified the same document, the one with the higher `_changed_at` wins. If
-timestamps are equal, the higher ULID wins, giving a deterministic total order
-without coordination.
-
-### Tombstone management
-
-Deleted document IDs are kept as tombstones so deletions propagate correctly via
-`exportChangeset`. Tombstones accumulate over time and should be pruned
-periodically once you are confident all replicas have received the deletion:
-
-```ts
-// On app startup — prune tombstones older than your retention window
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
-const cutoff = Date.now() - THIRTY_DAYS_MS
-
-for (const name of ['users', 'posts', 'comments']) {
-  const pruned = await db.compactTombstones(name, cutoff)
-  if (pruned > 0) console.log(`Pruned ${pruned} tombstone(s) from '${name}'`)
-}
-```
+See the [Change Webhook reference](/api/webhook) for the full config reference,
+payload shapes, and delivery semantics.
 
 ## Migrations
 

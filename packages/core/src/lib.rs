@@ -37,46 +37,44 @@
 //! - [`vector`] — vector indexes and `find_nearest`, exact by default and
 //!   approximate (HNSW) behind the `vector-hnsw` feature.
 //! - [`bm25`] / [`fts`] — full-text search over the same documents.
-//! - [`sync`] and [`crdt`] — changeset replication and last-write-wins merge for
-//!   syncing a device against an origin.
 //! - [`TalaDbError`] — one error type for everything, carrying the originating
 //!   storage error as a [`source`](std::error::Error::source).
+//!
+//! # Scope
+//!
+//! TalaDB is an *embedded* database: it owns on-device storage and retrieval,
+//! and deliberately does not replicate. Applications that need to notify a
+//! backend of local writes use the change webhook in the `taladb` TypeScript
+//! client, which works identically on every runtime.
 //!
 //! # Runtime targets
 //!
 //! The browser (via `wasm32-unknown-unknown`) and React Native are the primary
 //! targets; native and Node are supported but are not what the design optimises
 //! for. Anything that would bloat a WASM bundle is feature-gated — see the
-//! `config-yaml`, `encryption`, `vector-hnsw`, and `sync-http` features.
+//! `config-yaml`, `encryption`, and `vector-hnsw` features.
 
 pub mod aggregate;
 pub mod audit;
 pub mod bm25;
 pub mod collection;
 pub mod config;
-pub mod crdt;
 pub mod crypto;
 pub mod document;
 pub mod engine;
 pub mod error;
 pub mod fts;
-#[cfg(feature = "sync-http")]
-pub mod http_sync;
 pub mod index;
 pub mod migration;
 pub mod query;
-pub mod sync;
+pub mod time;
 pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use audit::{AuditEntry, AuditOp, read_audit_log, read_audit_log_since};
-pub use collection::{Collection, CollectionIndexInfo, Update, WriteOrigin};
-pub use config::{DurabilityConfig, SyncConfig, TalaDbConfig, load_auto, load_from_path};
-pub use crdt::{
-    CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
-    FieldMutation,
-};
+pub use collection::{Collection, CollectionIndexInfo, Update};
+pub use config::{DurabilityConfig, TalaDbConfig, load_auto, load_from_path};
 #[cfg(feature = "encryption")]
 pub use crypto::{
     EncryptedBackend, EncryptionKey, MIN_PBKDF2_ITERATIONS, derive_key, migrate_encrypted_v0_to_v1,
@@ -85,20 +83,14 @@ pub use crypto::{
 pub use document::{Document, Value, derive_doc_id};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
-#[cfg(feature = "sync-http")]
-pub use http_sync::HttpSyncHook;
 pub use migration::{BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION, Migration, run_migrations};
 pub use query::Filter;
 pub use query::options::{FindOptions, SortDirection, SortSpec};
-pub use sync::{
-    Changeset, FieldType, ImportDecision, ImportReport, ImportValidator, LastWriteWins,
-    NoopSyncHook, QuarantineRecord, SchemaValidator, StructuralSchema, SyncAdapter, SyncEvent,
-    SyncHook,
-};
 /// Re-exported because [`TalaDbError`]'s storage variants carry `redb` errors as
 /// their [`source`](std::error::Error::source): downcasting to them requires
 /// naming the same `redb` version the engine was built against.
 pub use redb;
+pub use time::now_ms;
 /// Re-exported so bindings can parse and construct document ids without taking a
 /// direct `ulid` dependency (and risking a version skew against the engine's).
 pub use ulid::Ulid;
@@ -329,10 +321,10 @@ impl Database {
     }
 
     /// Compact the underlying storage file, reclaiming space freed by deletes
-    /// and updates. Useful after bulk deletes or large tombstone pruning.
+    /// and updates. Useful after bulk deletes.
     ///
     /// This is a blocking operation proportional to database size; call it
-    /// during idle periods (e.g. at startup after tombstone compaction).
+    /// during idle periods (e.g. at startup).
     ///
     /// No-op on in-memory backends.
     pub fn compact(&self) -> Result<(), TalaDbError> {
@@ -355,63 +347,6 @@ impl Database {
             .collect();
         names.sort();
         Ok(names)
-    }
-
-    /// Export every change to `collections` that occurred after `since_ms`
-    /// (exclusive), as a [`sync::Changeset`] ready to send to a remote peer.
-    /// Backs bidirectional sync — the JS `db.sync()` orchestration passes its
-    /// persisted cursor as `since_ms`. Uses the built-in Last-Write-Wins
-    /// adapter; conflict policy is applied on import, not export.
-    pub fn export_changes(
-        &self,
-        collections: &[&str],
-        since_ms: u64,
-    ) -> Result<sync::Changeset, TalaDbError> {
-        use sync::SyncAdapter;
-        sync::LastWriteWins::new().export_changes(self, collections, since_ms)
-    }
-
-    /// Merge a remote [`sync::Changeset`] into the local database, resolving
-    /// conflicts by Last-Write-Wins. Returns the number of documents actually
-    /// changed (upserted or deleted) — unchanged documents (local copy newer)
-    /// are skipped.
-    pub fn import_changes(&self, changeset: sync::Changeset) -> Result<u64, TalaDbError> {
-        use sync::SyncAdapter;
-        sync::LastWriteWins::new().import_changes(self, changeset)
-    }
-
-    /// Merge a remote changeset through a tolerant import-time `validator`,
-    /// returning the full [`sync::ImportReport`] (applied / skipped /
-    /// quarantined). Every upserted document is passed to the validator before
-    /// the Last-Write-Wins comparison; a rejected document is normalized,
-    /// skipped, or set aside in the quarantine table — never dropped silently
-    /// and never able to abort the batch. This is where the "validate, never
-    /// cast" guarantee is enforced inside core `sync`, rather than only at a
-    /// higher layer. Deletes are not validated (a tombstone has no shape).
-    pub fn import_changes_validated(
-        &self,
-        changeset: sync::Changeset,
-        validator: std::sync::Arc<dyn sync::ImportValidator>,
-    ) -> Result<sync::ImportReport, TalaDbError> {
-        sync::LastWriteWins::new()
-            .with_validator(validator)
-            .import_report(self, changeset)
-    }
-
-    /// Return every document currently held in `collection`'s quarantine table,
-    /// paired with the reason it was set aside. Empty when nothing has been
-    /// quarantined. Intended for operator inspection and recovery tooling.
-    pub fn quarantined(
-        &self,
-        collection: &str,
-    ) -> Result<Vec<sync::QuarantineRecord>, TalaDbError> {
-        let table = crate::index::quarantine_table_name(collection);
-        let rtxn = self.backend.begin_read()?;
-        let mut out = Vec::new();
-        for (_, bytes) in rtxn.scan_all(&table)? {
-            out.push(postcard::from_bytes::<sync::QuarantineRecord>(&bytes)?);
-        }
-        Ok(out)
     }
 
     /// Read the current **application** migration version (0 if never set).

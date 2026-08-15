@@ -34,9 +34,11 @@ already a no-op if the index exists). Whole-batch transactional rollback would
 require a transaction primitive the high-level API does not expose yet.
 :::
 
-For evolving **synced** collections, migrations pair with additive-only schema
-changes and a per-collection `syncSchema` (import-time `_v` migration +
-validation) — see [Schema & Sync Standards](/guide/schema-and-sync-standards).
+When an app ships more than one build against the same database — a user on an
+old version opening data a newer version already upgraded — migrations pair with
+additive-only schema changes and a per-collection `syncSchema.version`, which
+stamps `_v` and drives read-time up/downcasting. See
+[Schema Validation](/api/schema).
 
 ## Defining migrations
 

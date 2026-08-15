@@ -110,7 +110,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.10.2",
+        text: "v0.11.0",
         items: [
           {
             text: "Changelog",
@@ -135,29 +135,26 @@ export default defineConfig({
           { text: "Introduction", link: "/introduction" },
           { text: "Core Concepts", link: "/concepts" },
           { text: "Features", link: "/features" },
-          { text: "Benchmarks", link: "/benchmarks" },
         ],
       },
       {
         text: "Platform Guides",
         items: [
           { text: "Web (Browser / WASM)", link: "/guide/web" },
-          { text: "Next.js", link: "/guide/nextjs" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
-          { text: "Cloudflare Workers", link: "/guide/cloudflare" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
-          { text: "Bidirectional Sync", link: "/guide/bidirectional-sync" },
-          { text: "HTTP Push Sync", link: "/guide/http-sync" },
-          { text: "CRDT Sync", link: "/guide/crdt-sync" },
-          { text: "Schema & Sync Standards", link: "/guide/schema-and-sync-standards" },
         ],
       },
       {
         text: "Packages",
         items: [
           { text: "React Hooks (@taladb/react)", link: "/guide/react" },
-          { text: "Scoped Replication Hooks", link: "/guide/scoped-replication" },
+          { text: "Local-First Data (@taladb/react/query)", link: "/guide/query" },
+          {
+            text: "Migrating from TanStack Query",
+            link: "/guide/react-query-migration",
+          },
         ],
       },
       {
@@ -173,6 +170,7 @@ export default defineConfig({
           { text: "Migrations", link: "/api/migrations" },
           { text: "Encryption", link: "/api/encryption" },
           { text: "Live Queries", link: "/api/live-queries" },
+          { text: "Change Webhook", link: "/api/webhook" },
         ],
       },
     ],

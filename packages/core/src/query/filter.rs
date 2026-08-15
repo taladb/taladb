@@ -42,6 +42,31 @@ pub enum Filter {
     Regex(String, String),
 }
 
+/// Apply `pred` to a field value, and to each element when it is an array.
+///
+/// This is what gives array fields query semantics. `{ tags: ['rust', 'db'] }`
+/// matches `{ tags: 'rust' }` because one element does, exactly as it does in
+/// MongoDB — and the whole-array comparison is still tried first, so an exact
+/// `{ tags: ['rust', 'db'] }` filter keeps working.
+///
+/// Documents could previously *hold* arrays (`$push` and `$pull` maintain them)
+/// while no query could reach into one: the comparison was against the array as
+/// a single value, so a field holding a list matched nothing but an identical
+/// list. The failure was silent — an empty result set, never an error.
+///
+/// Nested arrays are not flattened. One level is what the write path indexes
+/// (`encode_index_keys`), and matching deeper than the index reaches would make
+/// the same query answer differently depending on whether an index existed.
+fn any_element<F: Fn(&Value) -> bool>(value: &Value, pred: F) -> bool {
+    if pred(value) {
+        return true;
+    }
+    match value {
+        Value::Array(items) => items.iter().any(pred),
+        _ => false,
+    }
+}
+
 impl Filter {
     /// Evaluate this filter against a document. Used as a post-filter after index scans.
     pub fn matches(&self, doc: &Document) -> bool {
@@ -52,35 +77,48 @@ impl Filter {
                 if field == "_id" {
                     return matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
-                doc.get(field).is_some_and(|v| v == val)
+                doc.get(field).is_some_and(|v| any_element(v, |e| e == val))
             }
 
+            // Negation is over the *document*, not the element: `$ne` excludes a
+            // document any of whose elements equals the value, which is what
+            // makes `$ne` the complement of `$eq` on an array field too.
             Self::Ne(field, val) => {
                 if field == "_id" {
                     return !matches!(val, Value::Str(s) if s == &doc.id.to_string());
                 }
-                doc.get(field).is_none_or(|v| v != val)
+                doc.get(field).is_none_or(|v| !any_element(v, |e| e == val))
             }
 
-            Self::Gt(field, val) => doc
-                .get(field)
-                .and_then(|v| v.partial_cmp_numeric(val))
-                .is_some_and(|ord| ord == std::cmp::Ordering::Greater),
+            Self::Gt(field, val) => doc.get(field).is_some_and(|v| {
+                any_element(v, |e| {
+                    e.partial_cmp_numeric(val) == Some(std::cmp::Ordering::Greater)
+                })
+            }),
 
-            Self::Gte(field, val) => doc
-                .get(field)
-                .and_then(|v| v.partial_cmp_numeric(val))
-                .is_some_and(|ord| ord != std::cmp::Ordering::Less),
+            Self::Gte(field, val) => doc.get(field).is_some_and(|v| {
+                any_element(v, |e| {
+                    matches!(
+                        e.partial_cmp_numeric(val),
+                        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                    )
+                })
+            }),
 
-            Self::Lt(field, val) => doc
-                .get(field)
-                .and_then(|v| v.partial_cmp_numeric(val))
-                .is_some_and(|ord| ord == std::cmp::Ordering::Less),
+            Self::Lt(field, val) => doc.get(field).is_some_and(|v| {
+                any_element(v, |e| {
+                    e.partial_cmp_numeric(val) == Some(std::cmp::Ordering::Less)
+                })
+            }),
 
-            Self::Lte(field, val) => doc
-                .get(field)
-                .and_then(|v| v.partial_cmp_numeric(val))
-                .is_some_and(|ord| ord != std::cmp::Ordering::Greater),
+            Self::Lte(field, val) => doc.get(field).is_some_and(|v| {
+                any_element(v, |e| {
+                    matches!(
+                        e.partial_cmp_numeric(val),
+                        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                    )
+                })
+            }),
 
             Self::In(field, vals) => {
                 if field == "_id" {
@@ -89,7 +127,8 @@ impl Filter {
                         .iter()
                         .any(|v| matches!(v, Value::Str(s) if *s == id_str));
                 }
-                doc.get(field).is_some_and(|v| vals.contains(v))
+                doc.get(field)
+                    .is_some_and(|v| any_element(v, |e| vals.contains(e)))
             }
 
             Self::Nin(field, vals) => {
@@ -99,7 +138,8 @@ impl Filter {
                         .iter()
                         .any(|v| matches!(v, Value::Str(s) if *s == id_str));
                 }
-                doc.get(field).is_none_or(|v| !vals.contains(v))
+                doc.get(field)
+                    .is_none_or(|v| !any_element(v, |e| vals.contains(e)))
             }
 
             Self::Exists(field, should_exist) => {
@@ -136,17 +176,18 @@ impl Filter {
             // Size limits guard against ReDoS via catastrophic backtracking or
             // excessively large compiled automata from user-supplied patterns.
             Self::Regex(field, pattern) => {
-                if let Some(Value::Str(text)) = doc.get(field) {
-                    regex::RegexBuilder::new(pattern)
-                        // Limit the compiled NFA/DFA size to 1 MiB each.
-                        .size_limit(1 << 20)
-                        .dfa_size_limit(1 << 20)
-                        .build()
-                        .map(|re| re.is_match(text))
-                        .unwrap_or(false)
-                } else {
-                    false
-                }
+                let Some(value) = doc.get(field) else {
+                    return false;
+                };
+                let Ok(re) = regex::RegexBuilder::new(pattern)
+                    // Limit the compiled NFA/DFA size to 1 MiB each.
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                else {
+                    return false;
+                };
+                any_element(value, |e| matches!(e, Value::Str(t) if re.is_match(t)))
             }
         }
     }
@@ -209,7 +250,9 @@ impl Filter {
                 let Some(re) = regex_cache.get(pattern) else {
                     return false;
                 };
-                matches!(doc.get(field), Some(Value::Str(text)) if re.is_match(text))
+                doc.get(field).is_some_and(|v| {
+                    any_element(v, |e| matches!(e, Value::Str(t) if re.is_match(t)))
+                })
             }
             Self::And(filters) => filters
                 .iter()

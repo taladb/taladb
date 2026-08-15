@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-description = "TalaDB browser WASM bindings (wasm-bindgen + OPFS) and Cloudflare Workers"
+description = "TalaDB browser WASM bindings (wasm-bindgen + OPFS)"
 
 [lints]
 workspace = true
@@ -48,11 +48,6 @@ features = [
   "FileSystemSyncAccessHandle",
   "FileSystemWritableFileStream",
 ]
-
-[features]
-# Build a WASM bundle without OPFS/browser APIs for Cloudflare Workers.
-# Excludes openWithOpfs and FileSystemSyncAccessHandle imports.
-cf-workers = []
 
 # Size beats speed for a payload that is fetched, decoded and compiled on every
 # cold start. `-Oz` plus name-section stripping is worth more to time-to-first-

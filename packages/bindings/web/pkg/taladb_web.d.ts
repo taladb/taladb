@@ -41,10 +41,6 @@ export class CollectionWasm {
      */
     deleteMany(filter: any): number;
     /**
-     * Delete many documents by id, in one commit. Returns the number removed.
-     */
-    deleteManyWithIds(ids: any, origin: string): number;
-    /**
      * Delete the first matching document. Returns true if deleted.
      */
     deleteOne(filter: any): boolean;
@@ -98,18 +94,6 @@ export class CollectionWasm {
      */
     insertMany(docs: any): any;
     /**
-     * Upsert many documents **by caller-supplied `_id`**, in one commit.
-     *
-     * Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
-     * this honours the id on each document, which is what lets replication address
-     * a remote row by a *derived* id so repeated fetches converge on one document
-     * instead of duplicating it.
-     *
-     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
-     * or `"local"` for ordinary user writes.
-     */
-    replaceManyWithIds(docs: any, origin: string): any;
-    /**
      * Rank documents against a free-text query using BM25 (OR semantics).
      *
      * Returns a JSON array of `{ document, score }`.
@@ -138,12 +122,6 @@ export class TalaDBWasm {
      */
     collection(name: string): CollectionWasm;
     /**
-     * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
-     * changeset string, for bidirectional sync. `sinceMs` is a millisecond
-     * epoch timestamp (the persisted sync cursor).
-     */
-    exportChanges(since_ms: number, collections: string[]): string;
-    /**
      * Serialize the entire in-memory database to bytes.
      *
      * Pass the returned `Uint8Array` to `opfs_flush_snapshot` to persist, or
@@ -152,13 +130,7 @@ export class TalaDBWasm {
      */
     exportSnapshot(): Uint8Array;
     /**
-     * Merge a JSON changeset string (from a remote peer) into the local
-     * database via Last-Write-Wins. Returns the number of documents changed.
-     */
-    importChanges(changeset_json: string): number;
-    /**
      * User collection names (reserved `_`-prefixed collections excluded).
-     * Backs the sync orchestration's "sync all collections" default.
      */
     listCollectionNames(): string[];
     /**
@@ -213,20 +185,6 @@ export class WorkerDB {
      */
     compact(): void;
     /**
-     * Remove tombstones older than `before_ms` from the given collection.
-     *
-     * Call periodically (e.g. on app startup) after your sync retention window
-     * has elapsed so deleted document IDs no longer accumulate indefinitely.
-     * Returns the number of tombstones removed.
-     *
-     * ```js
-     * // Prune tombstones older than 30 days
-     * const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-     * const pruned = db.compactTombstones('users', cutoff);
-     * ```
-     */
-    compactTombstones(collection: string, before_ms: number): number;
-    /**
      * Count matching documents.
      */
     count(collection: string, filter_json: string): number;
@@ -250,9 +208,10 @@ export class WorkerDB {
      */
     deleteMany(collection: string, filter_json: string): number;
     /**
-     * Delete many documents by id, in one commit. Returns the number removed.
+     * Delete documents by id. Returns how many were present and removed.
+     * The delete half of cross-tab write propagation.
      */
-    deleteManyWithIds(collection: string, ids_json: string, origin: string): number;
+    deleteManyWithIds(collection: string, ids_json: string): number;
     /**
      * Delete the first matching document. Returns `true` / `false`.
      */
@@ -267,18 +226,6 @@ export class WorkerDB {
      * Drop a vector index (and its HNSW graph if present).
      */
     dropVectorIndex(collection: string, field: string): void;
-    /**
-     * Export a changeset for the given collections since `since_ms`.
-     *
-     * Returns a JSON string representing `Vec<Change>` that can be sent
-     * to a remote peer via fetch, WebSocket, or SSE.
-     *
-     * ```js
-     * const json = db.exportChangeset(JSON.stringify(['users', 'posts']), 0);
-     * await fetch('/sync', { method: 'POST', body: json });
-     * ```
-     */
-    exportChangeset(collections_json: string, since_ms: number): string;
     /**
      * Serialize the entire in-memory database to bytes for persistence.
      *
@@ -312,26 +259,6 @@ export class WorkerDB {
      */
     hybridSearch(collection: string, text_field: string, text: string, vector_field: string, vector_json: string, top_k: number, filter_json: string, options_json: string): string;
     /**
-     * Import a remote changeset and merge it into the local database using
-     * Last-Write-Wins conflict resolution.
-     *
-     * Returns the number of documents actually changed.
-     *
-     * ```js
-     * const resp = await fetch('/sync?since=' + lastSync);
-     * const applied = db.importChangeset(await resp.text());
-     * if (applied > 0) { rerender(); }
-     * ```
-     */
-    importChangeset(changeset_json: string): number;
-    /**
-     * Import a remote changeset through a tolerant structural validator built
-     * from `schemas_json` (`{ "<collection>": { version, required, types,
-     * defaults } }`). Returns a JSON `{ applied, skipped, quarantined }`.
-     * Rejected documents are set aside (see `quarantined`), never dropped.
-     */
-    importChangesetValidated(changeset_json: string, schemas_json: string): string;
-    /**
      * Insert a document. Returns the new ULID as a string.
      */
     insert(collection: string, doc_json: string): string;
@@ -341,7 +268,6 @@ export class WorkerDB {
     insertMany(collection: string, docs_json: string): string;
     /**
      * Returns a JSON array of all collection names in the database.
-     * Used by the Worker to build the collections list for exportChangeset.
      */
     listCollections(): string;
     /**
@@ -355,8 +281,6 @@ export class WorkerDB {
     static openInMemory(): WorkerDB;
     /**
      * Open a database backed by OPFS with HTTP push sync config.
-     *
-     * Not available when compiled with the `cf-workers` feature.
      *
      * `config_json` - JSON-serialised `TalaDbConfig`, or `null` to open without sync.
      *
@@ -379,8 +303,6 @@ export class WorkerDB {
     /**
      * Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
      *
-     * Not available when compiled with the `cf-workers` feature.
-     *
      * Call sequence in the SharedWorker:
      * ```js
      * const handle = await file_handle.createSyncAccessHandle();
@@ -401,24 +323,6 @@ export class WorkerDB {
      */
     static openWithSnapshot(data?: Uint8Array | null): WorkerDB;
     /**
-     * Documents set aside in `collection`'s quarantine table, as a JSON array
-     * of `{ document, reason, changedAt }`.
-     */
-    quarantined(collection: string): string;
-    /**
-     * Upsert many documents **by caller-supplied `_id`**, in one commit.
-     *
-     * Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
-     * honours the id in each document. That is what lets the replication
-     * coordinator address a remote row by a *derived* id (see `deriveDocId`) and
-     * have repeated fetches converge on one document instead of duplicating it.
-     *
-     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
-     * or `"local"` for ordinary user writes. Remote rows are marked so they can
-     * never replicate back out — see `Collection::replace_many_with_ids`.
-     */
-    replaceManyWithIds(collection: string, docs_json: string, origin: string): string;
-    /**
      * Rank documents against a free-text query using BM25 (OR semantics).
      *
      * Returns a JSON array of `{ document, score }`.
@@ -435,8 +339,6 @@ export class WorkerDB {
      * body succeeds so a crash mid-run resumes from the last applied version.
      */
     setUserVersion(version: number): void;
-    syncPending(): bigint;
-    syncStatus(): string;
     /**
      * Update all matching documents. Returns the count updated.
      */
@@ -452,6 +354,19 @@ export class WorkerDB {
      * No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
      */
     upgradeVectorIndex(collection: string, field: string): void;
+    /**
+     * Upsert documents **by their own `_id`**, in one commit per document.
+     *
+     * Backs cross-tab write propagation: a tab that cannot hold the OPFS lock
+     * writes to an in-memory database, then forwards the committed documents
+     * here so the tab holding the lock applies them to the durable file. The
+     * `_id`s travel with the documents, so an id an application already holds
+     * stays valid after the hand-off — which a plain re-`insert` would break by
+     * minting a new ULID.
+     *
+     * Unlike `insert_many`, a caller-supplied `_id` is required, not ignored.
+     */
+    upsertManyWithIds(collection: string, docs_json: string): string;
     /**
      * Read the current application migration version (0 if never set). Backs
      * the `openDB({ migrations })` runner, which advances it per migration.
@@ -531,7 +446,6 @@ export interface InitOutput {
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropFtsIndex: (a: number, b: number, c: number) => [number, number];
@@ -543,7 +457,6 @@ export interface InitOutput {
     readonly collectionwasm_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any, l: any) => [number, number, number];
     readonly collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
     readonly collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
-    readonly collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly collectionwasm_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: any) => [number, number, number];
     readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
@@ -556,9 +469,7 @@ export interface InitOutput {
     readonly opfs_load_snapshot: (a: number, b: number) => any;
     readonly opfs_open_backend: (a: number, b: number) => any;
     readonly taladbwasm_collection: (a: number, b: number, c: number) => [number, number, number];
-    readonly taladbwasm_exportChanges: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly taladbwasm_exportSnapshot: (a: number) => [number, number, number, number];
-    readonly taladbwasm_importChanges: (a: number, b: number, c: number) => [number, number, number];
     readonly taladbwasm_listCollectionNames: (a: number) => [number, number, number, number];
     readonly taladbwasm_openInMemory: () => [number, number, number];
     readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
@@ -566,28 +477,24 @@ export interface InitOutput {
     readonly taladbwasm_userVersion: (a: number) => [number, number, number];
     readonly workerdb_aggregate: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_compact: (a: number) => [number, number];
-    readonly workerdb_compactTombstones: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_count: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_createCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly workerdb_deleteMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly workerdb_deleteManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly workerdb_deleteManyWithIds: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_deleteOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly workerdb_exportChangeset: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly workerdb_exportSnapshot: (a: number) => [number, number, number, number];
     readonly workerdb_find: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly workerdb_findOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_flush: (a: number) => [number, number];
     readonly workerdb_hybridSearch: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number, number];
-    readonly workerdb_importChangeset: (a: number, b: number, c: number) => [number, number, number];
-    readonly workerdb_importChangesetValidated: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_insert: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_insertMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_listCollections: (a: number) => [number, number, number, number];
@@ -597,24 +504,21 @@ export interface InitOutput {
     readonly workerdb_openWithConfigAndSnapshot: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_openWithOpfs: (a: any) => [number, number, number];
     readonly workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
-    readonly workerdb_quarantined: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly workerdb_replaceManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly workerdb_searchText: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
     readonly workerdb_setDurability: (a: number, b: number) => void;
     readonly workerdb_setUserVersion: (a: number, b: number) => [number, number];
-    readonly workerdb_syncPending: (a: number) => bigint;
-    readonly workerdb_syncStatus: (a: number) => [number, number];
     readonly workerdb_updateMany: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_updateOne: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly workerdb_upsertManyWithIds: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_userVersion: (a: number) => [number, number, number];
     readonly workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
     readonly init: () => void;
+    readonly wasm_bindgen__closure__destroy__h4ecd198e6e5fb530: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__h014c297fadd2a065: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h6f0d9de467faf809: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h20bda61557acb630: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h0dbbf48826ad16e8: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__ha4a918128dde32ae: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
