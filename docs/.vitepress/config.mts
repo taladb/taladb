@@ -135,7 +135,6 @@ export default defineConfig({
           { text: "Introduction", link: "/introduction" },
           { text: "Core Concepts", link: "/concepts" },
           { text: "Features", link: "/features" },
-          { text: "Benchmarks", link: "/benchmarks" },
         ],
       },
       {

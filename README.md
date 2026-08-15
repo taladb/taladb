@@ -59,35 +59,6 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 \+ encryption at rest, schema migrations, snapshot export/import, CLI tools.
 
-## Performance
-
-Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web` for the browser, `pnpm bench` for Node.js) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. Node.js results are from TalaDB v0.10.2; browser vector results are from v0.9.4 and have not yet been re-run against the v0.10.2 engine, so they understate current performance. File-backed / OPFS, medians after warmup.
-
-**Browser (WASM + OPFS)** — the flagship runtime, measured in headless Chrome (every timing includes the worker round-trip):
-
-| Operation | Scale | Result |
-|---|---|---|
-| `findNearest` (384-dim, exact k-NN) | 10k vectors | **17 ms** |
-| `findNearest` (384-dim, exact k-NN) | 50k vectors | **85 ms** |
-| Filtered vector search (metadata + rank) | 50k vectors | **123 ms** |
-| `findOne` by `_id` | 100k docs | **100 µs** |
-| `find` on indexed field | 100k docs | **300 µs** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
-
-**Node.js (native)** — file-backed, `fsync`-durable per write:
-
-| Operation | Scale | Result |
-|---|---|---|
-| `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **7.7 ms / 65 ms** |
-| Filtered vector search (metadata + rank) | 100k vectors | **171 ms** |
-| `findOne` by `_id` | 100k docs | **25 µs** |
-| `find` on indexed field | 100k docs | **174 µs** |
-| `find`, two-sided range (`$gte`+`$lt`) | 100k docs | **1.4 ms** |
-| `find`, unindexed field (full scan) | 100k docs | **317 ms** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~39k docs/s** |
-
-Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js. **0.10.2 cut exact vector search by ~63%** at 100k vectors (174 ms → 65 ms) by scoring each candidate in a single pass with the query norm hoisted out of the loop, and made the query engine resolve a storage table once per batch instead of once per key — worth **−30% on full scans**, **−32% on unindexed `count`**, and **+17% on bulk ingest**. `findOne` and bounded `find` no longer materialise the whole result set before discarding it, so an unindexed `findOne` is now microseconds rather than a full scan. Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
-
 ## Usage
 
 ### Install
@@ -319,7 +290,6 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 | Introduction & architecture | [/introduction](https://taladb.dev/introduction) |
 | Core concepts | [/concepts](https://taladb.dev/concepts) |
 | Feature overview | [/features](https://taladb.dev/features) |
-| Benchmarks | [/benchmarks](https://taladb.dev/benchmarks) |
 | Web (Browser / WASM) guide | [/guide/web](https://taladb.dev/guide/web) |
 | Node.js guide | [/guide/node](https://taladb.dev/guide/node) |
 | React Native guide | [/guide/react-native](https://taladb.dev/guide/react-native) |

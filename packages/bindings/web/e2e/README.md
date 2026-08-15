@@ -28,6 +28,8 @@ line is a bug this suite caught after the unit tests were green:
 | `phase4-webhook` | One request per committed mutation, verb per operation, payload shape, ordering, retries, queue overflow, drain on close, and exactly-once across tabs |
 | `phase5-perf` | Open latency, bulk insert, indexed vs unindexed reads, paged sort, aggregation, vector search, and webhook overhead — printed, and asserted only against loose ceilings |
 | `phase6-vector` | The vector database proper: all three metrics, index maintenance across insert/update/delete, backfill vs incremental builds, `dropVectorIndex`, hybrid (BM25 + vector) retrieval and its weights and filters, and vector durability across a reload and a second tab |
+| `phase7-document` | The document database beyond the happy path: the filter operators nothing else exercises (`$nin`, `$regex`, `$not`, `$contains`, `$exists:false`), `$push`/`$pull`, every `$group` accumulator, live aggregation, the index lifecycle, schema validation, the `openDB({ migrations })` runner, and `compact()` |
+| `phase8-mixed` | Scalars, text and vectors in one collection under all three index types: adding one index never moves another's answers, a write updates exactly the indexes covering the fields it touched, **incrementally maintained indexes match a rebuild from the same documents**, dropping one kind spares the rest, and a retrieval-shaped read (filter → fuse → fetch → aggregate) |
 
 Vector search is the part the product is positioned on, and the browser is where
 its two hardest cases live: the flat index is the *only* vector path there (HNSW
@@ -35,6 +37,22 @@ is Node-only), and a vector index has to survive both an OPFS reload and a write
 arriving from a tab that does not own the file. A stale entry left behind by an
 update is invisible to every unit test — the query still returns results, just
 the wrong ones.
+
+Two invariants carry most of the weight, because both fail *quietly* — the query
+still succeeds, it just answers wrongly:
+
+- **An index changes the plan, never the answer** (phase 7). The same rows are
+  loaded into an indexed and a completely unindexed collection, and two dozen
+  filters must return the same documents from both, by `find` and by `count`.
+- **A maintained index equals a rebuilt one** (phase 8). After a mixed workload of
+  inserts, scalar updates, text rewrites, vector rewrites and deletes, every index
+  is dropped and rebuilt from the surviving documents; all nine query kinds must
+  answer identically. BM25 is the sharp end — its corpus statistics are carried as
+  running deltas, so any drift in the accounting shows up as a changed ranking.
+
+Both batteries also assert they were not vacuous: a filter matching nothing agrees
+trivially and proves nothing, so an empty result is reported as a defect in the
+battery rather than counted as a pass.
 
 Multi-tab is the part with no other coverage. A dedicated worker per tab, one
 OPFS lock between them, and a snapshot in IndexedDB for everyone else is a design

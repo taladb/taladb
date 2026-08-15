@@ -68,7 +68,7 @@ await articles.createVectorIndex('embedding', {
 await articles.upgradeVectorIndex('embedding')
 ```
 
-Measured on the [benchmarks page](/benchmarks): 14.6 ms vs 188 ms flat at 50k × 384-dim vectors, with 100% recall@10 on clustered (embedding-like) data. Two caveats before reaching for it: graph construction is CPU-intensive (a one-off cost that grows quickly with collection size), and recall depends on your data's structure — measure on your own embeddings. The flat index remains the right default for most on-device corpora, and is what ships on web and React Native.
+Two caveats before reaching for it: graph construction is CPU-intensive (a one-off cost that grows quickly with collection size), and recall depends on your data's structure — HNSW is approximate, so measure both speed and recall on your own embeddings. The flat index remains the right default for most on-device corpora, and is what ships on web and React Native.
 
 ### Dropping a vector index
 
@@ -236,7 +236,7 @@ Document IDs and index keys are not encrypted (they must remain comparable for l
 
 In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: the first tab's worker holds an exclusive lock on the OPFS file; other tabs coordinate through a `BroadcastChannel`, which also powers instant cross-tab live-query updates.
 
-The engine is memory-resident and snapshots to OPFS on a short debounce (see [benchmarks](/benchmarks) for the durability trade-off this buys). When OPFS is unavailable (cross-origin iframes, older browsers), TalaDB falls back to an in-memory database seeded from an IndexedDB snapshot, so data still survives page reloads.
+The engine runs redb directly on the OPFS file and flushes every commit, so the browser is durable per commit — the same model as Node.js. Opt into batched commits with `durability: { flush_every_write: false }` plus an explicit `db.flush()` when you want throughput instead. When OPFS is unavailable (cross-origin iframes, older browsers), TalaDB falls back to an in-memory database seeded from an IndexedDB snapshot — that auxiliary snapshot is the one written on a short debounce — so data still survives page reloads.
 
 ## Platform-detecting unified package
 

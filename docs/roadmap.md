@@ -74,7 +74,7 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ## 2 · Performance & vector search
 
-Driven by findings from the [benchmark suites](/benchmarks) (`pnpm bench`, `pnpm bench:web`). The goal: keep TalaDB among the fastest embedded databases on every JS runtime.
+Driven by findings from the measurement suites in `scripts/` (`pnpm bench`, `pnpm bench:web`). The goal: keep TalaDB among the fastest embedded databases on every JS runtime.
 
 ### Cached decoded vectors — avoid re-reading storage per query
 

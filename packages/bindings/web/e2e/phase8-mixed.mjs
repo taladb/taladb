@@ -479,7 +479,10 @@ export async function run(page, r, browser) {
       };
 
       // One document carrying all three kinds of indexed field, written by the
-      // tab that does not own the file.
+      // tab that does not own the file. Its embedding is deliberately one no
+      // seeded row uses: mk(7) is already carried by R006 and R009, and a
+      // three-way tie at score 1 would let this pass on ordering luck rather
+      // than on the write having been indexed.
       await B.evaluate(() =>
         window.mixed.insert({
           ref: 'FWD1',
@@ -488,7 +491,7 @@ export async function run(page, r, browser) {
           score: 11,
           tags: ['t3', 'forwarded'],
           body: 'compiler notes forwarded across a tab boundary',
-          emb: window.mk(7),
+          emb: window.mk(999),
         }),
       );
 
@@ -500,7 +503,8 @@ export async function run(page, r, browser) {
           return {
             scalar: (await c.find({ tags: 'forwarded' })).map((d) => d.ref),
             text: (await c.searchText('body', 'forwarded boundary', 5)).map((h) => h.document.ref),
-            vector: (await c.findNearest('emb', window.mk(7), 3)).map((h) => h.document.ref),
+            // Queried with FWD1's own vector, so it must rank first outright.
+            vector: (await c.findNearest('emb', window.mk(999), 3)).map((h) => h.document.ref),
             range: (await c.find({ score: { $gte: 10, $lt: 15 } })).map((d) => d.ref),
           };
         });
@@ -513,7 +517,7 @@ export async function run(page, r, browser) {
       r.eq(seen.scalar, ['FWD1'], 'the forwarded document is in the array index');
       r.ok(seen.range.includes('FWD1'), 'the forwarded document is in the range index');
       r.ok(seen.text.includes('FWD1'), 'the forwarded document is in the text index');
-      r.ok(seen.vector.includes('FWD1'), 'the forwarded document is in the vector index');
+      r.eq(seen.vector[0], 'FWD1', 'the forwarded document is nearest its own vector');
     } finally {
       await B.close();
     }

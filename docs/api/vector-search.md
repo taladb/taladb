@@ -117,11 +117,9 @@ await articles.createVectorIndex('embedding', {
 await articles.upgradeVectorIndex('embedding')
 ```
 
-Measured on the [benchmarks page](/benchmarks): 14.6 ms vs 188 ms flat at
-50k × 384-dim vectors, with 100% recall@10 on clustered (embedding-like) data.
 Two caveats: graph construction is CPU-intensive (a one-off cost that grows
-with collection size), and recall depends on your data's structure — measure on
-your own embeddings.
+with collection size), and recall depends on your data's structure — HNSW is
+approximate, so measure both speed and recall on your own embeddings.
 
 ### `dropVectorIndex(field)` / `upgradeVectorIndex(field)`
 
