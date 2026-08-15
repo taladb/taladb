@@ -740,9 +740,23 @@ export function useQuery(options: AnyQueryOptions): QueryResult<unknown> {
   const [, forceStaleCheck] = useState(0)
   useEffect(() => {
     if (state.dataUpdatedAt === 0 || !Number.isFinite(staleTime)) return
-    const remaining = state.dataUpdatedAt + staleTime - Date.now()
-    if (remaining <= 0) return
-    const timer = setTimeout(() => forceStaleCheck((n) => n + 1), remaining)
+    const staleAt = state.dataUpdatedAt + staleTime
+    if (Date.now() >= staleAt) return
+    // A timer may wake a hair before its deadline — the platform rounds down to
+    // whole milliseconds — and the re-render it forces does not re-run this
+    // effect, because neither dep changed. So a single early wake-up with no
+    // re-check would leave `isStale` reporting `false` for as long as the query
+    // sits on screen. Re-check on each wake and sleep out the remainder.
+    let timer: ReturnType<typeof setTimeout>
+    const check = () => {
+      const remaining = staleAt - Date.now()
+      if (remaining > 0) {
+        timer = setTimeout(check, remaining)
+        return
+      }
+      forceStaleCheck((n) => n + 1)
+    }
+    timer = setTimeout(check, staleAt - Date.now())
     return () => clearTimeout(timer)
   }, [state.dataUpdatedAt, staleTime])
 

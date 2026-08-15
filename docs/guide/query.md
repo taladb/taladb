@@ -206,7 +206,7 @@ const done   = useQuery({ queryKey: key, queryFn, where: { done: true } })
 
 One fetch, three views. `where` is deliberately **not part of the query key** —
 that is the whole point. It takes the full [filter
-DSL](/api/find#filter-operators): `$in`, `$gte`, `$contains`, `$and`, and the
+DSL](/api/filters): `$in`, `$gte`, `$contains`, `$and`, and the
 rest.
 
 Two things it does *not* do, both on purpose:

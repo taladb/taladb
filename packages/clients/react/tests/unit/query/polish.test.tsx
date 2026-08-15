@@ -345,7 +345,11 @@ describe('isStale', () => {
 
     // Computed at render, so without a timer it would keep reporting `false`
     // while sitting on screen — and any UI keyed off it would never appear.
-    await waitFor(() => expect(result.current.isStale).toBe(true))
+    //
+    // The budget is well past the 150ms window on purpose: a loaded CI runner
+    // can delay both the timer and the re-render it triggers, and the default
+    // 1s would then fail on a scheduling hiccup rather than on this behaviour.
+    await waitFor(() => expect(result.current.isStale).toBe(true), { timeout: 5000 })
   })
 })
 

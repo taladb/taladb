@@ -214,15 +214,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Asset names carry the Rust target triple and **no version**, so that
+        # `releases/latest/download/taladb-<triple>.tar.gz` resolves — that URL
+        # is what makes the one-line installer work without the caller knowing
+        # which release is current.
         include:
           - os: ubuntu-latest
-            artifact: taladb-linux-x86_64
+            artifact: taladb-x86_64-unknown-linux-gnu
             bin: taladb
           - os: macos-latest
-            artifact: taladb-macos-aarch64
+            artifact: taladb-aarch64-apple-darwin
+            bin: taladb
+          - os: macos-13 # Intel runner; macos-latest is Apple silicon
+            artifact: taladb-x86_64-apple-darwin
             bin: taladb
           - os: windows-latest
-            artifact: taladb-windows-x86_64
+            artifact: taladb-x86_64-pc-windows-msvc
             bin: taladb.exe
 
     steps:
@@ -244,7 +251,7 @@ jobs:
       - name: Compress binary (unix)
         if: runner.os != 'Windows'
         run: |
-          tar -czf ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz \
+          tar -czf ${{ matrix.artifact }}.tar.gz \
             -C target/release ${{ matrix.bin }}
 
       - name: Compress binary (windows)
@@ -252,14 +259,14 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path target/release/${{ matrix.bin }} `
-            -DestinationPath ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+            -DestinationPath ${{ matrix.artifact }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz
-            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip
 
   # ---------------------------------------------------------------------------
   # Build React Native iOS static library (universal arm64 + x86_64)
@@ -581,17 +588,24 @@ jobs:
       # here would just be loose duplicates. taladb-cli is the one artifact with
       # no npm channel; docs/features.md points users to Releases for it.
       #
-      # `release-taladb-*-*` selects exactly the three platform CLI builds
-      # (release-taladb-linux-x86_64, -macos-aarch64, -windows-x86_64) and
-      # excludes release-taladb / release-taladb-react (no second dash). Each CLI
-      # archive already has a unique, platform-suffixed name, so merge-multiple
-      # is collision-free — no more duplicate-basename delete-reupload failure.
+      # `release-taladb-*-*` selects exactly the platform CLI builds
+      # (release-taladb-x86_64-unknown-linux-gnu, -aarch64-apple-darwin,
+      # -x86_64-apple-darwin, -x86_64-pc-windows-msvc) and excludes
+      # release-taladb / release-taladb-react, which have no second dash. The
+      # @taladb/node binaries are uploaded unprefixed (taladb-node-*), so they
+      # do not match either. Each CLI archive has a unique, triple-suffixed
+      # name, so merge-multiple is collision-free.
       - name: Download CLI archives
         uses: actions/download-artifact@v4
         with:
           pattern: release-taladb-*-*
           path: /tmp/release-assets
           merge-multiple: true
+
+      # Published as a release asset so the documented one-liner —
+      # releases/latest/download/install.sh — resolves without a version.
+      - name: Stage installer
+        run: cp install.sh /tmp/release-assets/install.sh
 
       - name: List assets
         run: ls -lh /tmp/release-assets/

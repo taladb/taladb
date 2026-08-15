@@ -9,6 +9,7 @@
 //!   taladb drop    <file> <collection>          — drop an entire collection
 //!   taladb studio  <file> [--port]               — start a local web UI
 
+mod banner;
 mod studio;
 
 use std::path::PathBuf;
@@ -158,6 +159,22 @@ fn check_no_traversal(path: &std::path::Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Open a database that must already exist.
+///
+/// `Database::open` creates the file when it is missing, which is right for
+/// `import` and wrong for everything else: a mistyped path would otherwise
+/// leave a stray empty database on disk and report "No collections found",
+/// which reads as *the data is gone* rather than *you typed the wrong name*.
+pub(crate) fn open_existing(file: &PathBuf) -> Result<Database> {
+    if !file.exists() {
+        anyhow::bail!(
+            "no such database: {} — check the path, or run `taladb import` to create one",
+            file.display()
+        );
+    }
+    Database::open(file).with_context(|| format!("opening {file:?}"))
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -196,7 +213,7 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_inspect(file: &PathBuf) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
 
     println!("TalaDB Inspector");
     println!("────────────────");
@@ -208,8 +225,24 @@ fn cmd_inspect(file: &PathBuf) -> Result<()> {
     } else {
         println!("\nCollections ({}):", collections.len());
         for name in &collections {
-            let n = db.collection(name)?.count(Filter::All)?;
+            let col = db.collection(name)?;
+            let n = col.count(Filter::All)?;
             println!("  {name}  ({n} documents)");
+
+            // Index listing is what makes this an *inspector* rather than a
+            // second `collections`: after a migration the question is usually
+            // "did my index survive", and the alternative is opening the
+            // database from application code to find out.
+            let idx = col.list_indexes()?;
+            if !idx.btree.is_empty() {
+                println!("    Indexes:         {}", idx.btree.join(", "));
+            }
+            if !idx.fts.is_empty() {
+                println!("    Text indexes:    {}", idx.fts.join(", "));
+            }
+            if !idx.vector.is_empty() {
+                println!("    Vector indexes:  {}", idx.vector.join(", "));
+            }
         }
     }
 
@@ -221,7 +254,7 @@ fn cmd_inspect(file: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_collections(file: &PathBuf) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
     let collections = db.list_collection_names()?;
     for name in &collections {
         println!("{name}");
@@ -234,7 +267,7 @@ fn cmd_collections(file: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_count(file: &PathBuf, collection: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
     let col = db.collection(collection)?;
     let n = col.count(Filter::All)?;
     println!("{n}");
@@ -251,7 +284,7 @@ fn cmd_export(
     fmt: ExportFormat,
     out: Option<&std::path::Path>,
 ) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
     let col = db.collection(collection)?;
     let docs = col.find(Filter::All)?;
 
@@ -316,6 +349,8 @@ fn cmd_export(
 
 fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
     check_no_traversal(data, "import data")?;
+    // The one command that may create: importing into a fresh database is the
+    // documented way to make one.
     let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
     let col = db.collection(collection)?;
 
@@ -357,7 +392,7 @@ fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
     let col = db.collection(collection)?;
     let n = col.delete_many(Filter::All)?;
     eprintln!("Deleted {n} documents from '{collection}'");
@@ -369,7 +404,7 @@ fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {file:?}"))?;
+    let db = open_existing(file)?;
     db.collection(collection)?
         .upgrade_vector_index(field)
         .with_context(|| {

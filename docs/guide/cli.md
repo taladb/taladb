@@ -9,32 +9,68 @@ The `taladb` CLI lets you inspect, export, and manage TalaDB database files from
 
 ## Installation
 
-Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/taladb/taladb/releases).
+One line, no version to look up:
+
+```sh
+curl -fsSL https://github.com/taladb/taladb/releases/latest/download/install.sh | bash
+```
+
+It detects your platform, downloads the matching binary from the newest release,
+and installs to `/usr/local/bin` — asking for `sudo` only if that directory is
+not writable.
+
+Two knobs:
+
+```sh
+# pin a release
+VERSION=v0.11.0 curl -fsSL https://github.com/taladb/taladb/releases/latest/download/install.sh | bash
+
+# install somewhere else (created if missing, no sudo)
+INSTALL_DIR=~/.local/bin curl -fsSL https://github.com/taladb/taladb/releases/latest/download/install.sh | bash
+```
+
+::: tip Prefer to read it first?
+It is a plain shell script, and piping a URL into `bash` is worth being fussy
+about:
+
+```sh
+curl -fsSL https://github.com/taladb/taladb/releases/latest/download/install.sh -o install.sh
+less install.sh && bash install.sh
+```
+:::
+
+### Other ways
 
 ::: code-group
 
-```sh [Linux]
-# Download and extract (replace VERSION with the latest release, e.g. v0.1.1)
-curl -L https://github.com/taladb/taladb/releases/download/VERSION/taladb-linux-x86_64-VERSION.tar.gz \
-  | tar -xz
-sudo mv taladb /usr/local/bin/
-taladb --version
-```
-
-```sh [macOS]
-curl -L https://github.com/taladb/taladb/releases/download/VERSION/taladb-macos-aarch64-VERSION.tar.gz \
-  | tar -xz
-sudo mv taladb /usr/local/bin/
+```sh [From source]
+# any platform with a Rust toolchain — also the path for Linux arm64,
+# which has no prebuilt binary yet
+cargo install --git https://github.com/taladb/taladb taladb-cli
 taladb --version
 ```
 
 ```powershell [Windows]
-# Download taladb-windows-x86_64-VERSION.zip from the releases page,
+# Download taladb-x86_64-pc-windows-msvc.zip from the releases page,
 # extract it, and add the folder to your PATH.
 taladb --version
 ```
 
+```sh [Manual download]
+# Every asset is version-free, so `latest` always resolves:
+#   taladb-x86_64-unknown-linux-gnu.tar.gz
+#   taladb-aarch64-apple-darwin.tar.gz
+#   taladb-x86_64-apple-darwin.tar.gz
+#   taladb-x86_64-pc-windows-msvc.zip
+curl -fsSL https://github.com/taladb/taladb/releases/latest/download/taladb-aarch64-apple-darwin.tar.gz | tar -xz
+sudo mv taladb /usr/local/bin/
+taladb --version
+```
+
 :::
+
+Prebuilt binaries cover macOS (Apple silicon and Intel), Linux x86_64, and
+Windows x86_64.
 
 ## Commands
 
@@ -61,9 +97,24 @@ taladb studio ./myapp.db --no-open
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | `4321` | Port to listen on |
+| `--host` | `127.0.0.1` | Address to bind |
 | `--no-open` | `false` | Skip opening a browser window |
 
 The database file is opened read-write. Deletions made through the UI are permanent and cannot be undone.
+
+::: danger `--host` has no authentication behind it
+The studio binds to loopback by default for a reason: there is no login, no
+token, and no read-only mode. Binding `0.0.0.0` gives everyone who can reach
+that address the ability to read and delete your data. The CLI prints a warning
+when you do it; that warning is the only thing standing between the flag and an
+open database.
+:::
+
+::: tip One process at a time
+The database takes an exclusive lock, so `taladb studio` will not open a file
+your application already has open — it exits with *"Database already open.
+Cannot acquire lock."* Stop the app first, or point the studio at a copy.
+:::
 
 **Platform compatibility**
 
@@ -114,15 +165,18 @@ TalaDB Inspector
 File: myapp.db
 
 Collections (3):
-  articles  (1 247 documents)
-    Indexes:     category, locale, publishedAt
-    Vector indexes:  embedding (384-dim, cosine)
+  articles  (1247 documents)
+    Indexes:         category, locale, publishedAt
+    Text indexes:    body
+    Vector indexes:  embedding
   sessions  (8 documents)
-  users     (56 documents)
-    Indexes:     email, age
+  users  (56 documents)
+    Indexes:         email, age
 ```
 
-Vector indexes are shown under the collection they belong to, with their configured dimensions and similarity metric.
+Indexes are listed under the collection they belong to. A line is omitted when
+a collection has none of that kind, so a collection with no indexes at all
+shows just its name and count.
 
 ---
 
@@ -296,7 +350,7 @@ taladb count ./dev.db articles
 # Inspect to confirm the vector index was created by the app
 taladb inspect ./dev.db
 # articles  (1247 documents)
-#   Vector indexes:  embedding (384-dim, cosine)
+#   Vector indexes:  embedding
 ```
 
 ---
