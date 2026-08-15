@@ -151,24 +151,137 @@ candidate pools stay comparable.
 
 ## Building a local RAG pipeline
 
-Hybrid search is the retrieval step of an on-device RAG loop: embed and index
-your documents once, then for each user question retrieve the top passages and
-feed them to a local LLM (WebLLM, transformers.js) — all without a server.
+Hybrid search is the **retrieval** step of an on-device RAG loop. The full loop
+has four stages, and TalaDB owns one of them:
+
+| Stage | Who provides it |
+| --- | --- |
+| **Chunk** — split source text into passages | Your application |
+| **Embed** — turn a passage into a vector | An embedding model you choose |
+| **Retrieve** — find the passages that answer a question | **TalaDB** |
+| **Generate** — write an answer from those passages | An LLM you choose |
+
+TalaDB does not ship an embedding model or a chunker. It stores vectors and
+ranks them; it does not produce them. That keeps the database free of a model
+runtime and lets you pick your own trade-off between quality, bundle size, and
+whether anything leaves the device.
+
+The rest of this section is a complete, runnable pipeline with nothing left
+undefined.
+
+### 1 · Chunk
+
+Retrieval quality is decided here more than anywhere else. Split on structure
+you already have — paragraphs, headings, sections — rather than a fixed
+character window, and carry a little overlap so a sentence spanning a boundary
+is still findable.
+
+```ts
+function chunk(text: string, target = 1200, overlap = 200): string[] {
+  const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim())
+  const chunks: string[] = []
+  let current = ''
+
+  for (const paragraph of paragraphs) {
+    if (current.length + paragraph.length > target && current) {
+      chunks.push(current.trim())
+      current = current.slice(-overlap)
+    }
+    current += paragraph + '\n\n'
+  }
+  if (current.trim()) chunks.push(current.trim())
+
+  return chunks
+}
+```
+
+If your source has headings, prepend the heading path to each chunk
+(`"Chapter 3 › Pricing › Enterprise\n\n…"`). Both retrievers index that text, so
+it improves keyword and semantic matching at once.
+
+### 2 · Embed
+
+Any function of type `(text: string) => Promise<number[]>` works. Two common
+choices:
+
+**On-device**, using [Transformers.js](https://huggingface.co/docs/transformers.js).
+Nothing leaves the browser:
+
+```ts
+import { pipeline } from '@huggingface/transformers'
+
+const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+
+async function embed(text: string): Promise<number[]> {
+  const output = await extractor(text, { pooling: 'mean', normalize: true })
+  return Array.from(output.data as Float32Array) // 384 floats
+}
+```
+
+**Remote**, using a hosted embedding API — better quality, no model download,
+but your text goes to a third party:
+
+```ts
+async function embed(text: string): Promise<number[]> {
+  const res = await fetch('https://api.example.com/embeddings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: text }),
+  })
+  return (await res.json()).data[0].embedding
+}
+```
+
+::: warning Dimensions must match
+`createVectorIndex(field, { dimensions })` has to equal your model's output
+width — 384 for `all-MiniLM-L6-v2`, 768 and 1536 are also common. A mismatch is
+rejected at insert time, and changing models later means re-embedding every
+document and rebuilding the index.
+:::
+
+Embedding is CPU-bound. On the browser, run it in a worker so it doesn't block
+the main thread, and embed at write time only — never per query result.
+
+### 3 · Retrieve
+
+This part is TalaDB. Index once, then run one hybrid query per question:
 
 ```ts
 // Index (once)
 await docs.createFtsIndex('text')
 await docs.createVectorIndex('embedding', { dimensions: 384 })
-for (const chunk of chunks) {
-  await docs.insert({ ...chunk, embedding: await embed(chunk.text) })
+
+for (const passage of chunk(sourceText)) {
+  await docs.insert({ text: passage, embedding: await embed(passage) })
 }
 
 // Retrieve (per question)
 const passages = await docs.hybridSearch(
-  { textField: 'text',       text: question },
+  { textField: 'text',        text: question },
   { vectorField: 'embedding', vector: await embed(question) },
   8,
 )
-const context = passages.map((p) => p.document.text).join('\n\n')
-// → feed `context` + `question` to your on-device LLM
 ```
+
+Store a `source` or `locator` alongside each chunk if you want the answer to
+cite where it came from — retrieval returns the whole document, so anything you
+put on it comes back with the hit.
+
+### 4 · Generate
+
+Assemble the retrieved passages into a prompt and hand them to a model. Keeping
+this step on-device too — with [WebLLM](https://webllm.mlc.ai/) or
+Transformers.js — is what makes the loop fully local:
+
+```ts
+const context = passages.map((p) => p.document.text).join('\n\n---\n\n')
+const prompt = `Answer using only the context below.\n\n${context}\n\nQ: ${question}`
+// → send `prompt` to your LLM
+```
+
+::: tip Local retrieval, remote generation
+Running retrieval on-device and generation through a hosted API is a reasonable
+default, but note what it implies: the passages you send are by construction the
+*most relevant* parts of the document. If "the data never leaves the device" is
+a requirement rather than a preference, the generation step has to be local too.
+:::
