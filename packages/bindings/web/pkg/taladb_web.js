@@ -1023,8 +1023,6 @@ export class WorkerDB {
     /**
      * Open a database backed by OPFS with HTTP push sync config.
      *
-     * Not available when compiled with the `cf-workers` feature.
-     *
      * `config_json` - JSON-serialised `TalaDbConfig`, or `null` to open without sync.
      *
      * ```js
@@ -1075,8 +1073,6 @@ export class WorkerDB {
     }
     /**
      * Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
-     *
-     * Not available when compiled with the `cf-workers` feature.
      *
      * Call sequence in the SharedWorker:
      * ```js

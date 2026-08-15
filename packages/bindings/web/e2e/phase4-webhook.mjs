@@ -41,10 +41,22 @@ export async function run(browser, r) {
     r.eq(log[0].body.document?.name, 'first', 'insert carries the document');
     r.ok(typeof log[0].body.document?._changed_at === 'number', 'insert body carries engine fields');
     r.eq(log[1].body.document?.n, 2, 'update carries the post-image');
-    r.eq(log[2].body.document, undefined, 'delete carries no document');
+    // A delete has no post-image to read, so the payload carries the last
+    // stored pre-image instead — the key is present for every verb.
+    r.eq(log[2].body.document?.n, 2, 'delete carries the pre-image');
+    r.eq(log[2].body.document?._id, id, 'the pre-image is the deleted document');
     r.ok(
       log.every((e) => typeof e.body.timestamp === 'number'),
       'every event carries a timestamp',
+    );
+    r.ok(
+      log.every((e) => typeof e.body.event_id === 'string' && e.body.event_id),
+      'every event carries an event_id',
+    );
+    r.eq(
+      new Set(log.map((e) => e.body.event_id)).size,
+      3,
+      'each mutation gets its own event_id',
     );
   });
 
@@ -60,8 +72,15 @@ export async function run(browser, r) {
       return window.db.webhookStats();
     });
     const log = await hook.waitFor(10);
-    const byMethod = log.reduce((a, e) => ({ ...a, [e.method]: (a[e.method] ?? 0) + 1 }), {});
-    r.eq(byMethod, { POST: 5, PUT: 3, DELETE: 2 }, 'one event per affected document');
+    // Counted per verb, not compared as an object: different documents deliver
+    // concurrently, so the key order of a tallied object is delivery order, and
+    // the runner compares by JSON — which would make this assertion a coin flip.
+    const count = (m) => log.filter((e) => e.method === m).length;
+    r.eq(
+      [count('POST'), count('PUT'), count('DELETE')],
+      [5, 3, 2],
+      'one event per affected document',
+    );
     r.eq(stats.pending, 0, 'flushWebhook drained the queue');
     r.eq(stats.failed, 0, 'no failures');
     r.eq(stats.delivered - before.delivered, 10, 'delivered counter matches');

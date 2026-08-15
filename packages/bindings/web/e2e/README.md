@@ -27,6 +27,14 @@ line is a bug this suite caught after the unit tests were green:
 | `phase3-multitab` | Two and three tabs on one database: the OPFS lock, the IndexedDB-snapshot fallback, cross-tab write forwarding, live queries across tabs, **lock takeover when the owning tab closes**, and the write/close race |
 | `phase4-webhook` | One request per committed mutation, verb per operation, payload shape, ordering, retries, queue overflow, drain on close, and exactly-once across tabs |
 | `phase5-perf` | Open latency, bulk insert, indexed vs unindexed reads, paged sort, aggregation, vector search, and webhook overhead — printed, and asserted only against loose ceilings |
+| `phase6-vector` | The vector database proper: all three metrics, index maintenance across insert/update/delete, backfill vs incremental builds, `dropVectorIndex`, hybrid (BM25 + vector) retrieval and its weights and filters, and vector durability across a reload and a second tab |
+
+Vector search is the part the product is positioned on, and the browser is where
+its two hardest cases live: the flat index is the *only* vector path there (HNSW
+is Node-only), and a vector index has to survive both an OPFS reload and a write
+arriving from a tab that does not own the file. A stale entry left behind by an
+update is invisible to every unit test — the query still returns results, just
+the wrong ones.
 
 Multi-tab is the part with no other coverage. A dedicated worker per tab, one
 OPFS lock between them, and a snapshot in IndexedDB for everyone else is a design

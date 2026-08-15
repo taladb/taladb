@@ -4,7 +4,7 @@
   "collaborators": [
     "taladb"
   ],
-  "description": "TalaDB browser WASM bindings (wasm-bindgen + OPFS) and Cloudflare Workers",
+  "description": "TalaDB browser WASM bindings (wasm-bindgen + OPFS)",
   "version": "0.11.0",
   "license": "Apache-2.0",
   "repository": {

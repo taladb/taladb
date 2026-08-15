@@ -53,6 +53,36 @@ try {
     all.push(...r.results);
     await page.close();
   }
+
+  if (want('6')) {
+    console.log('\n── Phase 6: vector database ─────────────────────────────');
+    const { run } = await import('./phase6-vector.mjs');
+    const r = createRunner('vector');
+    const page = await newTab(browser, { label: 'V' });
+    await run(page, r, browser);
+    all.push(...r.results);
+    await page.close();
+  }
+
+  if (want('7')) {
+    console.log('\n── Phase 7: document database ───────────────────────────');
+    const { run } = await import('./phase7-document.mjs');
+    const r = createRunner('document');
+    const page = await newTab(browser, { label: 'D' });
+    await run(page, r);
+    all.push(...r.results);
+    await page.close();
+  }
+
+  if (want('8')) {
+    console.log('\n── Phase 8: mixed collections ───────────────────────────');
+    const { run } = await import('./phase8-mixed.mjs');
+    const r = createRunner('mixed');
+    const page = await newTab(browser, { label: 'M' });
+    await run(page, r, browser);
+    all.push(...r.results);
+    await page.close();
+  }
 } finally {
   const failures = summarize(all);
   await dispose();
