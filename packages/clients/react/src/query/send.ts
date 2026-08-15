@@ -19,6 +19,15 @@ export async function sendWrite(
   op: PendingWrite,
   signal?: AbortSignal,
   attempt = 0,
+  /**
+   * Ask the browser to let this request outlive the page.
+   *
+   * Set only for a flush on `pagehide`, where an ordinary `fetch` is cancelled
+   * the moment the document goes away. The cost is a hard 64 KB cap on the
+   * combined body of all in-flight keepalive requests, which is why this is
+   * never the default — a normal drain has a live page and does not need it.
+   */
+  keepalive = false,
 ): Promise<SendResult> {
   const doFetch = backend.fetch ?? globalThis.fetch
   const headers = new Headers(backend.headers ? await backend.headers() : undefined)
@@ -28,6 +37,7 @@ export async function sendWrite(
   }
 
   const response = await doFetch(backend.url(op), {
+    keepalive,
     method: backend.method[op.type],
     headers,
     body,

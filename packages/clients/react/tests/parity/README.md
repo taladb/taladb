@@ -1,10 +1,14 @@
 # Parity suite
 
-This suite is the acceptance test for `PLAN-query-parity.md`. It was written
-first, to fail; as of P4 it passes in full — 15 behaviour tests and a clean
-typecheck. It stays in its own config, out of the normal `test` and `typecheck`
-runs, because that is what let it be honest while it was red, and because P5–P7
-will make it red again.
+This suite is the acceptance test for `PLAN-query-parity.md` and
+`PLAN-mutation-parity.md`. Each half is written first, to fail.
+
+- **`useQuery` — passing.** 15 behaviour tests and a clean typecheck.
+- **`useMutation` — failing by design.** 15 behaviour tests and 21 type errors,
+  the M0 baseline. See `PLAN-mutation-parity.md`.
+
+It stays in its own config, out of the normal `test` and `typecheck` runs,
+because that is what lets it be honest while it is red.
 
 ```bash
 pnpm test:parity        # behaviour: does migrated code run?
@@ -37,10 +41,16 @@ fixtures can read like real application code instead of reaching through
 | `TodoList.tsx` | The default read: no `collection`, no `staleTime`, `isPending`/`isError`/`isFetching`, `refetch` |
 | `TodoDetail.tsx` | Single-document `queryFn`, `enabled`, `staleTime`, `select`, `queryKey` + `signal` in the fetch context |
 | `TodoPage.tsx` | `placeholderData: keepPreviousData`, `isPlaceholderData`, `retry`, `refetchOnWindowFocus: false`, an object segment in the key |
+| `CreateTodo.tsx` | `mutate(variables)`, hook-level `onSuccess`, `isPending` staying false under the default optimistic mode |
+| `ToggleTodo.tsx` | `operation: 'update'`, per-call callbacks, `status`/`variables`/`reset` |
+| `CheckoutOrder.tsx` | `mode: 'immediate'` — the one mode `mutationFn` works in — with `mutateAsync` awaited and `data` from the server |
 
-`surface.parity.test.tsx` additionally pins the result object's key set against
-TanStack v5's, and the two behaviours most likely to break silently: `data`
-being `undefined` (not `[]`) while pending, and `error` being an `Error`.
+`surface.parity.test.tsx` additionally pins the query result object's key set
+against TanStack v5's, and the two behaviours most likely to break silently:
+`data` being `undefined` (not `[]`) while pending, and `error` being an `Error`.
+`mutation-surface.parity.test.tsx` does the same for `UseMutationResult`, and
+asserts the message for the case that cannot work — `mutationFn` under
+`optimistic`, where the request outlives the closure.
 
 ## Reading a failure
 

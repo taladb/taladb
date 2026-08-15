@@ -5,8 +5,8 @@ description: React Query-shaped hooks whose cache is a real TalaDB collection. S
 
 # Local-First Data (`@taladb/react/query`)
 
-`useQuery` and `useMutation` in the shape React developers already know — but the
-cache is a real TalaDB collection rather than an in-memory store.
+`useQuery` and `useMutation` with TanStack Query v5's surface — but the cache is
+a real TalaDB collection rather than an in-memory store.
 
 Three things follow from that, and they are the whole reason this exists:
 
@@ -18,9 +18,9 @@ Three things follow from that, and they are the whole reason this exists:
   server in the background — no spinner, and the write survives a reload, a
   crash, or a flight.
 
-The read surface is [TanStack Query v5's](./react-query-migration.md). If you
-already use React Query, read the migration page instead — the differences are
-short and this page will be mostly familiar.
+Both hooks speak [TanStack Query v5](./react-query-migration.md). If you already
+use React Query, read the migration page instead — the differences are short and
+this page will be mostly familiar.
 
 ::: warning This is not a cache
 The documents land in **your** collections — the same ones `useFind` reads. They
@@ -234,29 +234,84 @@ upstream" are indistinguishable — and one of them is not yours to act on.
 
 ## Step 5 — Write
 
-```tsx
-const { mutate, mutateAsync, pending, error } = useMutation<Todo>({
-  collection: 'todos',
-  url: '/api/v2/todos/:id',
-  method: { update: 'PATCH' },   // defaults to POST / PUT / DELETE
-})
+The write surface is TanStack Query v5's too: `mutate(variables)` takes the
+document, and the operation is declared once on the hook — one hook per
+operation, which is how React Query code is already written.
 
-mutate({ type: 'insert', doc: { title: 'Buy milk' } })          // POST   /api/v2/todos
-mutate({ type: 'update', where: { _id }, set: { done: true } }) // PATCH  /api/v2/todos/:id
-mutate({ type: 'delete', where: { _id } })                      // DELETE /api/v2/todos/:id
+```tsx
+function AddTodo() {
+  const { mutate, isPending, isError, error } = useMutation<Todo>({
+    collection: 'todos',
+    url: '/api/v2/todos/:id',
+    onSuccess: (todo) => router.push(`/todos/${todo._id}`),
+  })
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutate({ title, done: false }) }}>
+      <button disabled={isPending}>Add</button>
+      {isError && <p role="alert">{error.message}</p>}
+    </form>
+  )
+}
 ```
 
-`:id` and `:collection` interpolate, and an insert drops the trailing `/:id`, so
-one template covers all three verbs.
-
 Every `useQuery` and `useFind` watching those documents re-renders on the local
-commit, long before the network hears about it.
+commit, long before the network hears about it. There is nothing to invalidate.
+
+### The three operations
+
+```tsx
+useMutation<Todo>({ collection: 'todos', url: '/api/v2/todos/:id' })
+  .mutate({ title: 'Buy milk' })                    // POST   /api/v2/todos
+
+useMutation<Todo>({ collection: 'todos', url: '/api/v2/todos/:id', operation: 'update' })
+  .mutate({ _id, done: true })                      // PUT    /api/v2/todos/:id
+
+useMutation<Todo>({ collection: 'todos', url: '/api/v2/todos/:id', operation: 'delete' })
+  .mutate({ _id })                                  // DELETE /api/v2/todos/:id
+```
+
+An insert mints its own `_id`; update and delete require one on the variables.
+`operation` is **not** inferred from the presence of `_id` — a caller who passes
+an id on an insert would silently get an update instead.
+
+`:id` and `:collection` interpolate, and an insert drops the trailing `/:id`, so
+one template covers all three verbs. `method: { update: 'PATCH' }` overrides the
+default POST / PUT / DELETE.
 
 ::: tip Why a template and not a function?
 Under `optimistic` and `queued` the request is sent by the drain loop — after a
 route change, a reload, possibly a week later. By then the component that would
 have held a closure is long gone. A template is *data*, so it is stored on the
 queued document and travels with it.
+
+This is also why [`mutationFn`](#the-three-modes) only works under
+`immediate`, where the request is made from your component while it is alive.
+:::
+
+### Callbacks
+
+`onMutate`, `onSuccess`, `onError` and `onSettled` work as they do in TanStack,
+with `context` flowing from `onMutate`. Per-call callbacks compose with the
+hook-level ones rather than replacing them, which is how a list row passes a
+callback that closes over which row was clicked:
+
+```tsx
+mutate({ _id, done: true }, { onSuccess: () => toast('Saved') })
+```
+
+**`onSuccess` fires on the local commit** under `optimistic` and `queued`: the
+write is durable and the screen has updated, but nothing has reached the server
+yet. `onSynced` fires when the server confirms — and is best-effort, because the
+drain may land after this component is gone, in another tab, or on a later run
+of the app. Anything that must not be missed belongs in
+[`useSyncStatus`](#step-6-show-the-queue).
+
+::: warning Migrating from TanStack? Delete your rollback code
+The canonical `onMutate` + `queryClient.setQueryData` + `onError` rollback block
+has no analogue here and is not needed — the optimism *is* the database. It will
+not fail to compile, so grep for `queryClient` before calling a migration done.
+See [Migrating from TanStack Query](./react-query-migration.md).
 :::
 
 ## Step 6 — Show the queue
@@ -576,40 +631,105 @@ narrow `data` for you.
 | `method` | `Partial<Record<SyncOp, string>>` | `POST`/`PUT`/`DELETE` | Verb overrides per operation. |
 | `mode` | `'optimistic' \| 'immediate' \| 'queued'` | `'optimistic'` | When the network happens. |
 
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `retry` | `boolean \| number \| fn` | `0` | **Not** the queries' `3`. A read is idempotent; a write may not be. `immediate` only. |
+| `retryDelay` | `number \| fn` | exponential | As `useQuery`. |
+| `networkMode` | `'online' \| 'always' \| 'offlineFirst'` | `'online'` | Under `immediate`, `'online'` **pauses** while offline and goes on reconnect. |
+| `throwOnError` | `boolean \| fn` | `false` | Rethrow during render, for an error boundary. |
+| `scope` | `{ id: string }` | — | Run mutations sharing an id one at a time. Prevents two rapid submits racing. |
+| `mutationFn` | `(variables) => Promise<T>` | — | **`immediate` only.** Owns the request; `url`/`method`/`classify` do not apply. |
+
 | Result field | Type | Description |
 |---|---|---|
-| `mutate` | `(op) => void` | Fire-and-forget. Errors surface on `error`. |
-| `mutateAsync` | `(op) => Promise<void>` | Awaitable. Under `optimistic`, resolves on the *local* commit. |
-| `pending` | `boolean` | Always `false` under `optimistic` — that is the point. |
-| `error` | `unknown \| null` | Last write error. |
+| `mutate` | `(variables, callbacks?) => void` | Fire-and-forget. Errors surface on `error`. |
+| `mutateAsync` | `(variables, callbacks?) => Promise<T>` | Awaitable. Under `optimistic`, resolves on the *local* commit. |
+| `data` | `T \| undefined` | The stored document. |
+| `status` | `'idle' \| 'pending' \| 'success' \| 'error'` | `idle` has no `useQuery` equivalent. |
+| `isIdle` / `isPending` / `isSuccess` / `isError` | `boolean` | `isPending` stays `false` under `optimistic` — that is the point. |
+| `isPaused` | `boolean` | Offline, waiting for the connection. |
+| `variables` | `TVariables \| undefined` | What the last `mutate` was called with. |
+| `reset` | `() => void` | Back to `idle`. |
+| `submittedAt` | `number` | Epoch ms of the last `mutate`. |
+| `failureCount` / `failureReason` | | Reset on success. |
+| `error` | `Error \| null` | Typed `Error`, so `error.message` compiles. |
+
+### Callbacks
+
+`onMutate`, `onSuccess`, `onError` and `onSettled` behave as in TanStack, with
+`context` flowing from `onMutate`. Per-call callbacks compose with the
+hook-level ones rather than replacing them:
+
+```tsx
+mutate({ _id, done: true }, { onSuccess: () => toast('Saved') })
+```
+
+**`onSuccess` fires on the local commit** under `optimistic` and `queued` — the
+write is durable and the UI has updated, but nothing has reached the server.
+`onSynced` fires when the server confirms, and is best-effort: the drain may
+land after this component is gone. Anything that must not be missed belongs in
+[`useSyncStatus`](#reference-usesyncstatus).
 
 ### The three modes
 
 | `mode` | What happens |
 |---|---|
-| `optimistic` *(default)* | Commit locally, return, send in the background as soon as possible. `pending` is always `false` — the UI never waits. |
-| `immediate` | An ordinary `fetch` first; write locally only once the server agrees. `pending` reflects the request. |
-| `queued` | Commit locally and wait for the provider's schedule. For high-volume writes worth batching. |
+| Mode | UI updates | Network happens | `isPending` |
+|---|---|---|---|
+| `optimistic` *(default)* | instantly, on the local commit | at once, in the background | always `false` |
+| `queued` | **instantly, on the local commit** | on the provider's schedule | always `false` |
+| `immediate` | after the server agrees | first | reflects the request |
+
+`queued` does **not** make the user wait. Like `optimistic` it commits locally
+and re-renders every query over those documents; the only thing it changes is
+when the request leaves. It is a request-count knob for high-volume writes —
+reading progress on every page turn, cursor positions, telemetry — not a
+latency one.
 
 Use **`immediate`** where showing success before the server confirms would
-mislead: checkout, payment, anything irreversible. It is a plain request — no
-queue, no retries, nothing stored until it succeeds, so there is nothing to roll
-back if it fails. It works with just a `url` and no provider at all:
+mislead: checkout, payment, anything irreversible. Nothing is stored until it
+succeeds, so there is nothing to roll back if it fails. This is also the one
+mode that accepts `mutationFn`, because the request is made from your component
+while it is still alive:
 
 ```tsx
-const { mutateAsync, pending } = useMutation<Order>({
+const { mutateAsync, isPending } = useMutation<Order>({
+  collection: 'orders',
+  mode: 'immediate',
+  mutationFn: async (cart) => {
+    const response = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(cart),
+    })
+    if (!response.ok) throw new Error(`Checkout failed (${response.status})`)
+    return response.json()
+  },
+})
+
+await mutateAsync(cart)  // throws if the server says no
+```
+
+Given a `mutationFn`, `url`, `method` and the provider's `classify` do not
+apply — the function owns the request, and whatever it resolves to is stored.
+Passing one in any other mode throws on the first render, because there would be
+no closure left for the drain to call.
+
+Or without one, routing by template as the other modes do:
+
+```tsx
+const { mutateAsync, isPending } = useMutation<Order>({
   collection: 'orders',
   url: '/api/orders/:id',
   mode: 'immediate',
 })
-
-await mutateAsync({ type: 'insert', doc: cart })  // throws if the server says no
 ```
 
-::: warning `where` must be `{ _id }`
-On a secondary browser tab a filter-based write is forwarded to the primary and
-re-evaluated there against authoritative data — so `{ done: false }` can affect a
-different set of documents than the one your UI just showed.
+::: warning Writes are addressed by id
+`operation: 'update'` and `'delete'` need an `_id` on the variables, never a
+filter. On a secondary browser tab a filter-based write is forwarded to the
+primary and re-evaluated there against authoritative data — so `{ done: false }`
+could affect a different set of documents than the one your UI just showed.
 :::
 
 ### When writes are sent
@@ -627,13 +747,45 @@ Timing lives on the provider, not the call site:
 | `online-only` | Waits for connectivity. |
 | `manual` | Only when you ask. |
 
-`batch` caps how many documents one drain cycle sends.
-
 A `queued` mutation ignores `auto` and waits for a trigger either way — that is
-the difference between it and `optimistic`.
+the difference between it and `optimistic`. **It does not make the UI wait:**
+like `optimistic`, it commits locally first and every query over those documents
+re-renders immediately. The only thing it changes is when the request leaves.
 
-Reconnecting drains under every policy but `manual` — a backlog built offline is
-exactly what is waiting.
+### The timer is the fallback, not the mechanism
+
+The moment a queue most needs draining is the moment the interval is least
+likely to be about to fire, so four other things trigger a cycle:
+
+| Trigger | Option | Why |
+|---|---|---|
+| Tab hidden | `flushOnHide` *(default on)* | The user switched away or backgrounded the app. The page is still alive, so this is a normal drain. |
+| Tab closing | `flushOnHide` | A last-ditch `pagehide` flush — see below. |
+| Reconnect | always on except `manual` | A backlog built offline is exactly what is waiting. |
+| Queue depth | `flushAt` *(default 100)* | Stop accumulating. Without it a burst sits unsent for the whole interval and the queue grows without bound between ticks. |
+
+`batch` caps how many documents one cycle sends.
+
+::: warning The `pagehide` flush is best-effort by construction
+An ordinary `fetch` is cancelled the moment the document goes away, so the
+closing flush is sent with `keepalive: true`. Browsers cap keepalive bodies at
+**64 KB across all in-flight requests**, so a large queue will not fit. It is
+genuinely a last chance, not a guarantee — which is fine, because the writes are
+already durable and the next session drains them. The flush on *hidden* is the
+one that does the real work.
+:::
+
+### Choosing an interval
+
+A longer interval does not risk losing writes — they are committed locally and
+survive reload, crash and flight. What it costs is **staleness on other
+devices** and **delay before a terminal failure surfaces**. Five minutes is fine
+for reading progress or telemetry, and clearly wrong for a checkbox someone else
+is watching, which is why the default is 30 seconds.
+
+That second cost is worth dwelling on: the longer the interval, the longer
+between a user acting and a rejection appearing. [`useSyncStatus`](#reference-usesyncstatus)
+is what catches it, and it matters *more* as the interval grows, not less.
 
 Write retries back off at 1s, doubling to a five-minute ceiling, with ±25%
 jitter so a fleet of clients does not reconnect in lockstep. `terminal` outcomes

@@ -173,6 +173,26 @@ export interface DrainOptions {
   intervalMs?: number
   /** Documents per drain cycle. */
   batch?: number
+  /**
+   * Flush once this many writes have queued since the last cycle, whatever the
+   * policy says. Default `100`; `false` disables it.
+   *
+   * The timer is the fallback, not the mechanism. Under a long `interval` a
+   * burst would otherwise sit unsent for the whole window, and the queue would
+   * grow without bound between ticks.
+   */
+  flushAt?: number | false
+  /**
+   * Flush when the tab is hidden or closing. Default `true`.
+   *
+   * This is the moment a queue most needs draining and the one the timer is
+   * least likely to be about to cover. `visibilitychange` does the real work —
+   * the page is still alive, so requests complete normally. `pagehide` is a
+   * last-ditch attempt sent with `keepalive`, which browsers cap at 64 KB
+   * across all in-flight requests, so it is best-effort by construction and the
+   * queue stays correct without it.
+   */
+  flushOnHide?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -690,8 +710,84 @@ export type QueryResult<TData> =
  */
 export type MutationMode = 'optimistic' | 'immediate' | 'queued'
 
-export interface UseMutationOptions {
+/** Which write a mutation performs. Declared once, not passed per call. */
+export type MutationOperation = 'insert' | 'update' | 'delete'
+
+/**
+ * What `mutate` takes, per operation.
+ *
+ * These differ, and defaulting all three to `T` would be wrong in two of them:
+ * an insert has no `_id` yet (it is minted client-side), and an update carries
+ * only the fields being changed. Getting this wrong shows up as a compile error
+ * on every call site, which is how it was found.
+ */
+export type InsertVariables<T extends Doc> = Omit<T, '_id'> & { _id?: string }
+export type UpdateVariables<T extends Doc> = { _id: string } & Partial<Omit<T, '_id'>>
+export type DeleteVariables = { _id: string }
+
+/** Passed between a mutation's callbacks, as TanStack's `context` is. */
+export type MutationContext = unknown
+
+export interface MutationCallbacks<T extends Doc, TVariables, TContext = MutationContext> {
+  /**
+   * Runs before the write. Its return value becomes `context` for the
+   * callbacks below.
+   *
+   * In TanStack this is where an optimistic update is applied by hand and a
+   * rollback snapshot returned. Neither is needed here — the optimism *is* the
+   * database, and every query over these documents re-renders on the local
+   * commit — so this is a plain hook point for logging and deriving context.
+   */
+  onMutate?: (variables: TVariables) => TContext | Promise<TContext>
+  /**
+   * The write succeeded.
+   *
+   * Under `optimistic` and `queued` that means the **local commit**: the write
+   * is durable and the UI has already updated, but nothing has reached the
+   * server. Under `immediate` it means the server agreed.
+   *
+   * Waiting for the server in every mode would be more faithful to TanStack and
+   * much worse in practice — the drain often lands after this component is
+   * gone, so the callback would silently never fire. Use `onSynced` for server
+   * confirmation, and `useSyncStatus` for anything that must survive
+   * navigation.
+   */
+  onSuccess?: (data: T, variables: TVariables, context: TContext) => unknown
+  onError?: (error: Error, variables: TVariables, context: TContext | undefined) => unknown
+  onSettled?: (
+    data: T | undefined,
+    error: Error | null,
+    variables: TVariables,
+    context: TContext | undefined,
+  ) => unknown
+  /**
+   * The **server** has confirmed this write.
+   *
+   * Best-effort by nature: under `optimistic` and `queued` the drain may land
+   * after this component has gone, in another tab, or on a later run of the
+   * app, and then nothing here fires. Anything that must not be missed — a
+   * failed write needing a human decision — belongs in `useSyncStatus`, which
+   * survives navigation.
+   *
+   * Under `immediate` it fires immediately after `onSuccess`, because the two
+   * mean the same thing in that mode.
+   */
+  onSynced?: (data: T, variables: TVariables) => unknown
+}
+
+export interface UseMutationOptions<
+  T extends Doc = Doc,
+  TVariables = InsertVariables<T>,
+  TContext = MutationContext,
+> extends MutationCallbacks<T, TVariables, TContext> {
   collection: string
+  /**
+   * Which write this hook performs. Default `'insert'`.
+   *
+   * Deliberately **not** inferred from the presence of `_id`: a caller who
+   * passes an id on an insert would silently get an update instead.
+   */
+  operation?: MutationOperation
   /**
    * URL template for this collection's writes — `/api/v2/todos/:id`.
    *
@@ -706,27 +802,143 @@ export interface UseMutationOptions {
   method?: Partial<Record<SyncOp, string>>
   /** Default `'optimistic'`. */
   mode?: MutationMode
+  /**
+   * Perform the request yourself. **`mode: 'immediate'` only.**
+   *
+   * Under `optimistic` and `queued` the request is sent by the drain loop long
+   * after this component is gone — after a route change, a reload, a week. A
+   * closure cannot be stored, so there would be nothing left to call; accepting
+   * one there would mean silently dropping the write on reload, which is worse
+   * than refusing it. Those modes route by `url` instead, which is data.
+   *
+   * Given one, `url`, `method` and the provider's `classify` do not apply: the
+   * function owns the request. Its resolved value is stored as the document.
+   */
+  mutationFn?: (variables: TVariables) => Promise<T>
+  /** Opaque; carried for instrumentation. */
+  meta?: Record<string, unknown>
+  /**
+   * How many times to retry a failed write. Default `0`.
+   *
+   * **Not** the queries' default of 3, and deliberately so: a read is
+   * idempotent and a write may not be. Retrying a `POST` that timed out after
+   * the server accepted it is how duplicate rows appear. Turn it on only where
+   * the endpoint is genuinely idempotent — which contract rule 2 asks for, but
+   * the default should not assume.
+   *
+   * Applies to `immediate` only. Queued writes have their own durable backoff
+   * in the drain, which survives reload; this one does not.
+   */
+  retry?: RetryOption
+  /** Milliseconds between attempts. Default is exponential from 1s, capped at 30s. */
+  retryDelay?: RetryDelayOption
+  /**
+   * What to do about writing while offline. Default `'online'`.
+   *
+   * Under `immediate`, `'online'` **pauses** rather than failing — the mutation
+   * stays pending, reports `isPaused`, and goes as soon as the connection
+   * returns. `'always'` attempts regardless.
+   *
+   * `optimistic` and `queued` ignore this: they commit locally and the drain
+   * owns connectivity from there.
+   */
+  networkMode?: NetworkMode
+  /** Rethrow a write error during render, for an error boundary to catch. */
+  throwOnError?: boolean | ((error: Error) => boolean)
+  /**
+   * Run mutations sharing an id one at a time, in call order.
+   *
+   * Without it, two rapid submits race and the later response may land first.
+   * Note this is a *scheduling* guarantee, distinct from the layer's rule that
+   * a document has at most one pending operation — that one coalesces edits,
+   * this one orders requests.
+   */
+  scope?: { id: string }
 }
 
-export interface MutationResult<T extends Document> {
+/** Fields present on a mutation result whatever its status. */
+export interface MutationResultCommon<T extends Doc, TVariables> {
   /** Fire-and-forget. Errors surface on `error`, never thrown to render. */
-  mutate: (op: MutationOp<T>) => void
+  mutate: (variables: TVariables, options?: MutationCallbacks<T, TVariables>) => void
   /** Awaitable. Under `optimistic`, resolves on the *local* commit. */
-  mutateAsync: (op: MutationOp<T>) => Promise<void>
-  /** Always false under `optimistic` — that is the point. */
-  pending: boolean
-  error: unknown | null
+  mutateAsync: (variables: TVariables, options?: MutationCallbacks<T, TVariables>) => Promise<T>
+  /** Back to `idle`, forgetting the last result. */
+  reset: () => void
+  /** Offline, so an `immediate` write has not been attempted. */
+  isPaused: boolean
+  failureCount: number
+  failureReason: Error | null
+  /** Epoch ms of the last `mutate` call, or `0`. */
+  submittedAt: number
 }
 
 /**
- * A write intent.
+ * The result of `useMutation`.
+ *
+ * A discriminated union on `status`, so `if (isSuccess)` narrows `data` and
+ * `if (isError)` narrows `error` — the same treatment `QueryResult` gets, for
+ * the same reason.
+ *
+ * Note `idle`, which has no `useQuery` equivalent: a mutation that has never
+ * run has not failed and is not loading, and migrated code branches on it to
+ * render a clean form.
+ */
+export type MutationResult<T extends Doc = Doc, TVariables = InsertVariables<T>> =
+  | (MutationResultCommon<T, TVariables> & {
+      status: 'idle'
+      data: undefined
+      error: null
+      variables: undefined
+      isIdle: true
+      isPending: false
+      isSuccess: false
+      isError: false
+    })
+  | (MutationResultCommon<T, TVariables> & {
+      status: 'pending'
+      data: undefined
+      error: null
+      variables: TVariables
+      isIdle: false
+      isPending: true
+      isSuccess: false
+      isError: false
+    })
+  | (MutationResultCommon<T, TVariables> & {
+      status: 'success'
+      /** The stored document. Locally committed, or the server's body under `immediate`. */
+      data: T
+      error: null
+      variables: TVariables
+      isIdle: false
+      isPending: false
+      isSuccess: true
+      isError: false
+    })
+  | (MutationResultCommon<T, TVariables> & {
+      status: 'error'
+      data: undefined
+      error: Error
+      variables: TVariables
+      isIdle: false
+      isPending: false
+      isSuccess: false
+      isError: true
+    })
+
+/**
+ * A write intent, as the storage layer sees it.
+ *
+ * No longer the public `mutate` signature — that takes plain variables, as
+ * TanStack's does — but still the internal representation, because a queued
+ * write has to be *data* to survive the component that made it.
  *
  * `where` is `{ _id }` rather than an arbitrary filter: a filter-based write
  * issued from a secondary tab is forwarded to the primary and re-evaluated
  * there against authoritative data, so it can affect a different set of
  * documents than the optimistic UI just showed.
  */
-export type MutationOp<T extends Document> =
+export type MutationOp<T extends Doc> =
   | { type: 'insert'; doc: Omit<T, '_id'> & { _id?: string } }
   | { type: 'update'; where: { _id: string }; set: Partial<Omit<T, '_id'>> }
   | { type: 'delete'; where: { _id: string } }

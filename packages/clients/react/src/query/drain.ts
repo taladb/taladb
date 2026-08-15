@@ -37,6 +37,8 @@ export interface DrainDeps {
   batch?: number
   now?: () => number
   random?: () => number
+  /** Send with `keepalive`, for a flush on `pagehide`. */
+  keepalive?: boolean
 }
 
 /** 1s, doubling, ±25% jitter, capped at five minutes. */
@@ -115,7 +117,13 @@ async function sendOne(
   let result
   try {
     const attempt = (doc._attempt as number) ?? 0
-        result = await sendWrite(backend, toPendingWrite(name, id, op, withoutEnvelope(doc)), undefined, attempt)
+        result = await sendWrite(
+          backend,
+          toPendingWrite(name, id, op, withoutEnvelope(doc)),
+          undefined,
+          attempt,
+          deps.keepalive ?? false,
+        )
   } catch {
     // A transport failure is indistinguishable from a 5xx: both may recover.
     await defer(collection, id, doc, stats, now, random)

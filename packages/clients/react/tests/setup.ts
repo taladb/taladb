@@ -20,15 +20,21 @@
  * each file, because the failure mode of forgetting it is a mystery rather than
  * an error.
  */
-import { afterEach } from 'vitest'
+import { afterEach, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
 import { resetInflight } from '../src/query/inflight'
 import { resetForgetTimers } from '../src/query/useQuery'
+import { resetMutationScopes } from '../src/query/useMutation'
 import { resetWarnings } from '../src/query/dev'
 
 afterEach(() => {
   cleanup()
+  // A leaked `vi.stubGlobal('navigator', …)` does not merely affect the next
+  // assertion — React DOM reads `navigator`, so every later render in the file
+  // returns null and the failures point nowhere near the cause.
+  vi.unstubAllGlobals()
   resetInflight()
   resetForgetTimers()
+  resetMutationScopes()
   resetWarnings()
 })

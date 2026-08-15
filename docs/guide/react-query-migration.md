@@ -168,9 +168,81 @@ The default is `Infinity`, because that record is what makes a warm start warm.
 - **Your model types need no changes.** `interface Todo { _id: string }` works
   as-is; there is no `extends Document` requirement on the public API.
 
+## Mutations
+
+`useMutation` speaks the same surface: `mutate(variables)`, `mutateAsync`,
+`onMutate`/`onSuccess`/`onError`/`onSettled` with `context`, per-call callbacks,
+and `status`/`data`/`variables`/`reset`/`isPending`. Two things differ.
+
+### `mutationFn` only works in `immediate` mode
+
+Under the default `optimistic` mode — and under `queued` — the request is sent
+by the drain loop, long after your component is gone: after a route change, a
+reload, a week. **A closure cannot be stored**, so there would be nothing left
+to call. Accepting one would mean silently dropping the write on reload.
+
+So those modes route by template, which is data and survives:
+
+```diff
+- useMutation({ mutationFn: (todo) => api.post('/todos', todo) })
++ useMutation({ collection: 'todos', url: '/api/todos/:id' })
+```
+
+The operation is declared once rather than passed per call, which matches how
+React Query code is already written — one `useCreateTodo`, one `useUpdateTodo`:
+
+```ts
+useMutation({ collection: 'todos', url: '/api/todos/:id' })                       // insert
+useMutation({ collection: 'todos', url: '/api/todos/:id', operation: 'update' })  // update
+useMutation({ collection: 'todos', url: '/api/todos/:id', operation: 'delete' })  // delete
+```
+
+`mutationFn` is still exactly right for a write you must not show as succeeded
+before the server agrees — a checkout, a payment — which is `mode: 'immediate'`:
+a plain request from your component, with no queue behind it and nothing stored
+until it succeeds.
+
+Passing `mutationFn` in any other mode throws on the first render, naming both
+ways out.
+
+### Delete your rollback code
+
+This is the canonical TanStack optimistic mutation:
+
+```ts
+onMutate: async (next) => {
+  await queryClient.cancelQueries({ queryKey: ['todos'] })
+  const previous = queryClient.getQueryData(['todos'])
+  queryClient.setQueryData(['todos'], (old) => [...old, next])
+  return { previous }
+},
+onError: (err, next, ctx) => queryClient.setQueryData(['todos'], ctx.previous),
+onSettled: () => queryClient.invalidateQueries({ queryKey: ['todos'] }),
+```
+
+**All of it goes.** The optimism *is* the database: the write is committed
+locally before the request is made, every `useQuery` over those documents
+re-renders from that commit, and there is nothing to invalidate. Migrating this
+is a deletion, not a port — but it will not fail to compile, so it is worth
+grepping for `queryClient` before you call the migration done.
+
+`onMutate` itself is kept as a plain hook point for logging and deriving
+`context`.
+
+### When `onSuccess` fires
+
+Under `optimistic` and `queued` it fires on the **local commit** — the write is
+durable and the UI has updated, but nothing has reached the server. Under
+`immediate` it fires on the server's response.
+
+Waiting for the server in every mode would be more faithful and much worse: the
+drain often lands after the component is gone, so the callback would silently
+never fire. `onSynced` is there for server confirmation, and is best-effort by
+nature. Anything that must not be missed — a write that failed and needs a human
+decision — belongs in `useSyncStatus`, which survives navigation.
+
 ## Not implemented yet
 
-`useMutation` exists but has a different shape from TanStack's — see the
-[local-first data guide](./query.md). `useInfiniteQuery`, `useQueries`,
-`useSuspenseQuery`, `queryOptions()`, `invalidateQueries` and `setQueryData` are
-not here yet.
+`useInfiniteQuery`, `useQueries`, `useSuspenseQuery`, `queryOptions()`,
+`invalidateQueries` and `setQueryData` are not here yet. `useMutationState` is
+not planned — `useSyncStatus` answers the question it exists for.

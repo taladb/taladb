@@ -31,3 +31,10 @@ export async function fetchTodoPage(page: number, signal?: AbortSignal): Promise
   if (!response.ok) throw new Error(`Failed to load page ${page} (${response.status})`)
   return (await response.json()) as Todo[]
 }
+
+/** For the `immediate` fixture — the write you must not show as done early. */
+export interface Order {
+  _id: string
+  total: number
+  items: string[]
+}

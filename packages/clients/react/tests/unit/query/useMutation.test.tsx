@@ -43,16 +43,28 @@ function setup(policy?: Policy) {
   return { wrapper, docsIn }
 }
 
+/**
+ * Insert and update are separate hooks now, as they are in React Query — one
+ * `useCreateTodo`, one `useUpdateTodo`. The operation is declared once rather
+ * than passed per call, so a test needing both renders both.
+ */
+function pair(options: Parameters<typeof useMutation<Todo>>[0]) {
+  return {
+    create: useMutation<Todo>(options),
+    update: useMutation<Todo>({ ...options, operation: 'update' }),
+  }
+}
+
 describe('useMutation — optimistic', () => {
   it('never reports pending, because it never waits on the network', async () => {
     const { wrapper, docsIn } = setup()
     const { result } = renderHook(() => useMutation<Todo>({ collection: 'todos' }), { wrapper })
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'offline' } })
+      await result.current.mutateAsync({ title: 'offline' })
     })
 
-    expect(result.current.pending).toBe(false)
+    expect(result.current.isPending).toBe(false)
     const stored = docsIn('todos')
     expect(stored).toHaveLength(1)
     expect(stored[0]._sync).toBe('pending')
@@ -65,7 +77,7 @@ describe('useMutation — optimistic', () => {
     const { result } = renderHook(() => useMutation<Todo>({ collection: 'todos' }), { wrapper })
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
+      await result.current.mutateAsync({ title: 'x' })
     })
     expect(docsIn('todos')).toHaveLength(1)
   })
@@ -79,7 +91,7 @@ describe('useMutation — optimistic', () => {
     )
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'local' } })
+      await result.current.mutateAsync({ title: 'local' })
     })
 
     expect(fetch).not.toHaveBeenCalled()
@@ -87,11 +99,14 @@ describe('useMutation — optimistic', () => {
 
   it('surfaces a failure on error rather than throwing from mutate', async () => {
     const { wrapper } = setup()
-    const { result } = renderHook(() => useMutation<Todo>({ collection: 'todos' }), { wrapper })
+    const { result } = renderHook(
+      () => useMutation<Todo>({ collection: 'todos', operation: 'update' }),
+      { wrapper },
+    )
 
     await act(async () => {
       // No such document — writes are local-first, so there is nothing to update.
-      result.current.mutate({ type: 'update', where: { _id: 'nope' }, set: { title: 'x' } })
+      result.current.mutate({ _id: 'nope', title: 'x' })
     })
 
     await waitFor(() => expect(result.current.error).toBeInstanceOf(Error))
@@ -108,7 +123,7 @@ describe('useMutation — immediate', () => {
     )
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'sent' } })
+      await result.current.mutateAsync({ title: 'sent' })
     })
 
     expect(fetch).toHaveBeenCalledTimes(1)
@@ -133,7 +148,7 @@ describe('useMutation — immediate', () => {
     )
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
+      await result.current.mutateAsync({ title: 'x' })
     })
 
     expect(typeof sent!._id).toBe('string')
@@ -147,16 +162,16 @@ describe('useMutation — immediate', () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
     const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
-      () => useMutation<Todo>({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
+      () => pair({ collection: 'todos', mode: 'immediate', url: '/api/todos/:id' }),
       { wrapper },
     )
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'seed' } })
+      await result.current.create.mutateAsync({ title: 'seed' })
     })
     const id = docsIn('todos')[0]._id as string
     await act(async () => {
-      await result.current.mutateAsync({ type: 'update', where: { _id: id }, set: { done: true } })
+      await result.current.update.mutateAsync({ _id: id, done: true })
     })
 
     expect(docsIn('todos')[0]).toMatchObject({ _id: id, title: 'seed', done: true, _sync: 'synced' })
@@ -172,12 +187,12 @@ describe('useMutation — immediate', () => {
 
     await act(async () => {
       await expect(
-        result.current.mutateAsync({ type: 'insert', doc: { title: 'doomed' } }),
+        result.current.mutateAsync({ title: 'doomed' }),
       ).rejects.toThrow(/422/)
     })
 
     expect(docsIn('todos')).toHaveLength(0)
-    expect(result.current.pending).toBe(false)
+    expect(result.current.isPending).toBe(false)
   })
 
   it('explains itself when no url is given', async () => {
@@ -189,7 +204,7 @@ describe('useMutation — immediate', () => {
 
     await act(async () => {
       await expect(
-        result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } }),
+        result.current.mutateAsync({ title: 'x' }),
       ).rejects.toThrow(/url/i)
     })
   })
@@ -205,7 +220,7 @@ describe('useMutation — immediate', () => {
         { wrapper },
       )
       await act(async () => {
-        await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
+        await result.current.mutateAsync({ title: 'x' })
       })
       expect(fetch).toHaveBeenCalledWith('/api/todos', expect.objectContaining({ method: 'POST' }))
       expect(docsIn('todos')[0].title).toBe('saved')
@@ -223,7 +238,7 @@ describe('useMutation — immediate', () => {
     const { wrapper, docsIn } = setup({ fetch: fetch as never })
     const { result } = renderHook(
       () =>
-        useMutation<Todo>({
+        pair({
           collection: 'todos',
           mode: 'immediate',
           url: '/api/todos/:id',
@@ -233,11 +248,11 @@ describe('useMutation — immediate', () => {
     )
 
     await act(async () => {
-      await result.current.mutateAsync({ type: 'insert', doc: { title: 'x' } })
+      await result.current.create.mutateAsync({ title: 'x' })
     })
     const id = docsIn('todos')[0]._id as string
     await act(async () => {
-      await result.current.mutateAsync({ type: 'update', where: { _id: id }, set: { done: true } })
+      await result.current.update.mutateAsync({ _id: id, done: true })
     })
 
     expect(calls).toEqual(['POST', 'PATCH'])

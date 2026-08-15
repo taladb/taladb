@@ -53,7 +53,7 @@ export type {
 } from './params'
 export { warnOnce, noteIgnoredOptions, resetWarnings, isDev } from './dev'
 export type { ExtractInput, Extracted } from './shape'
-export { useMutation } from './useMutation'
+export { useMutation, resetMutationScopes } from './useMutation'
 export { useSyncStatus } from './useSyncStatus'
 
 export { writeLocal, writeConfirmed } from './mutate'
@@ -130,7 +130,14 @@ export type {
   QueryResult,
   QueryResultCommon,
   MutationMode,
+  MutationOperation,
+  InsertVariables,
+  UpdateVariables,
+  DeleteVariables,
+  MutationContext,
+  MutationCallbacks,
   UseMutationOptions,
+  MutationResultCommon,
   MutationResult,
   MutationOp,
   FailedWrite,
