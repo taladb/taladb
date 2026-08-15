@@ -293,15 +293,21 @@ const db = await openDB('./myapp.db', {
 })
 ```
 
-## Snapshot export / import
+## Backups
+
+The `@taladb/node` binding does not expose snapshot export — that lives in the
+Rust core and is surfaced only by `@taladb/web`. On Node, the database is a
+single file, so a backup is a file copy:
 
 ```ts
 import fs from 'node:fs/promises'
 
-// Export
-const bytes = await db.exportSnapshot()
-await fs.writeFile('backup.taladb', bytes)
+await db.close()                                  // release the exclusive lock
+await fs.copyFile('./myapp.db', './backup.db')
 ```
+
+Copy it while the database is closed, or from a filesystem snapshot. Copying an
+open database can capture a torn write.
 
 ## Testing with an in-memory database
 

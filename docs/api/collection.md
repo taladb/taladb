@@ -494,20 +494,24 @@ const sessions = await events.aggregate([
 
 ## `watch(filter?)`
 
-Returns a `WatchHandle` that yields fresh snapshots of matching documents after every write to the collection.
+Pushes a fresh snapshot of matching documents to `callback` after every write to the collection. Returns an unsubscribe function. (`watch()`/`WatchHandle` is the Rust-core equivalent, pulled with `next()`.)
 
 ```ts
-watch(filter?: Filter<T>): WatchHandle<T>
+subscribe(
+  filter: Filter<T>,
+  callback: (docs: T[]) => void,
+  onError?: (error: unknown) => void,
+): () => void   // call it to unsubscribe
 ```
 
 ```ts
-const handle = users.watch({ role: 'admin' })
+// The callback fires immediately with the current snapshot, and again after
+// every write that affects the filter.
+const stop = users.subscribe({ role: 'admin' }, (admins) => {
+  render(admins)
+})
 
-// Blocking — waits for next write
-const admins = await handle.next()
-
-// Non-blocking — returns null if nothing has changed since last call
-const snapshot = await handle.tryNext()
+stop() // unsubscribe
 
 // Async iterator
 for await (const snapshot of handle) {
@@ -517,11 +521,8 @@ for await (const snapshot of handle) {
 
 See [Live Queries](/api/live-queries) for full details.
 
-## `exportSnapshot()` / `restoreFromSnapshot(bytes)`
+## Snapshot export / import
 
-These are database-level methods, not collection-level. See [Snapshot export/import in Features](/features#snapshot-export--import).
-
-```ts
-const bytes = await db.exportSnapshot()           // Uint8Array
-const db2   = await openDB('', { snapshot: bytes })
-```
+Database-level, not collection-level — and only on the raw `@taladb/web` handle,
+not on the object `openDB()` returns. See
+[Snapshot export/import in Features](/features#snapshot-export--import).

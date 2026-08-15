@@ -341,11 +341,20 @@ taladb drop myapp.db sessions    # drop a collection
 ## Snapshot export / import
 
 ```ts
-// Export the entire database to a portable binary snapshot
-const bytes = await db.exportSnapshot()
+import init, { TalaDbWeb } from '@taladb/web'
 
-// Restore on another device or after clearing storage
-const db2 = await Database.restoreFromSnapshot(bytes)
+await init()
+const raw = TalaDbWeb.open('myapp.db')
+
+// Export the entire database to a portable binary snapshot
+const bytes = raw.exportSnapshot()
+
+// Restore by opening with the bytes
+const restored = TalaDbWeb.openWithSnapshot('myapp.db', bytes)
 ```
+
+Available on the raw `@taladb/web` handle and in the Rust core. It is **not**
+exposed by the `taladb` wrapper that `openDB()` returns, nor by the Node
+binding — on Node, copy the database file instead.
 
 Snapshots use a compact binary format (`TDBS` magic + version + length-prefixed KV pairs) and include every table — documents and indexes — so the restored database is immediately queryable without re-indexing.

@@ -434,9 +434,20 @@ const db = await openDB('myapp.db', {
 
 ## Exporting a snapshot
 
+::: warning Not available through `openDB()`
+Snapshot export lives on the raw `@taladb/web` WASM handle, not on the database
+object `openDB()` returns, and the Node binding does not expose it at all. The
+example below uses the binding directly.
+:::
+
 ```ts
+import init, { TalaDbWeb } from '@taladb/web'
+
+await init()
+const raw = TalaDbWeb.open('myapp.db')
+
 // Export the whole database to a Uint8Array
-const bytes = await db.exportSnapshot()
+const bytes = raw.exportSnapshot()
 
 // Save as a file download
 const blob = new Blob([bytes], { type: 'application/octet-stream' })

@@ -136,8 +136,12 @@ taladb studio ./myapp.db
 For **browser / OPFS**, export a snapshot from within your app and download it, then open the downloaded file:
 
 ```ts
-// In your app — export to a downloadable file
-const bytes = await db.exportSnapshot()
+// In your app — export to a downloadable file. `exportSnapshot` is on the raw
+// @taladb/web handle, not on the object openDB() returns.
+import init, { TalaDbWeb } from '@taladb/web'
+
+await init()
+const bytes = TalaDbWeb.open('myapp.db').exportSnapshot()
 const a = Object.assign(document.createElement('a'), {
   href: URL.createObjectURL(new Blob([bytes])),
   download: 'myapp.db',

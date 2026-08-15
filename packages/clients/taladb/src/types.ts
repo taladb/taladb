@@ -196,18 +196,22 @@ export interface Schema<T> {
 export type SyncFieldType = 'bool' | 'int' | 'float' | 'str' | 'bytes' | 'array' | 'object' | 'any';
 
 /**
- * A tolerant, structural schema applied to documents **arriving via sync**
- * (`db.sync()` pull). Distinct from {@link Schema} (Zod/Valibot), which is
- * strict and runs on the *local* `insert` path: sync import is the boundary you
- * don't control, so it validates structurally and never hard-rejects.
+ * Declares this collection's document *shape version*.
  *
- * On import, per document:
- * - `_v` **below** `version` → upgraded in place (missing `defaults` filled,
- *   `_v` stamped) — additive-only migration.
- * - `_v` **above** `version` → accepted untouched (the peer is ahead).
- * - a missing/`null` `required` field or a `types` mismatch → **quarantined**
- *   (set aside, recoverable via {@link TalaDB.quarantined}), never dropped and
- *   never aborting the batch.
+ * ::: warning Only `version` is live in 0.11.0
+ * This schema was built for the tolerant import path used by `db.sync()`.
+ * **Sync was removed in 0.11.0**, and with it the engine-side validator, so
+ * `required`, `types`, `renames` and `defaults` are currently inert — nothing
+ * reads them. `version` still does real work: it stamps `_v` on locally
+ * inserted documents and is the target `migrateDocument` migrates *to*.
+ * :::
+ *
+ * Distinct from {@link Schema} (Zod/Valibot), which is strict and runs on the
+ * local `insert` path.
+ *
+ * The import behaviour these fields described — upgrade below `version`, accept
+ * above it, quarantine a bad shape rather than drop it — went with the sync
+ * path. `TalaDB.quarantined` no longer exists.
  *
  * @example
  * const users = db.collection<User>('users', {
@@ -228,7 +232,7 @@ export interface SyncSchema {
    * than silently quarantining the documents they were meant to upgrade.
    */
   version?: number;
-  /** Fields that must be present and non-null, or the document is quarantined. */
+  /** Inert since 0.11.0 — see {@link SyncSchema}. */
   required?: string[];
   /** Expected primitive type per field. Fields absent here accept any type. */
   types?: Record<string, SyncFieldType>;
@@ -262,11 +266,11 @@ export interface CollectionOptions<T extends Document = Document> {
    */
   validateOnRead?: boolean;
   /**
-   * Tolerant structural schema applied to documents arriving via `db.sync()`.
-   * See {@link SyncSchema}. Enables validate-on-import ("validate, never cast")
-   * in the core sync path, with `_v` migration and quarantine of bad shapes.
-   * Wired on browser (OPFS worker), Node.js, and React Native; a binding whose
-   * native module predates 0.9.2 falls back to unvalidated import.
+   * Document shape version for this collection. See {@link SyncSchema}.
+   *
+   * Its `required`/`types`/`renames`/`defaults` fields fed the sync import path
+   * and are inert since sync was removed in 0.11.0; `version` remains the
+   * migration target and the `_v` stamped on local inserts.
    *
    * Declaring a `version` also makes locally-inserted documents carry that `_v`,
    * so they are never mistaken for legacy documents on read.

@@ -20,10 +20,24 @@ Each `WatchHandle` holds the receiving end of one such channel. When `next()` is
 
 The query is always re-executed at receive time, so the snapshot is always fresh regardless of how many writes were coalesced.
 
-## Creating a watch handle
+::: warning `watch()` is the Rust API, not the JavaScript one
+`Collection::watch` and `WatchHandle` belong to the Rust core. From JavaScript
+and TypeScript the equivalent is
+[`subscribe()`](/api/collection#subscribe-filter-callback), which pushes
+snapshots to a callback instead of being pulled with `next()`:
 
 ```ts
-const handle = users.watch({ role: 'admin' })
+const stop = users.subscribe({ role: 'admin' }, (admins) => {
+  render(admins)
+})
+stop() // unsubscribe
+```
+:::
+
+## Creating a watch handle
+
+```rust
+let handle = users.watch(Filter::eq("role", "admin"));
 ```
 
 The filter is evaluated using the same query planner as `find`. If the `role` field has an index, the watch query uses it.
@@ -66,9 +80,9 @@ The loop runs indefinitely, yielding a new snapshot after each write. To stop it
 
 Each call to `watch` creates an independent handle with its own channel and filter:
 
-```ts
-const admins = users.watch({ role: 'admin' })
-const unverified = users.watch({ verified: false })
+```rust
+let admins = users.watch(Filter::eq("role", "admin"));
+let unverified = users.watch(Filter::eq("verified", false));
 
 // Each handle runs its own query independently
 admins.next().then(console.log)
@@ -77,8 +91,12 @@ unverified.next().then(console.log)
 
 ## React integration
 
+`@taladb/react` ships this as [`useFind`](/guide/react), so you rarely need to
+write it. The hand-rolled version is short, because `subscribe` already
+delivers the first snapshot and every one after it:
+
 ```tsx
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Collection, Document, Filter } from 'taladb'
 
 export function useWatch<T extends Document>(
@@ -86,32 +104,14 @@ export function useWatch<T extends Document>(
   filter: Filter<T> = {},
 ) {
   const [docs, setDocs] = useState<T[]>([])
-  const cancelRef = useRef(false)
 
   useEffect(() => {
-    cancelRef.current = false
-    const handle = collection.watch(filter)
-
-    // Seed with the current state
-    collection.find(filter).then(setDocs)
-
-    async function loop() {
-      while (!cancelRef.current) {
-        try {
-          const snapshot = await handle.next()
-          if (!cancelRef.current) setDocs(snapshot)
-        } catch {
-          break
-        }
-      }
-    }
-
-    loop()
-
-    return () => {
-      cancelRef.current = true
-    }
-  }, [collection])
+    // Returns its unsubscribe function — returning it from the effect is the
+    // whole teardown. No cancellation flag, because there is no loop to stop.
+    return collection.subscribe(filter, setDocs)
+    // Serialise the filter: an inline object literal is a new reference every
+    // render and would resubscribe on each one.
+  }, [collection, JSON.stringify(filter)])
 
   return docs
 }

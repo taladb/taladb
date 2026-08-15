@@ -243,22 +243,21 @@ TalaDB stores the current schema version in a `meta::db_version` table. On open,
 
 ## Live Queries
 
-A **live query** (watch) lets you subscribe to a filtered view of a collection. Instead of polling, you call `next()` and it blocks until the next write to that collection, then returns a fresh result set.
+A **live query** lets you subscribe to a filtered view of a collection. Instead
+of polling, you register a callback and the engine pushes a fresh result set
+after every write that affects your filter.
 
 ```ts
-const handle = users.watch({ role: 'admin' })
+const stop = users.subscribe({ role: 'admin' }, (admins) => {
+  console.log('Admins updated:', admins)
+})
 
-// Blocking — waits for next write, then returns all matching admins
-const admins = await handle.next()
-
-// Non-blocking — returns null if nothing has changed
-const snapshot = await handle.tryNext()
-
-// Iterate indefinitely
-for await (const snapshot of handle) {
-  console.log('Admins updated:', snapshot)
-}
+stop() // unsubscribe
 ```
+
+The Rust core exposes the same mechanism in pull form — `collection.watch(filter)`
+returns a `WatchHandle` whose `next()` blocks until the following write. The
+JavaScript bindings wrap that loop and hand you the callback form above.
 
 Internally, each `WatchHandle` holds an MPSC channel receiver. On every write, the collection broadcasts a lightweight `WriteEvent` to all registered handles. The handle re-runs the query against the current database state and returns the result.
 

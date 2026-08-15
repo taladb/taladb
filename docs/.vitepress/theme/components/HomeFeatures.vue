@@ -78,10 +78,10 @@ const features = [
     desc: 'Relevance-ranked keyword search with searchText — the same BM25 model as Lucene and Elasticsearch — plus the boolean $contains filter. No external search engine required.',
   },
   {
-    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`,
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M8 18h12a2 2 0 0 0 2-2V8"/><path d="M18 22l4-4-4-4"/></svg>`,
     iconBg: 'rgba(14,165,233,0.1)',
-    title: 'Bidirectional Sync',
-    desc: 'db.sync() pulls remote changes and pushes local ones with Last-Write-Wins merge and incremental cursors. Any backend becomes a peer via the SyncAdapter interface — HTTP ships in the box, MongoDB via @taladb/sync-mongodb.',
+    title: 'Multi-Tab Safe',
+    desc: 'The first browser tab owns the OPFS file; later tabs read a live copy and forward their writes to it. No duplicate engines, no lost updates, no lock errors — and db.isPrimary() tells you which tab owns the storage when work must run only once.',
   },
   {
     icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
