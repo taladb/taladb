@@ -14,10 +14,12 @@ use web_sys::FileSystemSyncAccessHandle;
 
 #[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
-use taladb_core::{Database, Filter, HnswOptions, Update, Value, VectorMetric};
+use taladb_core::{Database, Document, Filter, HnswOptions, Update, Value, VectorMetric};
 // Encryption is only wired on the wasm OPFS open path — gate the imports the
 // same way as `open_with_config_and_opfs` so native workspace builds (CI's
 // cargo check/clippy) don't see them as unused.
+#[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+use std::sync::Arc;
 #[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
 use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
@@ -231,6 +233,61 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let id_strs: Vec<String> = ids.iter().map(taladb_core::Ulid::to_string).collect();
         serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Upsert documents **by their own `_id`**, in one commit per document.
+    ///
+    /// Backs cross-tab write propagation: a tab that cannot hold the OPFS lock
+    /// writes to an in-memory database, then forwards the committed documents
+    /// here so the tab holding the lock applies them to the durable file. The
+    /// `_id`s travel with the documents, so an id an application already holds
+    /// stays valid after the hand-off — which a plain re-`insert` would break by
+    /// minting a new ULID.
+    ///
+    /// Unlike `insert_many`, a caller-supplied `_id` is required, not ignored.
+    #[wasm_bindgen(js_name = upsertManyWithIds)]
+    pub fn upsert_many_with_ids(
+        &self,
+        collection: &str,
+        docs_json: &str,
+    ) -> Result<String, JsValue> {
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(docs_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let col = self
+            .get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut ids = Vec::with_capacity(arr.len());
+        for v in &arr {
+            let doc = json_obj_to_doc(v)?;
+            let id = col
+                .replace_with_id(doc)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            ids.push(id.to_string());
+        }
+        serde_json::to_string(&ids).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Delete documents by id. Returns how many were present and removed.
+    /// The delete half of cross-tab write propagation.
+    #[wasm_bindgen(js_name = deleteManyWithIds)]
+    pub fn delete_many_with_ids(&self, collection: &str, ids_json: &str) -> Result<u32, JsValue> {
+        let ids: Vec<String> =
+            serde_json::from_str(ids_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let col = self
+            .get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut n = 0u32;
+        for raw in &ids {
+            let id = taladb_core::Ulid::from_string(raw)
+                .map_err(|_| JsValue::from_str(&format!("\"{raw}\" is not a valid ULID")))?;
+            if col
+                .delete_by_id(id)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?
+            {
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// Find documents. Returns a JSON array of document objects.
@@ -710,15 +767,47 @@ fn parse_hnsw_opts(
 // JSON helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a JSON object into insert fields, `_id` included.
+///
+/// `_id` used to be filtered out here, which is why supplying one was a silent
+/// no-op in the browser. The engine now owns that decision: it takes the id if
+/// one is present, rejects a non-ULID with an actionable message, and refuses to
+/// overwrite an existing document. Filtering here would put the browser back on
+/// different semantics from Node and React Native.
 fn json_obj_to_fields(v: &serde_json::Value) -> Result<Vec<(String, Value)>, JsValue> {
     match v {
         serde_json::Value::Object(map) => Ok(map
             .iter()
-            .filter(|(k, _)| k.as_str() != "_id")
             .map(|(k, v)| (k.clone(), json_to_core_value(v)))
             .collect()),
         _ => Err(JsValue::from_str("document must be a JSON object")),
     }
+}
+
+/// Parse a JSON object into a [`Document`], **honouring `_id`**.
+///
+/// The counterpart `json_obj_to_fields` deliberately drops `_id` — the engine
+/// mints its own ULID on insert. Cross-tab propagation needs the opposite: the
+/// id is the whole point, because it is what keeps a document the same document
+/// after it is handed to the tab holding the OPFS lock. So a missing or
+/// malformed `_id` is a hard error here, not a silently-generated new row.
+fn json_obj_to_doc(v: &serde_json::Value) -> Result<Document, JsValue> {
+    let serde_json::Value::Object(map) = v else {
+        return Err(JsValue::from_str("document must be a JSON object"));
+    };
+    let Some(serde_json::Value::String(raw)) = map.get("_id") else {
+        return Err(JsValue::from_str(
+            "upsertManyWithIds requires a string `_id` on every document",
+        ));
+    };
+    let id = taladb_core::Ulid::from_string(raw)
+        .map_err(|_| JsValue::from_str(&format!("\"{raw}\" is not a valid ULID")))?;
+    let fields = map
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_id")
+        .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+        .collect();
+    Ok(Document::with_id(id, fields))
 }
 
 /// Parse a filter argument that may legitimately be absent.

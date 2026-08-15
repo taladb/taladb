@@ -48,10 +48,17 @@ function fakeCollection(seed: Document[] = []) {
     findOne: vi.fn(),
     updateOne: vi.fn(),
     deleteMany: vi.fn(),
+    aggregate: vi.fn(),
   };
   const matches = (d: Document, f: unknown): boolean => {
     if (f === undefined || f === null) return true;
-    return Object.entries(f as Record<string, unknown>).every(([k, v]) => d[k] === v);
+    return Object.entries(f as Record<string, unknown>).every(([k, v]) => {
+      // `_id`-`$in` is how post-image reads are batched.
+      if (v !== null && typeof v === 'object' && '$in' in (v as object)) {
+        return (v as { $in: unknown[] }).$in.includes(d[k]);
+      }
+      return d[k] === v;
+    });
   };
   const col = {
     async insert(doc: Omit<Document, '_id'>) {
@@ -97,6 +104,12 @@ function fakeCollection(seed: Document[] = []) {
       const before = docs.length;
       docs = docs.filter((d) => !matches(d, f));
       return before - docs.length;
+    },
+    /** Only ever `[{ $match }, { $project: { _id: 1 } }]` — id resolution. */
+    async aggregate(pipeline: unknown) {
+      spy.aggregate(pipeline);
+      const [{ $match: f }] = pipeline as [{ $match: unknown }];
+      return docs.filter((d) => matches(d, f)).map((d) => ({ _id: d._id }) as Document);
     },
   };
   return { col, spy, all: () => docs };
@@ -333,9 +346,11 @@ describe('wrapCollectionWithWebhook', () => {
     const { col, d, calls, spy } = setup([{ _id: 'id1', title: 'a' }]);
     await col.updateOne({ _id: 'id1' }, { $set: { title: 'b' } });
     await d.flush();
-    // findOne is called once — for the post-image — never to resolve the filter.
-    expect(spy.findOne).toHaveBeenCalledTimes(1);
-    expect(spy.find).not.toHaveBeenCalled();
+    // The only read is the post-image; the filter is never resolved.
+    expect(spy.aggregate).not.toHaveBeenCalled();
+    expect(spy.findOne).not.toHaveBeenCalled();
+    expect(spy.find).toHaveBeenCalledTimes(1);
+    expect(spy.find).toHaveBeenCalledWith({ _id: 'id1' });
     expect(calls[0].method).toBe('PUT');
     expect((calls[0].body.document as Document).title).toBe('b');
   });
@@ -348,7 +363,10 @@ describe('wrapCollectionWithWebhook', () => {
     ]);
     await col.deleteMany({ tag: 'x' });
     await d.flush();
-    expect(spy.find).toHaveBeenCalledWith({ tag: 'x' });
+    expect(spy.aggregate).toHaveBeenCalledWith([
+      { $match: { tag: 'x' } },
+      { $project: { _id: 1 } },
+    ]);
     expect(calls).toHaveLength(2);
     expect(calls.every((c) => c.method === 'DELETE')).toBe(true);
     expect(calls.map((c) => c.body.id).sort()).toEqual(['id1', 'id2']);
@@ -377,7 +395,7 @@ describe('wrapCollectionWithWebhook', () => {
     const { fn, calls } = recordingFetch();
     const d = createWebhookDispatcher(config({ fetch: fn }))!;
     const { col: raw } = fakeCollection([{ _id: 'id1', title: 'a' }]);
-    raw.findOne = (async () => null) as typeof raw.findOne;
+    raw.find = (async () => []) as typeof raw.find;
     const col = wrapCollectionWithWebhook(raw, 'notes', d);
     await col.updateOne({ _id: 'id1' }, { $set: { title: 'b' } });
     await d.flush();

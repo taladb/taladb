@@ -42,8 +42,20 @@ for the same document always arrive in the order they happened — an update can
 never overtake its own insert — while different documents are delivered
 concurrently.
 
-`PUT` carries the document as it stands *after* the commit, which is what `PUT`
-means. It is not a patch: there is no changed-fields diff.
+`document` is always the stored document as it stands *after* the commit —
+`_id`, the engine's `_changed_at`, and the `_v` shape version included — not the
+object you passed in. `PUT` is therefore not a patch: there is no changed-fields
+diff. The body has the same shape whichever verb delivers it, so a receiver can
+persist what it is handed without caring how the document got there.
+
+`timestamp` is when the write committed, not when the request was sent. A
+backlogged queue or a retrying endpoint delays delivery; it does not move the
+timestamp.
+
+The cost of that guarantee is one batched read per mutating call — a single
+`_id`-`$in` lookup covering every affected document, not one read each. Filters
+of the exact form `{ _id }` skip even that, so the common "edit this record"
+write costs the same with the webhook on as with it off.
 
 ## Delivery guarantee: at most once
 

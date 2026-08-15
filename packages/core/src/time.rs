@@ -26,10 +26,15 @@ mod tests {
         assert!(now_ms() > 1_577_836_800_000);
     }
 
+    /// Deliberately a *bound*, not `b >= a`. This is the wall clock: an NTP
+    /// step between the two calls can legitimately move it backwards, and a
+    /// test that fails when the host adjusts its clock is noise, not a signal.
+    /// What actually matters here is that successive calls stay in the same
+    /// era — i.e. the unit is milliseconds and the reading is live.
     #[test]
-    fn now_ms_is_monotonic_across_calls() {
+    fn now_ms_readings_are_close_together() {
         let a = now_ms();
         let b = now_ms();
-        assert!(b >= a);
+        assert!(a.abs_diff(b) < 1_000, "{a} and {b} are implausibly far apart");
     }
 }

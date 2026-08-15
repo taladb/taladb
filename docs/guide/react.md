@@ -77,7 +77,7 @@ Hooks resolve their collection by name, so they need to know how that collection
 </TalaDBProvider>
 ```
 
-Every hook below it — `useCollection`, `useFind`, `useQuery`, `useMutation` — now opens a **configured** collection: a local write hard-fails validation, and the engine stamps the document's `_v` shape version. `useCollection(name, options)` overrides the registry for a single call.
+Every hook below it — `useCollection`, `useFind`, `useFindOne`, `useAggregate`, `useMutation` — now opens a **configured** collection: a local write hard-fails validation, and the engine stamps the document's `_v` shape version. `useCollection(name, options)` overrides the registry for a single call.
 
 ::: warning Changed in 0.9.3
 Before 0.9.3 there was no way to give the hooks these options: `useCollection(name)` called `db.collection(name)` bare, so a write through `useMutation` **silently skipped** the strict `schema` and the `_v` stamp that `db.collection(name, { … })` applies. An app that followed this guide lost local validation without any warning. Register `collections` and that gap is closed.

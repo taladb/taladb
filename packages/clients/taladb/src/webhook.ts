@@ -223,11 +223,22 @@ export function createWebhookDispatcher(
     );
   }
 
-  function bodyFor(event: WebhookEvent): string {
+  /**
+   * `at` is the moment the event was *queued* — i.e. just after the write
+   * committed — not the moment it is sent.
+   *
+   * The distinction matters because delivery is neither immediate nor
+   * order-free: events for one document are chained, and a failing endpoint
+   * adds up to 1.4s of retry backoff per event ahead of this one in the chain.
+   * Stamping at send time would make `timestamp` drift arbitrarily from the
+   * mutation it describes, which is exactly what a receiver reaching for that
+   * field is trying to order by.
+   */
+  function bodyFor(event: WebhookEvent, at: number): string {
     const base = {
       collection: event.collection,
       id: event.id,
-      timestamp: Date.now(),
+      timestamp: at,
     };
     return JSON.stringify(
       event.op === 'delete'
@@ -237,12 +248,12 @@ export function createWebhookDispatcher(
   }
 
   /** One delivery attempt chain. Resolves when delivered or permanently failed. */
-  async function deliver(event: WebhookEvent): Promise<void> {
+  async function deliver(event: WebhookEvent, at: number): Promise<void> {
     const url = endpointFor(event.op);
     const init: RequestInit = {
       method: METHOD[event.op],
       headers,
-      body: bodyFor(event),
+      body: bodyFor(event, at),
     };
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -292,10 +303,12 @@ export function createWebhookDispatcher(
       }
 
       stats.pending++;
+      // Stamped here, at commit time — see `bodyFor`.
+      const at = Date.now();
       const key = `${event.collection} ${event.id}`;
       const prior = chains.get(key) ?? Promise.resolve();
       const next = prior
-        .then(() => deliver(event))
+        .then(() => deliver(event, at))
         .finally(() => {
           stats.pending--;
           // Drop the chain entry once this was the last link, so a long-lived
@@ -309,11 +322,22 @@ export function createWebhookDispatcher(
       const deadline = Date.now() + timeoutMs;
       // Chains grow while draining (a retry re-arms one), so re-read the map
       // each pass rather than awaiting one snapshot of it.
-      while (stats.pending > 0 && Date.now() < deadline) {
-        await Promise.race([
-          Promise.allSettled([...chains.values()]),
-          sleep(Math.max(0, deadline - Date.now())),
-        ]);
+      while (stats.pending > 0) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        // The timer is cleared whichever side of the race wins. Left armed it
+        // holds Node's event loop open for the rest of the timeout *after* the
+        // queue has drained — `await db.close()` would resolve promptly and the
+        // process would still sit there for five seconds before exiting.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+        });
+        try {
+          await Promise.race([Promise.allSettled([...chains.values()]), expired]);
+        } finally {
+          clearTimeout(timer);
+        }
       }
       return stats.pending === 0;
     },
@@ -342,6 +366,17 @@ interface WebhookWritable<T extends Document> {
   updateMany(filter: unknown, update: unknown): Promise<number>;
   deleteOne(filter: unknown): Promise<boolean>;
   deleteMany(filter: unknown): Promise<number>;
+  /**
+   * Used only to resolve ids, and only when present — every platform adapter
+   * has it, but the structural type stays honest about the wrapper needing
+   * nothing more than a fallback to `find` if one ever does not.
+   */
+  aggregate?<R extends Document = Document>(pipeline: unknown): Promise<R[]>;
+}
+
+/** Ids as an engine filter. `_id` `$in` is planned as a direct key lookup. */
+function byIds(ids: string[]): unknown {
+  return ids.length === 1 ? { _id: ids[0] } : { _id: { $in: ids } };
 }
 
 /**
@@ -363,6 +398,23 @@ function idFromFilter(filter: unknown): string | null {
 
 /**
  * Wrap a collection so every committed mutation queues a webhook event.
+ *
+ * ## Where this sits in the stack
+ *
+ * **Directly on the platform adapter, underneath `applySchema`.** That order is
+ * load-bearing in three ways, and getting it backwards is silently wrong:
+ *
+ * 1. `applySchema` narrows write filters through `writableFilter` (the `_v`
+ *    guard that stops this build from clobbering a newer peer's documents). The
+ *    filter that reaches this wrapper is therefore the *same* one the mutation
+ *    runs, so the ids reported are exactly the ids touched. Wrapped the other
+ *    way round, resolution sees the unguarded filter and reports deletions of
+ *    documents the guard had spared.
+ * 2. Resolution reads go straight to the engine, so they cannot be failed by
+ *    `validateOnRead` or trigger a `persistMigrations` write-back. Enabling a
+ *    notification channel must not be able to make a delete throw.
+ * 3. Inserts arrive already carrying `_v`, so the reported document matches
+ *    what was stored rather than what the caller passed in.
  *
  * ## Why the ids are resolved here and not in the engine
  *
@@ -391,7 +443,15 @@ export function wrapCollectionWithWebhook<T extends Document>(
 ): WebhookWritable<T> {
   if (!webhook.reports(collection)) return col;
 
-  /** Ids matching `filter`, using the bare-`_id` fast path when possible. */
+  /**
+   * Ids matching `filter`, using the bare-`_id` fast path when possible.
+   *
+   * The multi-document path projects to `_id` rather than calling `find`. On a
+   * vector database the difference is not marginal: `find` decodes every
+   * matching document in full, embeddings included, and then everything but the
+   * id is thrown away. `exclude_fields` does not help here — it trims the
+   * request body, not the read.
+   */
   async function idsFor(filter: unknown, limitOne: boolean): Promise<string[]> {
     const fast = idFromFilter(filter);
     if (fast !== null) return [fast];
@@ -399,19 +459,49 @@ export function wrapCollectionWithWebhook<T extends Document>(
       const doc = await col.findOne(filter);
       return doc && typeof doc._id === 'string' ? [doc._id] : [];
     }
-    const docs = await col.find(filter);
+    const docs = col.aggregate
+      ? await col.aggregate([{ $match: filter }, { $project: { _id: 1 } }])
+      : await col.find(filter);
     return docs.map((d) => d._id).filter((id): id is string => typeof id === 'string');
   }
 
-  /** Emit `update` events carrying each id's post-commit document. */
-  async function emitUpdates(ids: string[]): Promise<void> {
+  /**
+   * Emit `op` events carrying each id's post-commit document.
+   *
+   * ## One query for the batch, not one per id
+   *
+   * `updateMany` over a large match set was issuing N sequential round trips
+   * *inside the caller's await*, so the write call scaled with the size of the
+   * match rather than with the cost of the write. `_id`-`$in` is planned as a
+   * direct key lookup, so the batched read is also cheaper per document than
+   * the point reads it replaces.
+   *
+   * ## Why inserts are read back too
+   *
+   * The obvious shortcut on the insert path is to report the document the
+   * caller passed plus the minted `_id` — no read at all. It is wrong: the
+   * engine stamps `_changed_at` and `applySchema` stamps `_v`, so the shortcut
+   * ships a body that is missing fields the stored document has, and only on
+   * `POST`. A receiver that persists what it is handed then holds a different
+   * document depending on which verb delivered it. One batched read per insert
+   * *call* (not per document) buys one payload shape for all three verbs.
+   */
+  async function emitPostImages(ids: string[], op: 'insert' | 'update'): Promise<void> {
+    if (ids.length === 0) return;
+    const docs = await col.find(byIds(ids));
+    const byId = new Map<string, T>();
+    for (const doc of docs) {
+      if (typeof doc._id === 'string') byId.set(doc._id, doc);
+    }
+    // Emission follows `ids`, not result order, so a document's events stay in
+    // the order the mutations happened.
     for (const id of ids) {
-      const doc = await col.findOne({ _id: id });
+      const doc = byId.get(id);
       // Absent means something else deleted it between the commit and this
       // read. There is no post-image to report, so report the deletion — the
       // receiver's view of "this id is gone" is correct either way.
-      if (doc === null) webhook.emit({ op: 'delete', collection, id });
-      else webhook.emit({ op: 'update', collection, id, document: doc });
+      if (doc === undefined) webhook.emit({ op: 'delete', collection, id });
+      else webhook.emit({ op, collection, id, document: doc });
     }
   }
 
@@ -420,39 +510,27 @@ export function wrapCollectionWithWebhook<T extends Document>(
 
     async insert(doc) {
       const id = await col.insert(doc);
-      webhook.emit({
-        op: 'insert',
-        collection,
-        id,
-        document: { ...doc, _id: id } as unknown as Document,
-      });
+      await emitPostImages([id], 'insert');
       return id;
     },
 
     async insertMany(docs) {
       const ids = await col.insertMany(docs);
-      ids.forEach((id, i) => {
-        webhook.emit({
-          op: 'insert',
-          collection,
-          id,
-          document: { ...docs[i], _id: id } as unknown as Document,
-        });
-      });
+      await emitPostImages(ids, 'insert');
       return ids;
     },
 
     async updateOne(filter, update) {
       const ids = await idsFor(filter, true);
       const changed = await col.updateOne(filter, update);
-      if (changed) await emitUpdates(ids);
+      if (changed) await emitPostImages(ids, 'update');
       return changed;
     },
 
     async updateMany(filter, update) {
       const ids = await idsFor(filter, false);
       const n = await col.updateMany(filter, update);
-      if (n > 0) await emitUpdates(ids);
+      if (n > 0) await emitPostImages(ids, 'update');
       return n;
     },
 

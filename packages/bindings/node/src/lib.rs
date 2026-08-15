@@ -329,8 +329,8 @@ impl TalaDBNode {
     }
 
     /// Compact the underlying storage file, reclaiming space freed by deletes
-    /// and updates. Call during idle periods after large bulk deletes or
-    /// tombstone compaction. Returns the number of bytes reclaimed (may be 0).
+    /// and updates. Call during idle periods after large bulk deletes.
+    /// Returns the number of bytes reclaimed (may be 0).
     #[napi]
     pub fn compact(&self) -> napi::Result<()> {
         self.db()?.compact().map_err(err_to_napi)
@@ -742,8 +742,8 @@ impl CollectionNode {
         }))
     }
 
-    /// Async variant of `insert` — the write (and any HTTP sync hook retries)
-    /// runs on the libuv thread pool instead of blocking the JS thread.
+    /// Async variant of `insert` — the write runs on the libuv thread pool
+    /// instead of blocking the JS thread.
     #[napi(js_name = "insertAsync", ts_return_type = "Promise<string>")]
     pub fn insert_async(&self, doc: JsonValue) -> napi::Result<AsyncTask<InsertTask>> {
         let fields = obj_to_fields(doc)?;

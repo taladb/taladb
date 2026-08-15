@@ -19,7 +19,11 @@
   "scripts": {
     "build": "wasm-pack build --target web --out-dir pkg --release",
     "build:dev": "wasm-pack build --target web --out-dir pkg --dev",
-    "test": "wasm-pack test --headless --chrome"
+    "test": "wasm-pack test --headless --chrome",
+    "test:e2e": "node e2e/run.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.0.0"
   },
   "repository": {
     "type": "git",

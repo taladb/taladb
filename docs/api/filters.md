@@ -59,6 +59,47 @@ const staff = await users.find({ role: { $in: ['admin', 'moderator', 'editor'] }
 const clean  = await posts.find({ tags: { $nin: ['spam', 'hidden'] } })
 ```
 
+## Array fields
+
+A comparison against a field holding an array matches when **any element**
+satisfies it. There is no separate operator: the ordinary ones reach into the
+list.
+
+```ts
+await posts.insert({ title: 'Local-first', tags: ['rust', 'database'] })
+
+await posts.find({ tags: 'rust' })                    // ✓ an element matches
+await posts.find({ tags: { $in: ['rust', 'swift'] } }) // ✓ any element, any candidate
+await posts.find({ scores: { $gte: 90 } })            // ✓ any element ≥ 90
+await posts.find({ tags: { $ne: 'rust' } })           // ✗ excluded — an element matches
+```
+
+The whole-array comparison is tried first, so an exact list still matches
+exactly:
+
+```ts
+await posts.find({ tags: ['rust', 'database'] })       // ✓ this document only
+```
+
+A document is returned **once**, however many of its elements match.
+
+Indexing an array field is worthwhile and needs no special syntax —
+`createIndex('tags')` stores one entry per element, so `{ tags: 'rust' }` is a
+point lookup rather than a scan:
+
+```ts
+await posts.createIndex('tags')
+```
+
+Two limits are worth knowing:
+
+- **Nested arrays are not flattened.** `[['a']]` does not match `'a'`. One level
+  is what the index stores, and matching deeper would make the same query answer
+  differently once an index existed.
+- **A compound index covers at most one array field.** Two arrays in one document
+  would put the product of the two lists in the index, so the write is rejected
+  rather than silently admitted.
+
 ## Logical operators
 
 ### `$and`
@@ -230,6 +271,9 @@ The query planner selects an index when the filter matches one of these patterns
 | `$and` with equality on all fields of a compound index | `CompoundIndexEq` — single B-tree range scan |
 | `{ field: { $contains: '...' } }` on an FTS-indexed field | `FtsSearch` — inverted token index |
 | All other filters | `FullScan` — every document evaluated in memory |
+
+An array field uses the same plans: it is indexed once per element, so element
+matches are point lookups and a range over a list is one B-tree scan.
 
 ## Filter examples
 

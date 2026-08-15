@@ -1266,12 +1266,16 @@ fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
+/// Parse a document JSON string into insert fields, `_id` included.
+///
+/// The filter that used to drop `_id` here made supplying one a silent no-op —
+/// the engine now takes it, validates it, and refuses to overwrite an existing
+/// document, identically on all three runtimes.
 fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = v.as_object()?;
     Some(
         obj.iter()
-            .filter(|(k, _)| k.as_str() != "_id")
             .map(|(k, v)| (k.clone(), json_to_value(v)))
             .collect(),
     )

@@ -17,8 +17,8 @@ use crate::fts::{
 };
 use crate::index::{
     CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, compound_meta_key,
-    compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
-    meta_key,
+    compound_table_name, docs_table_name, encode_compound_keys, encode_index_keys,
+    index_table_name, meta_key,
 };
 use crate::query::executor::{execute, fetch_documents, index_ordered_entries};
 use crate::query::filter::Filter;
@@ -360,6 +360,49 @@ const ADDRESSABLE_SYSTEM_COLLECTIONS: &[&str] = &["__taladb_sync", "__taladb_rep
 ///   mutations against the append-only audit log). The explicit
 ///   [`ADDRESSABLE_SYSTEM_COLLECTIONS`] allowlist is exempt.
 ///
+/// Take a caller-supplied `_id` out of an insert's fields.
+///
+/// ## Why the engine accepts one at all
+///
+/// It did not, and it did not say so: `_id` was dropped on the way in (the web
+/// and React Native bindings filtered it; Node passed it through as a field that
+/// the read path then overwrote with the real id). A document inserted as
+/// `{ _id: 'sku-1' }` came back under a fresh ULID, `find({ _id: 'sku-1' })`
+/// matched nothing, and re-running the same seed produced a second copy of every
+/// row rather than recognising the first.
+///
+/// That matters more since replication was removed: hydrating from a server is
+/// now ordinary application code — fetch, then `insert_many` — and without a
+/// caller-controlled id that code cannot be run twice.
+///
+/// ## Why it must be a ULID
+///
+/// Ids are 16 raw bytes on disk; every index key ends with them, and their byte
+/// order is what makes index order equal `(value, id)` order. An arbitrary
+/// string cannot be stored as one. `deriveDocId(collection, key)` hashes a
+/// natural key into a ULID for exactly this purpose, and the error points there.
+fn take_supplied_id(fields: &mut Vec<(String, Value)>) -> Result<Option<Ulid>, TalaDbError> {
+    let Some(position) = fields.iter().position(|(k, _)| k == "_id") else {
+        return Ok(None);
+    };
+    let (_, value) = fields.remove(position);
+    // A later duplicate would survive `dedupe_fields` as a plain field and
+    // reappear on read, shadowing the real id.
+    fields.retain(|(k, _)| k != "_id");
+    let Value::Str(raw) = value else {
+        return Err(TalaDbError::InvalidDocumentId(format!(
+            "_id must be a string, got {}",
+            value.type_name()
+        )));
+    };
+    Ulid::from_string(&raw).map(Some).map_err(|_| {
+        TalaDbError::InvalidDocumentId(format!(
+            "_id \"{raw}\" is not a ULID — derive one from your natural key with \
+             deriveDocId(collection, key), which maps the same key to the same id every time"
+        ))
+    })
+}
+
 /// Called by [`crate::Database::collection`] so callers get an error
 /// immediately rather than at index-creation time.
 pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
@@ -478,10 +521,8 @@ impl Collection {
         let mut keys: Vec<Vec<u8>> = Vec::with_capacity(existing.len());
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field)
-                && let Some(idx_key) = encode_index_key(val, doc.id)
-            {
-                keys.push(idx_key);
+            if let Some(val) = doc.get(field) {
+                keys.extend(encode_index_keys(val, doc.id));
             }
         }
         let ops: Vec<crate::engine::KvOp<'_>> = keys
@@ -921,10 +962,8 @@ impl Collection {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&crate::document::Value>> =
                 fields.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals
-                && let Some(key) = encode_compound_key(&v, doc.id)
-            {
-                keys.push(key);
+            if let Some(v) = vals {
+                keys.extend(encode_compound_keys(&v, doc.id)?);
             }
         }
         let ops: Vec<crate::engine::KvOp<'_>> = keys
@@ -1077,6 +1116,12 @@ impl Collection {
         let mut encoded: Vec<([u8; 16], Vec<u8>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
+            // Backfill stays lenient where the write path is strict: a document
+            // written *before* this index existed is not a caller error, and
+            // failing the whole `create_vector_index` on one stray vector leaves
+            // no way forward. Pinned by `backfill_skips_documents_without_a_
+            // usable_vector`. Writes made once the index exists are rejected —
+            // see `write_docs_and_indexes`.
             if let Some(val) = doc.get(field)
                 && let Some(vec) = value_to_f32_vec(val)
                 && vec.len() == dimensions
@@ -1325,6 +1370,12 @@ impl Collection {
         // 6. Select the top_k by score. `select_nth_unstable` partitions in
         //    O(n) average instead of the O(n log n) of a full sort, then only
         //    the k retained results are sorted.
+        // `top_k == 0` asks for nothing. Falling through to the partition below
+        // left `scored` untouched and returned the *whole* collection — the
+        // opposite of the request, and unbounded.
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
         let k = top_k.min(scored.len());
         if k > 0 && k < scored.len() {
             scored.select_nth_unstable_by(k - 1, |a, b| {
@@ -1508,6 +1559,23 @@ impl Collection {
         }
         let tables = &cache.tables;
 
+        // An update whose indexed field did not change produces a delete and a
+        // put of the *same* key — work that cancels out. Detecting that here is
+        // what keeps `$set` on one field from paying for every other index on
+        // the collection: without it, flagging 2500 documents re-tokenized a
+        // full-text field none of them touched, once per document, plus a
+        // storage read each for the recorded document length.
+        //
+        // Only meaningful for updates (`old_doc` is `Some`) and only when the
+        // id is unchanged, since every index key embeds it.
+        fn unchanged<'a>(
+            doc: &'a Document,
+            old_doc: Option<&&'a Document>,
+            field: &str,
+        ) -> bool {
+            old_doc.is_some_and(|old| old.id == doc.id && old.get(field) == doc.get(field))
+        }
+
         // --- document bodies ---
         let mut doc_keys: Vec<[u8; 16]> = Vec::with_capacity(docs.len());
         let mut doc_bodies: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
@@ -1526,16 +1594,18 @@ impl Collection {
         for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
             let mut keys: Vec<(Vec<u8>, bool)> = Vec::new(); // (key, is_delete)
             for (doc, old_doc) in docs {
+                if unchanged(doc, old_doc.as_ref(), &idx.field) {
+                    continue;
+                }
                 if let Some(old) = old_doc
                     && let Some(old_val) = old.get(&idx.field)
-                    && let Some(old_key) = encode_index_key(old_val, old.id)
                 {
-                    keys.push((old_key, true));
+                    keys.extend(encode_index_keys(old_val, old.id).into_iter().map(|k| (k, true)));
                 }
-                if let Some(new_val) = doc.get(&idx.field)
-                    && let Some(idx_key) = encode_index_key(new_val, doc.id)
-                {
-                    keys.push((idx_key, false));
+                if let Some(new_val) = doc.get(&idx.field) {
+                    keys.extend(
+                        encode_index_keys(new_val, doc.id).into_iter().map(|k| (k, false)),
+                    );
                 }
             }
             if keys.is_empty() {
@@ -1568,6 +1638,11 @@ impl Collection {
             let mut added_total: Vec<u32> = Vec::new();
 
             for (doc, old_doc) in docs {
+                // Re-tokenizing unchanged text is the most expensive no-op in
+                // this function — see `unchanged`.
+                if unchanged(doc, old_doc.as_ref(), &fts.field) {
+                    continue;
+                }
                 if let Some(old) = old_doc
                     && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
                 {
@@ -1627,13 +1702,33 @@ impl Collection {
             let mut deletes: Vec<[u8; 16]> = Vec::new();
             let mut puts: Vec<([u8; 16], Vec<u8>)> = Vec::new();
             for (doc, old_doc) in docs {
+                // An embedding is the largest value in a typical document;
+                // rewriting it because some other field changed is pure cost.
+                if unchanged(doc, old_doc.as_ref(), &vdef.field) {
+                    continue;
+                }
                 if old_doc.is_some() {
                     deletes.push(doc.id.to_bytes());
                 }
                 if let Some(val) = doc.get(&vdef.field)
                     && let Some(vec) = value_to_f32_vec(val)
-                    && vec.len() == vdef.dimensions
                 {
+                    // A wrong-length vector used to be skipped here, which
+                    // stored the document but left it out of the index: it
+                    // could never be returned by `find_nearest`, and nothing
+                    // said so. On a vector database that is the worst kind of
+                    // failure — a silently incomplete result set. Reject the
+                    // write instead; the transaction rolls back uncommitted.
+                    //
+                    // Only a value that *parses* as a vector is checked. A
+                    // missing field, or a `null` standing in for "not embedded
+                    // yet", is still perfectly legal.
+                    if vec.len() != vdef.dimensions {
+                        return Err(TalaDbError::VectorDimensionMismatch {
+                            expected: vdef.dimensions,
+                            got: vec.len(),
+                        });
+                    }
                     puts.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
                 }
             }
@@ -1654,20 +1749,25 @@ impl Collection {
             let mut deletes: Vec<Vec<u8>> = Vec::new();
             let mut puts: Vec<Vec<u8>> = Vec::new();
             for (doc, old_doc) in docs {
+                // Unchanged only when *every* member field is unchanged — the
+                // compound key is built from all of them.
+                if field_refs
+                    .iter()
+                    .all(|f| unchanged(doc, old_doc.as_ref(), f))
+                    && old_doc.is_some()
+                {
+                    continue;
+                }
                 if let Some(old) = old_doc {
                     let old_vals: Option<Vec<&Value>> =
                         field_refs.iter().map(|f| old.get(f)).collect();
-                    if let Some(v) = old_vals
-                        && let Some(old_key) = encode_compound_key(&v, old.id)
-                    {
-                        deletes.push(old_key);
+                    if let Some(v) = old_vals {
+                        deletes.extend(encode_compound_keys(&v, old.id)?);
                     }
                 }
                 let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-                if let Some(v) = new_vals
-                    && let Some(new_key) = encode_compound_key(&v, doc.id)
-                {
-                    puts.push(new_key);
+                if let Some(v) = new_vals {
+                    puts.extend(encode_compound_keys(&v, doc.id)?);
                 }
             }
             if deletes.is_empty() && puts.is_empty() {
@@ -1688,12 +1788,35 @@ impl Collection {
     // Public API
     // ------------------------------------------------------------------
 
+    /// Fail if `id` is already stored, so `insert` cannot overwrite.
+    ///
+    /// `insert` means create. Silently replacing a document because the caller
+    /// happened to supply an id that exists would make a re-run of a seed script
+    /// destroy whatever the application had since written to those documents.
+    fn reject_existing_id(&self, id: Ulid) -> Result<(), TalaDbError> {
+        let rtxn = self.backend.begin_read()?;
+        if rtxn
+            .get(&docs_table_name(&self.name), &id.to_bytes())?
+            .is_some()
+        {
+            return Err(TalaDbError::DuplicateId(id.to_string()));
+        }
+        Ok(())
+    }
+
     pub fn insert(&self, mut fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
+        let supplied = take_supplied_id(&mut fields)?;
         // Auto-stamp `_changed_at` so callers always have a last-modified time.
         // Engine-owned: a caller-supplied value is dropped.
         fields.retain(|(k, _)| k != "_changed_at");
         fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
-        let mut doc = Document::new(fields);
+        let mut doc = match supplied {
+            Some(id) => {
+                self.reject_existing_id(id)?;
+                Document::with_id(id, fields)
+            }
+            None => Document::new(fields),
+        };
         // Encrypt nominated fields before writing indexes or the doc body.
         // Index entries are written from the plaintext doc, so encrypted fields
         // are not indexable (intentional — see `with_field_encryption` docs).
@@ -1719,14 +1842,28 @@ impl Collection {
 
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let ts = now_ms() as i64;
-        let mut docs: Vec<Document> = items
-            .into_iter()
-            .map(|mut fields| {
-                fields.retain(|(k, _)| k != "_changed_at");
-                fields.push(("_changed_at".into(), Value::Int(ts)));
-                Document::new(fields)
-            })
-            .collect();
+        let mut supplied_ids: Vec<Ulid> = Vec::new();
+        let mut docs: Vec<Document> = Vec::with_capacity(items.len());
+        for mut fields in items {
+            let supplied = take_supplied_id(&mut fields)?;
+            fields.retain(|(k, _)| k != "_changed_at");
+            fields.push(("_changed_at".into(), Value::Int(ts)));
+            docs.push(match supplied {
+                Some(id) => {
+                    // Within the batch as well as against storage: two documents
+                    // carrying one id would otherwise have the second silently
+                    // overwrite the first, and `insert_many` would report two
+                    // ids for one stored document.
+                    if supplied_ids.contains(&id) {
+                        return Err(TalaDbError::DuplicateId(id.to_string()));
+                    }
+                    supplied_ids.push(id);
+                    self.reject_existing_id(id)?;
+                    Document::with_id(id, fields)
+                }
+                None => Document::new(fields),
+            });
+        }
         for doc in &mut docs {
             self.encrypt_doc(doc)?;
         }
@@ -2348,10 +2485,8 @@ impl Collection {
         for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
             let keys: Vec<Vec<u8>> = docs
                 .iter()
-                .filter_map(|doc| {
-                    doc.get(&idx.field)
-                        .and_then(|val| encode_index_key(val, doc.id))
-                })
+                .filter_map(|doc| doc.get(&idx.field).map(|val| encode_index_keys(val, doc.id)))
+                .flatten()
                 .collect();
             let ops: Vec<KvOp<'_>> = keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(table, &ops)?;
@@ -2397,14 +2532,17 @@ impl Collection {
 
         for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {
             let field_refs: Vec<&str> = cidx.fields.iter().map(std::string::String::as_str).collect();
-            let keys: Vec<Vec<u8>> = docs
-                .iter()
-                .filter_map(|doc| {
-                    let vals: Option<Vec<&Value>> =
-                        field_refs.iter().map(|f| doc.get(f)).collect();
-                    vals.and_then(|v| encode_compound_key(&v, doc.id))
-                })
-                .collect();
+            let mut keys: Vec<Vec<u8>> = Vec::new();
+            for doc in docs {
+                let vals: Option<Vec<&Value>> =
+                    field_refs.iter().map(|f| doc.get(f)).collect();
+                if let Some(v) = vals {
+                    // A delete must remove every key the write path wrote, or an
+                    // array member leaves entries pointing at a document that no
+                    // longer exists.
+                    keys.extend(encode_compound_keys(&v, doc.id)?);
+                }
+            }
             let ops: Vec<KvOp<'_>> = keys.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(ctable, &ops)?;
         }

@@ -1,3 +1,95 @@
+/** The three mutation kinds a webhook reports, and the verb each one uses. */
+type WebhookOp = 'insert' | 'update' | 'delete';
+interface WebhookConfig {
+    /**
+     * Enable outbound webhooks. Defaults to `false`, so a config block without
+     * `enabled: true` is inert — safe to commit and safe to ship.
+     */
+    enabled?: boolean;
+    /** Endpoint receiving every event. Required when `enabled` is `true`. */
+    endpoint?: string;
+    /** Headers sent with every request — typically `Authorization`. */
+    headers?: Record<string, string>;
+    /** Per-op endpoint overrides. Fall back to {@link WebhookConfig.endpoint}. */
+    insert_endpoint?: string;
+    update_endpoint?: string;
+    delete_endpoint?: string;
+    /**
+     * Collections to report. Omit to report all of them. A `_`-prefixed
+     * (reserved) collection is never reported either way.
+     */
+    collections?: string[];
+    /**
+     * Document fields stripped from every payload.
+     *
+     * The reason this exists on a vector database: a document carrying a 768-float
+     * embedding is ~9KB of JSON that a webhook receiver almost never wants, on
+     * every single write. Naming it here keeps it out of the request body.
+     *
+     * @example exclude_fields: ['embedding', 'clip_vector']
+     */
+    exclude_fields?: string[];
+    /**
+     * Max events held in memory before new ones are dropped. Default 512.
+     * Back-pressure is a drop, never a block — a slow endpoint must not be able
+     * to stall the write path.
+     */
+    max_queue?: number;
+    /** Retry attempts per event after the first try. Default 3. */
+    retries?: number;
+    /** `fetch` implementation. Defaults to the runtime global. */
+    fetch?: typeof fetch;
+}
+/** Counters for observability. Read via {@link WebhookDispatcher.stats}. */
+interface WebhookStats {
+    /** Queued or in flight. */
+    pending: number;
+    /** Delivered with a 2xx. */
+    delivered: number;
+    /** Gave up after exhausting retries, or hit a permanent 4xx. */
+    failed: number;
+    /** Never attempted — the queue was full when the write committed. */
+    dropped: number;
+}
+type WebhookEvent = {
+    op: 'insert';
+    collection: string;
+    id: string;
+    document: Document;
+} | {
+    op: 'update';
+    collection: string;
+    id: string;
+    document: Document;
+} | {
+    op: 'delete';
+    collection: string;
+    id: string;
+};
+interface WebhookDispatcher {
+    /** True when this collection should report changes. Lets the write wrapper
+     * skip pre-image resolution entirely for collections nobody is watching. */
+    reports(collection: string): boolean;
+    /** Queue an event. Never throws, never blocks the caller. */
+    emit(event: WebhookEvent): void;
+    /** Resolve once the queue is empty or `timeoutMs` elapses. `true` if drained. */
+    flush(timeoutMs?: number): Promise<boolean>;
+    stats(): WebhookStats;
+}
+/**
+ * Validate a webhook config. Throws on the first invalid endpoint.
+ *
+ * Warns — rather than throws — on plaintext HTTP to a non-localhost host: the
+ * payload carries document bodies, so shipping them unencrypted is a real
+ * disclosure, but `http://` against a local dev server is routine.
+ */
+declare function validateWebhookConfig(config: WebhookConfig): void;
+/**
+ * Build a dispatcher, or return `null` when webhooks are disabled — so the
+ * write path can check one nullable field instead of calling into a no-op.
+ */
+declare function createWebhookDispatcher(config: WebhookConfig | undefined): WebhookDispatcher | null;
+
 /** Similarity metric used for vector search. */
 type VectorMetric = 'cosine' | 'dot' | 'euclidean';
 interface VectorIndexOptions {
@@ -104,16 +196,6 @@ type Document = {
     _id?: string;
     [key: string]: Value | undefined;
 };
-/**
- * Who authored a write, and therefore whether it replicates outward.
- *
- * - `'local'` *(default)* — an ordinary user write. Replicates to peers as usual.
- * - `'remote'` — a row replicated **in** from an authoritative origin. The origin
- *   already has it, so it must never go back out: rows written this way fire no
- *   sync events and never appear in `exportChanges()`, and deletes made this way
- *   leave no tombstone. Enforced in the engine, not by convention.
- */
-type WriteOrigin = 'local' | 'remote';
 /**
  * The operators available on a single field.
  *
@@ -385,39 +467,6 @@ type AggregatePipeline<T extends Document = Document> = AggregateStage<T>[];
 interface Collection<T extends Document = Document> {
     insert(doc: Omit<T, '_id'>): Promise<string>;
     insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
-    /**
-     * Upsert many documents **by `_id`**, in a single commit. Existing rows are
-     * replaced in place, absent rows are created, and rows not named in `docs` are
-     * left alone — so writing page 2 never disturbs page 1.
-     *
-     * Unlike {@link insertMany}, which discards `_id` and mints a fresh ULID, this
-     * *honours* the id you supply. That is the whole point: for a row replicated
-     * from a remote origin, pass `_id: deriveDocId(collection, remoteKey)` and every
-     * later fetch of that row converges on the same document instead of duplicating
-     * it. Idempotent, and safe to run concurrently from a background hydration walk
-     * and an on-demand fetch.
-     *
-     * `origin: 'remote'` marks the rows as replicated in from an authoritative
-     * origin, which means they are **never replicated back out** — they will not
-     * fire sync events and will not appear in `exportChanges()`. Use it for anything
-     * the origin already knows about. Defaults to `'local'`.
-     *
-     * @example
-     * await products.replaceManyWithIds(
-     *   rows.map((r) => ({ ...r, _id: deriveDocId('products', r.id) })),
-     *   'remote',
-     * );
-     */
-    replaceManyWithIds(docs: T[], origin?: WriteOrigin): Promise<string[]>;
-    /**
-     * Delete many documents by `_id`, in a single commit. Returns how many were
-     * present and removed; unknown ids are skipped.
-     *
-     * `origin: 'remote'` deletes **without a tombstone**, so the deletion is not
-     * replicated outward — correct when the origin is the one that told you the row
-     * was deleted. Defaults to `'local'`, which tombstones as usual.
-     */
-    deleteManyWithIds(ids: string[], origin?: WriteOrigin): Promise<number>;
     find(filter?: Filter<T>): Promise<T[]>;
     findOne(filter: Filter<T>): Promise<T | null>;
     updateOne(filter: Filter<T>, update: Update<T>): Promise<boolean>;
@@ -592,171 +641,20 @@ interface Collection<T extends Document = Document> {
      */
     subscribeAggregate<R extends Document = Document>(pipeline: AggregatePipeline<T>, callback: (docs: R[]) => void, onError?: (error: unknown) => void): () => void;
 }
-/**
- * A JSON-encoded changeset — the opaque payload exchanged between peers. Produced
- * by {@link TalaDB.exportChanges}, transported by a {@link SyncAdapter}, and
- * consumed by {@link TalaDB.importChanges}. Treat it as an opaque string.
- */
-type SerializedChangeset = string;
-/** Direction of a sync pass. `'both'` (default) is fully bidirectional. */
-type SyncDirection = 'push' | 'pull' | 'both';
-/**
- * A transport for {@link TalaDB.sync}. Implement `push` to send local changes to
- * a remote, `pull` to fetch remote changes — or both for bidirectional sync.
- * The changeset is an opaque JSON string; move it over any wire you like.
- */
-interface SyncAdapter {
-    /** Send a local changeset to the remote. Required for `'push'` / `'both'`. */
-    push?(changeset: SerializedChangeset): Promise<void>;
-    /**
-     * Fetch remote changes with `changed_at` after `sinceMs` (ms epoch), as a
-     * serialized changeset. Return `'[]'` when there is nothing new. Required for
-     * `'pull'` / `'both'`.
-     *
-     * @deprecated in spirit, not in support — wall-clock timestamps are not safe
-     * cursors (see {@link CursorSyncAdapter}), which is why every pass built on this
-     * method replays the whole collection from zero. Implement
-     * {@link CursorSyncAdapter.pullWithCursor} instead when your origin can issue a
-     * cursor. Adapters that only implement `pull` keep working unchanged.
-     */
-    pull?(sinceMs: number): Promise<SerializedChangeset>;
-}
-/** One page of remote changes, plus where to resume from. */
-interface PullResult {
-    /** The changes themselves. `'[]'` when there is nothing new. */
-    changeset: SerializedChangeset;
-    /**
-     * Opaque resume token, issued by the origin. **Never parse this.** It may be a
-     * timestamp, a sequence number, an LSN, a snapshot id — that is the origin's
-     * business, and treating it as a number is how clients reintroduce the
-     * clock-skew bug this type exists to kill.
-     */
-    cursor: string;
-    /** `true` when more pages remain; call again with the returned `cursor`. */
-    hasMore: boolean;
-}
-/**
- * A {@link SyncAdapter} whose origin can issue a resume cursor.
- *
- * ## Why this exists
- *
- * The original contract is `pull(sinceMs)`, and it cannot be made correct. Author
- * wall-clock timestamps are not safe cursors: a write can commit *after* an export
- * yet carry an *earlier* timestamp, so resuming from "the newest timestamp I saw"
- * silently drops rows. TalaDB's answer was to give up on cursors entirely and
- * replay from zero on every pass — correct, but it re-downloads the whole
- * collection forever, which makes a full local replica of a real catalog
- * unaffordable.
- *
- * The fix is to stop inventing the cursor on the client. The origin issues an
- * opaque token; we store it and hand it back. Whatever ordering guarantee the
- * origin has (a sequence, an LSN, a snapshot) travels with the token, and the
- * client never has to reason about clocks at all.
- *
- * `runSync` feature-detects `pullWithCursor` and prefers it. Adapters that only
- * implement `pull(sinceMs)` are untouched and keep their replay-from-zero
- * behavior.
- */
-interface CursorSyncAdapter extends SyncAdapter {
-    /**
-     * Fetch changes after `cursor`, or from the beginning when it is `null`.
-     * Returns the changes plus the token to resume from next time.
-     */
-    pullWithCursor(cursor: string | null): Promise<PullResult>;
-}
-interface SyncOptions {
-    /**
-     * Collections to sync. Omit to sync **all** user collections (reserved
-     * `_`-prefixed collections are always skipped). Provide an array to sync only
-     * those.
-     */
-    collections?: string[];
-    /**
-     * Collections to skip. Applied after `collections` (or after the
-     * all-collections default), so `{ exclude: ['logs'] }` means "sync everything
-     * except logs".
-     */
-    exclude?: string[];
-    /** Direction of the pass. Default `'both'` (bidirectional). */
-    direction?: SyncDirection;
-    /**
-     * Names this sync target. Reserved cursor state remains isolated per target
-     * for forward compatibility with monotonic server cursors. Default
-     * `'default'`.
-     */
-    target?: string;
-}
-interface SyncResult {
-    /** Number of local changes pushed to the remote. */
-    pushed: number;
-    /** Number of documents changed locally by the pulled remote changeset. */
-    pulled: number;
-    /**
-     * Documents in the pulled changeset skipped by an import validator (a
-     * collection this client does not model). Always `0` when no `syncSchema`
-     * applied to the pass.
-     */
-    skipped?: number;
-    /**
-     * Documents in the pulled changeset set aside by an import validator because
-     * they failed structural validation. Recoverable via {@link TalaDB.quarantined}.
-     * Always `0` when no `syncSchema` applied to the pass.
-     */
-    quarantined?: number;
-    /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
-    cursor: number;
-}
-/** A document set aside during a validated sync import, with its rejection reason. */
-interface QuarantinedDocument<T extends Document = Document> {
-    /** The rejected document, retained verbatim. */
-    document: T;
-    /** Human-readable reason the document was quarantined. */
-    reason: string;
-    /** The `changed_at` (ms epoch) the rejected change carried. */
-    changedAt: number;
-}
+
 interface TalaDB {
     collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
-    /**
-     * Run one bidirectional sync pass against `adapter`: pull remote changes and
-     * merge them (Last-Write-Wins), then push local changes since the last cursor.
-     * The cursor is persisted per `target`, so successive calls sync incrementally.
-     * Set `direction` to `'push'` or `'pull'` to make it one-way.
-     *
-     * @example
-     * await db.sync(httpAdapter, { collections: ['notes'] });          // bidirectional
-     * await db.sync(httpAdapter, { collections: ['logs'], direction: 'push' });
-     */
-    sync(adapter: SyncAdapter, options: SyncOptions): Promise<SyncResult>;
-    /**
-     * Low-level: export changes to `collections` with `changed_at` after `sinceMs`
-     * (exclusive) as a serialized changeset. Most apps use {@link TalaDB.sync}.
-     */
-    exportChanges(collections: string[], sinceMs: number): Promise<SerializedChangeset>;
-    /**
-     * Low-level: merge a serialized changeset into the local database via
-     * Last-Write-Wins. Returns the number of documents changed. Idempotent —
-     * re-importing the same changeset is a no-op.
-     */
-    importChanges(changeset: SerializedChangeset): Promise<number>;
     /**
      * Compact the underlying storage file, reclaiming space freed by deletes
      * and updates.
      *
-     * Call during idle periods — e.g. once on startup after `compactTombstones`.
-     * No-op on in-memory (IndexedDB-fallback) databases.
+     * Call during idle periods — e.g. once on startup. No-op on in-memory
+     * (IndexedDB-fallback) databases.
      *
      * @example
      * await db.compact();
      */
     compact(): Promise<void>;
-    /**
-     * Return the documents set aside in `collection`'s quarantine table by a
-     * validated sync import (see {@link SyncSchema}). Empty when nothing was
-     * quarantined. Wired on browser and Node.js; resolves to `[]` on runtimes
-     * without support.
-     */
-    quarantined?<T extends Document = Document>(collection: string): Promise<QuarantinedDocument<T>[]>;
     /**
      * Force any batched (eventual-durability) writes to durable storage, and on
      * the browser also write the IndexedDB fallback snapshot immediately. A
@@ -764,49 +662,20 @@ interface TalaDB {
      * "save now" moments (before checkout, on `visibilitychange`).
      */
     flush?(): Promise<void>;
-    /** Browser HTTP-push queue health, when supported by the active binding. */
-    syncStatus?(): Promise<{
-        pending: number;
-        dropped: number;
-        failed: number;
-    }>;
-    /** Wait for accepted browser HTTP-push events, returning false on timeout. */
-    flushSync?(timeoutMs?: number): Promise<boolean>;
+    /**
+     * Change-webhook delivery counters, when the webhook is enabled. All zero
+     * (and `pending: 0`) when it is not.
+     */
+    webhookStats?(): WebhookStats;
+    /**
+     * Wait for queued change-webhook events to drain. Resolves `true` when the
+     * queue emptied, `false` on timeout. Resolves `true` immediately when the
+     * webhook is disabled.
+     */
+    flushWebhook?(timeoutMs?: number): Promise<boolean>;
     close(): Promise<void>;
 }
 
-/** HTTP push sync settings. */
-interface SyncConfig {
-    /**
-     * Enable HTTP push sync. Defaults to `false`.
-     * Everything is a no-op when disabled, so a config block without
-     * `enabled: true` is safe to ship.
-     */
-    enabled?: boolean;
-    /**
-     * Default endpoint URL that receives all mutation events.
-     * Required when `enabled: true`.
-     */
-    endpoint?: string;
-    /** HTTP headers sent with every outgoing request (e.g. `Authorization`). */
-    headers?: Record<string, string>;
-    /** Override the endpoint for `insert` events only. */
-    insert_endpoint?: string;
-    /** Override the endpoint for `update` events only. */
-    update_endpoint?: string;
-    /** Override the endpoint for `delete` events only. */
-    delete_endpoint?: string;
-    /**
-     * Document fields to omit from every outgoing sync payload.
-     *
-     * Useful for stripping large computed fields such as embedding vectors
-     * that the remote endpoint doesn't need.
-     *
-     * @example
-     * exclude_fields: ['embedding', 'clip_vector']
-     */
-    exclude_fields?: string[];
-}
 /** Storage durability settings. */
 interface DurabilityConfig {
     /**
@@ -825,49 +694,10 @@ interface DurabilityConfig {
 }
 /** Top-level TalaDB configuration. */
 interface TalaDbConfig {
-    /** HTTP push sync configuration. Disabled by default. */
-    sync?: SyncConfig;
+    /** Outbound change-webhook configuration. Disabled by default. */
+    webhook?: WebhookConfig;
     /** Storage durability configuration. */
     durability?: DurabilityConfig;
-}
-
-interface HttpSyncAdapterOptions {
-    /** Base URL, e.g. `https://api.example.com/sync`. `/push` and `/pull` are appended. */
-    endpoint: string;
-    /** Extra headers on every request — typically `Authorization`. */
-    headers?: Record<string, string>;
-    /**
-     * `fetch` implementation. Defaults to the global `fetch` (Node 18+, browsers,
-     * React Native). Inject a custom one for tests or non-standard environments.
-     */
-    fetch?: typeof fetch;
-    /** Paths appended to `endpoint`. Override to match an existing API. */
-    paths?: {
-        push?: string;
-        pull?: string;
-    };
-}
-/**
- * A ready-to-use {@link SyncAdapter} that syncs over plain HTTP. Pair it with
- * {@link TalaDB.sync}:
- *
- * ```ts
- * const adapter = new HttpSyncAdapter({
- *   endpoint: 'https://api.example.com/sync',
- *   headers: { Authorization: `Bearer ${token}` },
- * });
- * await db.sync(adapter, { collections: ['notes'] });
- * ```
- */
-declare class HttpSyncAdapter implements SyncAdapter {
-    private readonly endpoint;
-    private readonly headers;
-    private readonly fetchFn;
-    private readonly pushPath;
-    private readonly pullPath;
-    constructor(options: HttpSyncAdapterOptions);
-    push(changeset: SerializedChangeset): Promise<void>;
-    pull(sinceMs: number): Promise<SerializedChangeset>;
 }
 
 /**
@@ -918,457 +748,6 @@ declare class HttpSyncAdapter implements SyncAdapter {
 declare function deriveDocId(collection: string, key: string): string;
 
 /**
- * Coverage — "is this collection complete enough, locally, to answer a query
- * without the network?"
- *
- * This is the question the whole coverage-first design turns on, and it is *not*
- * "have I fetched this page?". A replica assembled from whichever pages a user
- * happened to visit is an arbitrary partial subset: it cannot answer a query
- * nobody has asked yet ("products under ₱500" may live on page 43), so every new
- * filter or sort still goes to the network and the local database buys you almost
- * nothing. Coverage is what licenses a purely local read.
- *
- * Two things make it trustworthy:
- *
- * 1. **It is scoped, not per-collection.** `complete` for a bare collection name
- *    would leak across users: log in as someone else and you inherit the previous
- *    user's "complete" flag *and* their rows. The key is a tuple.
- * 2. **It is a state machine, not a boolean.** Only `complete` authorizes a
- *    local-only read. `best-effort` exists precisely so an origin that *cannot*
- *    give us a consistent snapshot degrades honestly instead of claiming a
- *    completeness it never established.
- */
-
-/** Reserved collection holding one coverage document per replicated scope. */
-declare const COVERAGE_COLLECTION = "__taladb_replica";
-/**
- * What identifies a replicated scope. Every component must be part of the key,
- * because each one changes what "complete" means:
- *
- * - `origin` — two origins are two different datasets.
- * - `collection` — the local collection being filled.
- * - `scope` — the *authorization* slice (a user, a tenant, a store). This is the
- *   one that bites: without it, user B logging in inherits user A's completeness.
- * - `projectionVersion` — a replica hydrated with a slimmer projection is not
- *   complete for a query that needs the dropped fields.
- * - `schemaVersion` — rows hydrated under an older shape may not satisfy today's.
- */
-interface CoverageKey {
-    origin: string;
-    collection: string;
-    scope: string;
-    projectionVersion: number;
-    schemaVersion: number;
-}
-type CoverageState = 
-/** Nothing local. */
-{
-    status: 'empty';
-}
-/**
- * A bootstrap walk is in progress. `snapshot` pins every page to one logical
- * view of the origin; `nextPage` is the durable resume point.
- */
- | {
-    status: 'hydrating';
-    snapshot: string;
-    nextPage: string | number;
-    rowsApplied: number;
-    deltaCursor?: string;
-    total?: number;
-}
-/**
- * The scope is fully local as of `cursor`. **The only state that permits a
- * local-only read.**
- */
- | {
-    status: 'complete';
-    cursor: string;
-    completedAt: number;
-    rowsApplied: number;
-    total?: number;
-}
-/**
- * Every row the origin offered was applied, but the origin could not pin a
- * snapshot, so we cannot *prove* we saw a consistent view — a row that shifted
- * between pages mid-walk may have been missed. Reads must not treat this as
- * authoritative.
- */
- | {
-    status: 'best-effort';
-    cursor: string;
-    reason: string;
-    rowsApplied: number;
-    total?: number;
-}
-/** Complete once, but known to have fallen behind (e.g. a projection change). */
- | {
-    status: 'stale';
-    cursor: string;
-    reason: string;
-}
-/** The walk failed. `resumeFrom` is where to pick it up. */
- | {
-    status: 'error';
-    resumeFrom: string | number;
-    snapshot?: string;
-    deltaCursor?: string;
-    rowsApplied?: number;
-    total?: number;
-    error: string;
-};
-/**
- * Serialize a {@link CoverageKey} into a stable string.
- *
- * Field order is fixed rather than derived from `Object.keys`, so the key cannot
- * change meaning if someone reorders the interface — a silent coverage reset,
- * which would look like "the app re-downloads everything for no reason".
- */
-declare function coverageKey(key: CoverageKey): string;
-/**
- * Persistent coverage state, one document per scope.
- *
- * The state is stored as a JSON string rather than as structured fields: it is a
- * discriminated union whose shape varies per variant, and TalaDB documents are
- * flat. Writing it whole also makes each transition a single atomic write, which
- * is what lets `markComplete` be the durable commit point of a bootstrap.
- */
-declare class CoverageStore {
-    private readonly col;
-    constructor(db: TalaDB);
-    read(key: CoverageKey): Promise<CoverageState>;
-    write(key: CoverageKey, state: CoverageState): Promise<void>;
-    /** Drop a scope's coverage, forcing a fresh bootstrap on next use. */
-    clear(key: CoverageKey): Promise<void>;
-}
-/**
- * Whether a local-only read is authorized for this state.
- *
- * Deliberately strict: **only `complete`**. `best-effort` is the interesting
- * exclusion — it means we applied everything the origin gave us, but the origin
- * could not pin a snapshot, so a row that moved between pages during the walk may
- * never have been seen. Serving that as authoritative would silently return
- * incomplete results, which is worse than going to the network.
- */
-declare function isAuthoritative(state: CoverageState): boolean;
-/** Rows applied so far, for progress reporting. */
-declare function rowsApplied(state: CoverageState): number;
-/** Fractional hydration progress, when the origin told us the total. */
-declare function progress(state: CoverageState): number | undefined;
-
-/**
- * The replication *source* — wire translation, and nothing else.
- *
- * A source knows how to talk to one origin: how to ask for a page, how to ask for
- * changes since a cursor, how to find a row's primary key, and how to shape a row
- * into a document. It owns **no orchestration**: no batching, no yielding, no
- * cursor persistence, no coverage transitions, no retry, no dedup. All of that
- * belongs to the coordinator, which is generic over sources.
- *
- * That split is deliberate. The obvious alternative — make the REST origin a
- * `SyncAdapter` and let `db.sync()` drive it — does not work: a bootstrap of 100k
- * rows would sit inside a single `pull()` call with no way to report progress,
- * pause, resume, or yield to the UI between pages. Orchestration has to live one
- * level up, or it cannot be orchestrated at all.
- */
-
-/** The origin's primary key for a row. Stringified before hashing into an id. */
-type RemoteKey = string;
-/** A request for one page of the initial bootstrap walk. */
-interface BootstrapRequest {
-    /**
-     * Where to resume. `null` on the first call — which is also when the origin is
-     * expected to *issue* the snapshot and delta cursor.
-     */
-    page: string | number | null;
-    /**
-     * The snapshot token from the first page, echoed back on every subsequent one.
-     * `null` on the first call, and on origins that don't support snapshots.
-     */
-    snapshot: string | null;
-    /** Rows per page. */
-    limit: number;
-}
-/** One page of the bootstrap walk. */
-interface BootstrapPage<RemoteRow> {
-    rows: RemoteRow[];
-    /** Resume token for the next page; `null` when the walk is done. */
-    nextPage: string | number | null;
-    /**
-     * An opaque token pinning every page of this walk to one logical view of the
-     * origin.
-     *
-     * **Omit it and you get `best-effort` coverage, not `complete`.** Without a
-     * snapshot, a page walk over live data is not a consistent read: fetch page 1,
-     * a row is inserted, everything shifts, and the row that was going to be on
-     * page 20 is now on page 19 — which you already passed. It is never seen. The
-     * walk still "succeeds", and the replica silently has a hole in it. Since
-     * nothing detects that, the honest response is to refuse to call the result
-     * complete, and to keep serving reads from the network.
-     */
-    snapshot?: string;
-    /**
-     * The cursor to begin the *delta* stream from once the walk finishes. Issued on
-     * the first page — i.e. as of the snapshot — so no change made during the walk
-     * can slip between "bootstrap ended" and "delta began".
-     */
-    deltaCursor?: string;
-    /** Total rows in scope, when the origin knows it. Drives progress reporting. */
-    total?: number;
-}
-/** One batch of incremental changes since a cursor. */
-interface DeltaPage<RemoteRow> {
-    changed: RemoteRow[];
-    /**
-     * Primary keys the origin has deleted.
-     *
-     * This is the only way a REST replica learns about deletions. A plain paged GET
-     * returns survivors, and a row's *absence* from a response is ambiguous — it may
-     * have been deleted, or it may merely have shifted to another page. Guessing
-     * would eventually delete live data, so we never infer; the origin must say so.
-     */
-    deleted: RemoteKey[];
-    cursor: string;
-    hasMore: boolean;
-}
-/**
- * Everything the coordinator needs to replicate one collection from one origin.
- *
- * @typeParam RemoteRow - the row shape the origin returns, before mapping.
- * @typeParam T - the local document shape.
- */
-interface ReplicationSource<RemoteRow = unknown, T extends Document = Document> {
-    /** Bump when a custom source's behavior changes without changing its metadata. */
-    readonly configVersion?: string | number;
-    /** Stable identity for this origin. Part of the coverage key. */
-    readonly origin: string;
-    /** The local collection this source fills. */
-    readonly collection: string;
-    /**
-     * The authorization slice these rows belong to — a user, tenant, or store.
-     * Part of the coverage key, so one user's completeness never licenses another's
-     * reads. Use a constant for genuinely global data.
-     */
-    readonly scope: string;
-    /** Bump when {@link mapRow} starts producing a different shape. */
-    readonly projectionVersion: number;
-    /** Bump when the local schema changes in a way hydrated rows must match. */
-    readonly schemaVersion: number;
-    /** Fetch one page of the initial walk. */
-    bootstrap(request: BootstrapRequest): Promise<BootstrapPage<RemoteRow>>;
-    /** Fetch changes since `cursor`. Absent when the origin has no delta feed. */
-    delta?(cursor: string): Promise<DeltaPage<RemoteRow>>;
-    /**
-     * Fetch exactly the rows a specific query needs, for the cold-start bridge.
-     *
-     * Optional. When absent, a query against an un-hydrated scope simply waits for
-     * coverage rather than short-circuiting to the network.
-     */
-    fetchQuery?(query: BridgeQuery): Promise<RemoteRow[]>;
-    /** The origin's primary key for a row. Must be stable across fetches. */
-    keyOf(row: RemoteRow): RemoteKey;
-    /**
-     * Monotonic authoritative revision for stale-response protection. Strongly
-     * recommended whenever bridge/bootstrap/delta requests may overlap.
-     */
-    revisionOf(row: RemoteRow): number;
-    /** Shape a remote row into a local document (minus `_id`, which is derived). */
-    mapRow(row: RemoteRow): Omit<T, '_id'>;
-}
-/**
- * A local query, handed to the bridge so it can ask the origin for the same rows.
- *
- * Deliberately loose: every REST API spells pagination and filtering differently,
- * so translating this into a query string is the source's job, not ours.
- */
-interface BridgeQuery {
-    filter?: Record<string, unknown>;
-    sort?: Record<string, 1 | -1>;
-    page?: number;
-    limit?: number;
-}
-
-/**
- * The replication coordinator — all orchestration, no wire format.
- *
- * Owns: the bootstrap walk, resume-after-crash, delta refresh, the cold-start
- * bridge, batching, yielding, coverage transitions, and in-flight dedup. The
- * {@link ReplicationSource} it drives owns only wire translation.
- *
- * ## The two mechanisms are one mechanism
- *
- * "Fetch the page the user is looking at" and "import the whole catalog in the
- * background" look like separate features. They are the same primitive with two
- * schedulers: *fetch rows → upsert them by derived id*. Because both write the
- * **same rows under the same ids**, they compose for free — a bridged fetch is not
- * a throwaway cache entry, it is a down payment on the replica, and when the walk
- * later reaches those rows it overwrites them in place instead of duplicating
- * them. Nothing has to reconcile the two.
- *
- * The one thing they do *not* share is coverage. A bridge fetch must never advance
- * the bootstrap cursor, because it did not come from the walk's snapshot and
- * proves nothing about completeness. Trading a little duplicate network for a
- * trustworthy completeness proof is the right side of that bargain.
- */
-
-interface CoordinatorOptions<T extends Document = Document> {
-    /** Rows per bootstrap page. Larger = fewer commits, longer stalls. */
-    pageSize?: number;
-    /**
-     * Called between pages so the walk yields. Defaults to a macrotask.
-     *
-     * This matters more than it looks. Live queries re-run on a 300 ms poll, and on
-     * React Native every write is *synchronous on the JS thread* — a tight bootstrap
-     * loop starves both, and the UI freezes for the duration of the import.
-     */
-    yieldFn?: () => Promise<void>;
-    /** Fired after each committed page, for progress UI. */
-    onProgress?: (state: CoverageState) => void;
-    /** Collection schema/migration options registered by the host application. */
-    collectionOptions?: CollectionOptions<T>;
-}
-declare const REPLICA_SCOPE_FIELD = "_replica_scope";
-declare const REPLICA_REVISION_FIELD = "_remote_rev";
-interface BridgeResult {
-    count: number;
-    ids: string[];
-}
-declare class ReplicationCoordinator<RemoteRow, T extends Document> {
-    private readonly db;
-    private readonly source;
-    private readonly coverage;
-    private readonly key;
-    private readonly pageSize;
-    private readonly yieldFn;
-    private readonly onProgress?;
-    private readonly collectionOptions?;
-    /**
-     * In-flight passes, keyed by intent. Two components mounting the same query must
-     * fire one request, and the background walk must not race the bridge for the
-     * same rows — both join the existing promise instead.
-     */
-    private readonly inflight;
-    constructor(db: TalaDB, source: ReplicationSource<RemoteRow, T>, options?: CoordinatorOptions<T>);
-    get replicaScope(): string;
-    private get identityNamespace();
-    getCoverage(): Promise<CoverageState>;
-    /** Whether a purely local read is authorized right now. */
-    isReady(): Promise<boolean>;
-    /** Dedup by intent: identical concurrent work joins rather than duplicating. */
-    private dedup;
-    /**
-     * Write a batch of remote rows into the local collection.
-     *
-     * One commit for the whole batch, ids derived from the origin's primary key, and
-     * `origin: 'remote'` so the rows can never replicate back out at the origin they
-     * came from. This is the *only* write path in the coordinator — bootstrap, delta
-     * and bridge all funnel through it, which is precisely why they converge instead
-     * of conflicting.
-     */
-    private applyRows;
-    /**
-     * Hydrate the scope: walk the origin page by page until the whole collection is
-     * local, then mark it complete.
-     *
-     * Resumable and idempotent. If the walk is interrupted — a reload, a crash, a
-     * dead network — the next call picks up from the last committed page, and
-     * re-applying a page it already wrote is a no-op because the ids are derived.
-     */
-    hydrate(): Promise<CoverageState>;
-    private runHydrate;
-    /**
-     * Apply incremental changes since the stored cursor.
-     *
-     * Deletions are applied by mapping the origin's primary keys through the same
-     * `deriveDocId`, and are written with `origin: 'remote'` so they leave no
-     * tombstone — the origin already knows it deleted these, and a tombstone would
-     * push its own deletion back at it.
-     */
-    refresh(): Promise<CoverageState>;
-    private runRefresh;
-    /**
-     * Cold-start bridge: fetch exactly the rows one query needs, right now.
-     *
-     * Needed because a SPA or React Native app has no server render to paint behind
-     * while the replica fills. The rows land in the same collection under the same
-     * derived ids as the walk's, so this is not a cache — it is the replica, arriving
-     * early.
-     *
-     * **Does not advance coverage.** These rows did not come from the bootstrap
-     * snapshot and prove nothing about completeness; treating them as progress would
-     * let a page-1 fetch masquerade as a hydrated catalog.
-     */
-    bridge(query: BridgeQuery): Promise<BridgeResult>;
-    /** Drop coverage and force a fresh bootstrap. Local rows are left alone. */
-    reset(): Promise<void>;
-}
-
-/**
- * A {@link ReplicationSource} for an ordinary paged JSON API.
- *
- * This is the adoption path: point it at `GET /api/products?page=1&limit=500` and
- * a team on Express + Postgres gets a local replica without rewriting their API to
- * speak TalaDB's sync contract. Everything here is wire translation — the
- * coordinator owns the walk, the coverage, and the retries.
- *
- * ## What the origin has to provide, and what happens when it doesn't
- *
- * | Feature | Endpoint | Without it |
- * |---|---|---|
- * | Paged list | `?page=&limit=` | Nothing works. Required. |
- * | Snapshot token | `snapshot` in the response | Coverage caps at `best-effort`; reads keep hitting the network |
- * | Delta feed | `?since=<cursor>` | No incremental refresh, and **deletions never propagate** |
- *
- * The snapshot and the delta feed are each about twenty minutes of Express work
- * (a monotonic `updated_at`/revision column, a soft-delete table, and a
- * `rev <= snapshotRev` predicate). They are worth it: without a snapshot the
- * replica can never be trusted for a local-only read, which is the entire point.
- */
-
-interface RestSourceOptions<RemoteRow, T extends Document> {
-    /** Base URL, e.g. `/api/products`. */
-    endpoint: string;
-    /** The local collection to fill. */
-    collection: string;
-    /** Stable identity for the origin. Defaults to `endpoint`. */
-    origin?: string;
-    /**
-     * The authorization slice these rows belong to — a user id, tenant, or store.
-     * Part of the coverage key, so one user's completeness never licenses another
-     * user's reads. Defaults to `'global'`; **set it for anything user-scoped.**
-     */
-    scope?: string;
-    /** Bump when {@link mapRow} starts producing a different shape. Default 1. */
-    projectionVersion?: number;
-    /** Bump when the local schema changes. Default 1. */
-    schemaVersion?: number;
-    /** Field on the remote row holding its primary key. Default `'id'`. */
-    key?: string;
-    /** Field/callback yielding a monotonic numeric row revision. Default `'rev'`. */
-    revision?: string | ((row: RemoteRow) => number | undefined);
-    /** Shape a remote row into a local document. Default: identity, minus `_id`. */
-    mapRow?: (row: RemoteRow) => Omit<T, '_id'>;
-    /** Per-request headers, resolved **at send time** so a refreshed token is used. */
-    getAuth?: () => Promise<Record<string, string>> | Record<string, string>;
-    /** `fetch` implementation. Defaults to the global. */
-    fetch?: typeof fetch;
-    /** Sub-paths appended to `endpoint`. */
-    paths?: {
-        bootstrap?: string;
-        delta?: string;
-    };
-    /** Enable delta polling. Defaults to true only when `paths.delta` is set. */
-    delta?: boolean;
-    /** Meaning of the fallback `page` parameter when no next token is returned. */
-    pagination?: 'page' | 'offset';
-    /** Translate a local query into this API's query-string conventions. */
-    toParams?: (query: BridgeQuery) => Record<string, string>;
-    /** Pull the row array out of a response whose envelope we don't recognize. */
-    parse?: (body: unknown) => unknown[];
-}
-declare function createRestSource<RemoteRow = Record<string, unknown>, T extends Document = Document>(options: RestSourceOptions<RemoteRow, T>): ReplicationSource<RemoteRow, T>;
-
-/**
  * Thrown when a document fails schema validation on `insert` or `insertMany`.
  * The `cause` property holds the original error thrown by the schema library.
  */
@@ -1391,6 +770,25 @@ declare class TalaDbValidationError extends Error {
  * @internal Exported for unit testing; not part of the public API surface.
  */
 declare function applySchema<T extends Document>(col: Collection<T>, options: CollectionOptions<T>): Collection<T>;
+/**
+ * Assemble the decorators that sit between an application and a platform
+ * adapter's raw collection. **Order is load-bearing:** webhook reporting goes
+ * innermost, schema handling outermost.
+ *
+ * Schema-outermost means the webhook wrapper sees writes exactly as the engine
+ * will run them — filters already narrowed by `writableFilter`, documents
+ * already `_v`-stamped — so what gets reported is what actually happened. It
+ * also keeps webhook id-resolution reads off the schema read path, where
+ * `validateOnRead` could otherwise fail a delete and `persistMigrations` could
+ * turn one into a write.
+ *
+ * Every adapter routes through here so that ordering cannot drift between
+ * runtimes, which is the same reason the dispatcher itself is one shared
+ * implementation rather than one per binding.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ */
+declare function decorateCollection<T extends Document>(raw: Collection<T>, name: string, opts: CollectionOptions<T> | undefined, webhook: WebhookDispatcher | null): Collection<T>;
 
 /**
  * A single application schema migration, run once at `openDB` when its
@@ -1454,6 +852,25 @@ interface OpenDBOptions {
      */
     config?: TalaDbConfig;
     /**
+     * Outbound change webhook. Every committed mutation fires one HTTP request:
+     * `POST` on insert, `PUT` on update, `DELETE` on delete.
+     *
+     * Takes precedence over `config.webhook`. This is the only way to enable the
+     * webhook on the browser and React Native, where there is no config file to
+     * discover. Delivery is at most once — see `webhook.ts`.
+     *
+     * @example
+     * const db = await openDB('app.db', {
+     *   webhook: {
+     *     enabled: true,
+     *     endpoint: 'https://api.example.com/taladb',
+     *     headers: { Authorization: `Bearer ${token}` },
+     *     exclude_fields: ['embedding'],
+     *   },
+     * });
+     */
+    webhook?: WebhookConfig;
+    /**
      * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
      * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
      * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
@@ -1466,17 +883,17 @@ interface OpenDBOptions {
  * Open a TalaDB database.
  *
  * @param dbName   Name of the database file (used for OPFS and native file paths).
- * @param options  Optional config. Pass `{ config }` for inline sync settings or
- *                 `{ configPath }` to load from a specific file.
+ * @param options  Optional config. Pass `{ config }` to supply settings inline
+ *                 or `{ configPath }` to load them from a specific file.
  *
  * @example
  * const db = await openDB('myapp.db');
  *
- * @example with inline sync config
+ * @example with an inline change webhook
  * const db = await openDB('myapp.db', {
- *   config: { sync: { enabled: true, endpoint: 'https://api.example.com/events' } },
+ *   webhook: { enabled: true, endpoint: 'https://api.example.com/taladb' },
  * });
  */
 declare function openDB(dbName?: string, options?: OpenDBOptions): Promise<TalaDB>;
 
-export { type AggregatePipeline, type AggregateStage, type BootstrapPage, type BootstrapRequest, type BridgeQuery, type BridgeResult, COVERAGE_COLLECTION, type Collection, type CollectionIndexInfo, type CollectionOptions, type CoordinatorOptions, type CoverageKey, type CoverageState, CoverageStore, type CursorSyncAdapter, type DeltaPage, type Document, type DurabilityConfig, type Filter, HttpSyncAdapter, type HybridSearchOptions, type HybridSearchResult, type Migration, type OpenDBOptions, type PullResult, REPLICA_REVISION_FIELD, REPLICA_SCOPE_FIELD, type RemoteKey, ReplicationCoordinator, type ReplicationSource, type RestSourceOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type TextSearchOptions, type TextSearchResult, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, type WriteOrigin, applySchema, coverageKey, createRestSource, deriveDocId, isAuthoritative, openDB, progress, rowsApplied, runMigrations };
+export { type AggregatePipeline, type AggregateStage, type Collection, type CollectionIndexInfo, type CollectionOptions, type Document, type DurabilityConfig, type Filter, type HybridSearchOptions, type HybridSearchResult, type Migration, type OpenDBOptions, type Schema, type TalaDB, type TalaDbConfig, TalaDbValidationError, type TextSearchOptions, type TextSearchResult, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, type WebhookConfig, type WebhookDispatcher, type WebhookEvent, type WebhookOp, type WebhookStats, applySchema, createWebhookDispatcher, decorateCollection, deriveDocId, openDB, runMigrations, validateWebhookConfig };

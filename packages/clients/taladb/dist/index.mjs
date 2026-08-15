@@ -1,34 +1,245 @@
-// src/config.ts
-var ENDPOINT_FIELDS = [
+// src/webhook.ts
+var METHOD = {
+  insert: "POST",
+  update: "PUT",
+  delete: "DELETE"
+};
+var ENDPOINT_KEYS = [
   "endpoint",
   "insert_endpoint",
   "update_endpoint",
   "delete_endpoint"
 ];
-var LOCALHOST_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
-function isLocalhostUrl(url) {
+var LOCALHOST = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+function isLocalhost(url) {
   try {
-    return LOCALHOST_HOSTS.has(new URL(url).hostname);
+    return LOCALHOST.has(new URL(url).hostname);
   } catch {
     return false;
   }
 }
-function validateConfig(config) {
-  const sync = config.sync;
-  if (!sync) return;
-  for (const key of ENDPOINT_FIELDS) {
-    const url = sync[key];
-    if (url !== void 0 && !url.startsWith("http://") && !url.startsWith("https://")) {
+function validateWebhookConfig(config) {
+  for (const key of ENDPOINT_KEYS) {
+    const url = config[key];
+    if (url === void 0) continue;
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
       throw new Error(
-        `TalaDB config: invalid endpoint URL "${url}" \u2014 must start with http:// or https://`
+        `TalaDB webhook: invalid ${key} "${url}" \u2014 must start with http:// or https://`
       );
     }
-    if (url?.startsWith("http://") && !isLocalhostUrl(url)) {
+    if (url.startsWith("http://") && !isLocalhost(url)) {
       console.warn(
-        `[TalaDB] sync endpoint "${url}" uses plaintext HTTP \u2014 use HTTPS in production to prevent changeset interception`
+        `[TalaDB] webhook ${key} "${url}" uses plaintext HTTP \u2014 document bodies will cross the network unencrypted. Use HTTPS in production.`
       );
     }
   }
+  if (config.enabled && !config.endpoint) {
+    const perOp = ENDPOINT_KEYS.slice(1).every((k) => config[k] !== void 0);
+    if (!perOp) {
+      throw new Error(
+        "TalaDB webhook: `enabled: true` requires `endpoint` (or all three per-op endpoints)"
+      );
+    }
+  }
+}
+var DEFAULT_MAX_QUEUE = 512;
+var DEFAULT_RETRIES = 3;
+var BACKOFF_BASE_MS = 200;
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function stripFields(doc, exclude) {
+  if (exclude.size === 0) return doc;
+  const out = {};
+  for (const [k, v] of Object.entries(doc)) {
+    if (!exclude.has(k)) out[k] = v;
+  }
+  return out;
+}
+function createWebhookDispatcher(config) {
+  if (!config?.enabled) return null;
+  validateWebhookConfig(config);
+  const fetchFn = config.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchFn) {
+    throw new Error(
+      "TalaDB webhook: no global fetch available. Pass `fetch` in the webhook config."
+    );
+  }
+  const headers = { "content-type": "application/json", ...config.headers ?? {} };
+  const exclude = new Set(config.exclude_fields ?? []);
+  const only = config.collections ? new Set(config.collections) : null;
+  const maxQueue = config.max_queue ?? DEFAULT_MAX_QUEUE;
+  const retries = config.retries ?? DEFAULT_RETRIES;
+  const stats = { pending: 0, delivered: 0, failed: 0, dropped: 0 };
+  const chains = /* @__PURE__ */ new Map();
+  function endpointFor(op) {
+    return config[`${op}_endpoint`] ?? config.endpoint;
+  }
+  function bodyFor(event, at) {
+    const base = {
+      collection: event.collection,
+      id: event.id,
+      timestamp: at
+    };
+    return JSON.stringify(
+      event.op === "delete" ? base : { ...base, document: stripFields(event.document, exclude) }
+    );
+  }
+  async function deliver(event, at) {
+    const url = endpointFor(event.op);
+    const init = {
+      method: METHOD[event.op],
+      headers,
+      body: bodyFor(event, at)
+    };
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetchFn(url, init);
+        if (res.ok) {
+          stats.delivered++;
+          return;
+        }
+        if (res.status >= 400 && res.status < 500) {
+          stats.failed++;
+          console.warn(
+            `[TalaDB] webhook ${event.op} ${event.collection}/${event.id} \u2192 ${res.status} ${res.statusText} (not retried)`
+          );
+          return;
+        }
+      } catch {
+      }
+      if (attempt < retries) await sleep(BACKOFF_BASE_MS * 2 ** attempt);
+    }
+    stats.failed++;
+    console.warn(
+      `[TalaDB] webhook ${event.op} ${event.collection}/${event.id} failed after ${retries + 1} attempts`
+    );
+  }
+  return {
+    reports(collection) {
+      if (collection.startsWith("_")) return false;
+      return only === null || only.has(collection);
+    },
+    emit(event) {
+      if (!this.reports(event.collection)) return;
+      if (stats.pending >= maxQueue) {
+        stats.dropped++;
+        console.warn(
+          `[TalaDB] webhook queue full (${maxQueue}) \u2014 dropped ${event.op} ${event.collection}/${event.id}. The endpoint is not keeping up.`
+        );
+        return;
+      }
+      stats.pending++;
+      const at = Date.now();
+      const key = `${event.collection}\0${event.id}`;
+      const prior = chains.get(key) ?? Promise.resolve();
+      const next = prior.then(() => deliver(event, at)).finally(() => {
+        stats.pending--;
+        if (chains.get(key) === next) chains.delete(key);
+      });
+      chains.set(key, next);
+    },
+    async flush(timeoutMs = 5e3) {
+      const deadline = Date.now() + timeoutMs;
+      while (stats.pending > 0) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        let timer;
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(resolve, remaining);
+        });
+        try {
+          await Promise.race([Promise.allSettled([...chains.values()]), expired]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return stats.pending === 0;
+    },
+    stats() {
+      return { ...stats };
+    }
+  };
+}
+function byIds(ids) {
+  return ids.length === 1 ? { _id: ids[0] } : { _id: { $in: ids } };
+}
+function idFromFilter(filter) {
+  if (filter === null || typeof filter !== "object") return null;
+  const keys = Object.keys(filter);
+  if (keys.length !== 1 || keys[0] !== "_id") return null;
+  const id = filter._id;
+  return typeof id === "string" ? id : null;
+}
+function wrapCollectionWithWebhook(col, collection, webhook) {
+  if (!webhook.reports(collection)) return col;
+  async function idsFor(filter, limitOne) {
+    const fast = idFromFilter(filter);
+    if (fast !== null) return [fast];
+    if (limitOne) {
+      const doc = await col.findOne(filter);
+      return doc && typeof doc._id === "string" ? [doc._id] : [];
+    }
+    const docs = col.aggregate ? await col.aggregate([{ $match: filter }, { $project: { _id: 1 } }]) : await col.find(filter);
+    return docs.map((d) => d._id).filter((id) => typeof id === "string");
+  }
+  async function emitPostImages(ids, op) {
+    if (ids.length === 0) return;
+    const docs = await col.find(byIds(ids));
+    const byId = /* @__PURE__ */ new Map();
+    for (const doc of docs) {
+      if (typeof doc._id === "string") byId.set(doc._id, doc);
+    }
+    for (const id of ids) {
+      const doc = byId.get(id);
+      if (doc === void 0) webhook.emit({ op: "delete", collection, id });
+      else webhook.emit({ op, collection, id, document: doc });
+    }
+  }
+  return {
+    ...col,
+    async insert(doc) {
+      const id = await col.insert(doc);
+      await emitPostImages([id], "insert");
+      return id;
+    },
+    async insertMany(docs) {
+      const ids = await col.insertMany(docs);
+      await emitPostImages(ids, "insert");
+      return ids;
+    },
+    async updateOne(filter, update) {
+      const ids = await idsFor(filter, true);
+      const changed = await col.updateOne(filter, update);
+      if (changed) await emitPostImages(ids, "update");
+      return changed;
+    },
+    async updateMany(filter, update) {
+      const ids = await idsFor(filter, false);
+      const n = await col.updateMany(filter, update);
+      if (n > 0) await emitPostImages(ids, "update");
+      return n;
+    },
+    async deleteOne(filter) {
+      const ids = await idsFor(filter, true);
+      const deleted = await col.deleteOne(filter);
+      if (deleted) {
+        for (const id of ids) webhook.emit({ op: "delete", collection, id });
+      }
+      return deleted;
+    },
+    async deleteMany(filter) {
+      const ids = await idsFor(filter, false);
+      const n = await col.deleteMany(filter);
+      if (n > 0) {
+        for (const id of ids) webhook.emit({ op: "delete", collection, id });
+      }
+      return n;
+    }
+  };
+}
+
+// src/config.ts
+function validateConfig(config) {
+  if (config.webhook) validateWebhookConfig(config.webhook);
 }
 async function loadConfig(configPath) {
   if (typeof process === "undefined" || typeof process.cwd !== "function") {
@@ -78,146 +289,6 @@ async function loadConfig(configPath) {
   return {};
 }
 
-// src/sync.ts
-var CURSOR_COLLECTION = "__taladb_sync";
-async function resolveCollections(handle, options) {
-  const base = options.collections ?? await handle.listCollectionNames();
-  const excluded = new Set(options.exclude ?? []);
-  return base.filter((c) => !excluded.has(c) && !c.startsWith("_"));
-}
-function unsupportedSync(runtime) {
-  const err = () => new Error(
-    `TalaDB sync is not yet available on the ${runtime} runtime (Node.js is supported today; browser and React Native are in progress). Track it on the roadmap.`
-  );
-  return {
-    sync: () => Promise.reject(err()),
-    exportChanges: () => Promise.reject(err()),
-    importChanges: () => Promise.reject(err())
-  };
-}
-async function readCursor(cursorCol, target) {
-  const doc = await cursorCol.findOne({ target });
-  return {
-    pushMs: doc?.pushMs ?? 0,
-    pullMs: doc?.pullMs ?? 0,
-    pullCursor: doc?.pullCursor
-  };
-}
-async function writeCursor(cursorCol, target, cursor) {
-  const updated = await cursorCol.updateOne({ target }, { $set: { ...cursor } });
-  if (!updated) {
-    await cursorCol.insert({ target, ...cursor });
-  }
-}
-function isCursorAdapter(adapter) {
-  return typeof adapter.pullWithCursor === "function";
-}
-var MAX_PULL_PAGES = 1e4;
-async function runSync(handle, adapter, options, syncSchemas = {}) {
-  const direction = options.direction ?? "both";
-  const target = options.target ?? "default";
-  const doPush = direction === "push" || direction === "both";
-  const doPull = direction === "pull" || direction === "both";
-  if (doPull && !adapter.pull && !isCursorAdapter(adapter)) {
-    throw new Error(
-      `sync direction '${direction}' requires adapter.pull() or adapter.pullWithCursor()`
-    );
-  }
-  if (doPush && !adapter.push) {
-    throw new Error(`sync direction '${direction}' requires adapter.push()`);
-  }
-  const collections = await resolveCollections(handle, options);
-  const cursorCol = handle.collection(CURSOR_COLLECTION);
-  const cursor = await readCursor(cursorCol, target);
-  const local = doPush ? await handle.exportChanges(collections, 0) : "[]";
-  const scopedSchemas = {};
-  for (const c of collections) {
-    if (syncSchemas[c]) scopedSchemas[c] = syncSchemas[c];
-  }
-  const useValidated = handle.importChangesValidated && Object.keys(scopedSchemas).length > 0;
-  let pulled = 0;
-  let skipped = 0;
-  let quarantined = 0;
-  let pullCursor = cursor.pullCursor;
-  async function importOne(changeset) {
-    if (!changeset || changeset === "[]") return;
-    if (useValidated) {
-      const report = await handle.importChangesValidated(changeset, JSON.stringify(scopedSchemas));
-      pulled += report.applied;
-      skipped += report.skipped;
-      quarantined += report.quarantined;
-    } else {
-      pulled += await handle.importChanges(changeset);
-    }
-  }
-  if (doPull) {
-    if (isCursorAdapter(adapter)) {
-      let pages = 0;
-      for (; ; ) {
-        const result = await adapter.pullWithCursor(pullCursor ?? null);
-        await importOne(result.changeset);
-        pullCursor = result.cursor;
-        await writeCursor(cursorCol, target, { ...cursor, pullCursor });
-        if (!result.hasMore) break;
-        if (++pages >= MAX_PULL_PAGES) {
-          throw new Error(
-            `sync: origin returned hasMore after ${MAX_PULL_PAGES} pages for target '${target}' \u2014 it is probably not advancing its cursor.`
-          );
-        }
-      }
-    } else {
-      await importOne(await adapter.pull(0));
-    }
-  }
-  let pushed = 0;
-  if (doPush && local !== "[]") {
-    pushed = JSON.parse(local).length;
-    await adapter.push(local);
-  }
-  await writeCursor(cursorCol, target, {
-    pushMs: cursor.pushMs,
-    pullMs: cursor.pullMs,
-    ...pullCursor !== void 0 ? { pullCursor } : {}
-  });
-  return { pushed, pulled, skipped, quarantined, cursor: 0 };
-}
-
-// src/http-adapter.ts
-var HttpSyncAdapter = class {
-  constructor(options) {
-    this.endpoint = options.endpoint.replace(/\/$/, "");
-    this.headers = options.headers ?? {};
-    const f = options.fetch ?? globalThis.fetch?.bind(globalThis);
-    if (!f) {
-      throw new Error(
-        "HttpSyncAdapter: no fetch available. Pass options.fetch on runtimes without a global fetch."
-      );
-    }
-    this.fetchFn = f;
-    this.pushPath = options.paths?.push ?? "/push";
-    this.pullPath = options.paths?.pull ?? "/pull";
-  }
-  async push(changeset) {
-    const res = await this.fetchFn(`${this.endpoint}${this.pushPath}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...this.headers },
-      body: changeset
-    });
-    if (!res.ok) {
-      throw new Error(`HttpSyncAdapter push failed: ${res.status} ${res.statusText}`);
-    }
-  }
-  async pull(sinceMs) {
-    const url = `${this.endpoint}${this.pullPath}?since=${encodeURIComponent(String(sinceMs))}`;
-    const res = await this.fetchFn(url, { method: "GET", headers: this.headers });
-    if (!res.ok) {
-      throw new Error(`HttpSyncAdapter pull failed: ${res.status} ${res.statusText}`);
-    }
-    const body = (await res.text()).trim();
-    return body.length === 0 ? "[]" : body;
-  }
-};
-
 // src/derive-id.ts
 var FNV1A128_OFFSET_BASIS = 0x6c62272e07bb014262b821756295c58dn;
 var FNV1A128_PRIME = 0x0000000001000000000000000000013bn;
@@ -239,455 +310,6 @@ function deriveDocId(collection, key) {
     hash = hash * FNV1A128_PRIME & MASK_128;
   }
   return encodeUlid(hash);
-}
-
-// src/replication/coverage.ts
-var COVERAGE_COLLECTION = "__taladb_replica";
-function coverageKey(key) {
-  return [
-    key.origin,
-    key.collection,
-    key.scope,
-    `p${key.projectionVersion}`,
-    `s${key.schemaVersion}`
-  ].map(encodeURIComponent).join("|");
-}
-var CoverageStore = class {
-  constructor(db) {
-    this.col = db.collection(COVERAGE_COLLECTION);
-  }
-  async read(key) {
-    const doc = await this.col.findOne({ key: coverageKey(key) });
-    if (!doc?.state) return { status: "empty" };
-    try {
-      return JSON.parse(doc.state);
-    } catch {
-      return { status: "empty" };
-    }
-  }
-  async write(key, state) {
-    const k = coverageKey(key);
-    const state_json = JSON.stringify(state);
-    await this.col.replaceManyWithIds(
-      [{ _id: deriveDocId(COVERAGE_COLLECTION, k), key: k, state: state_json }],
-      "local"
-    );
-  }
-  /** Drop a scope's coverage, forcing a fresh bootstrap on next use. */
-  async clear(key) {
-    const k = coverageKey(key);
-    await this.col.deleteManyWithIds([deriveDocId(COVERAGE_COLLECTION, k)], "local");
-  }
-};
-function isAuthoritative(state) {
-  return state.status === "complete";
-}
-function rowsApplied(state) {
-  switch (state.status) {
-    case "hydrating":
-    case "complete":
-    case "best-effort":
-      return state.rowsApplied;
-    default:
-      return 0;
-  }
-}
-function progress(state) {
-  if (state.status === "complete") return 1;
-  if (state.status !== "hydrating" || !state.total) return void 0;
-  return Math.min(1, state.rowsApplied / state.total);
-}
-
-// src/replication/coordinator.ts
-var DEFAULT_PAGE_SIZE = 500;
-var defaultYield = () => new Promise((resolve) => setTimeout(resolve, 0));
-var MAX_BOOTSTRAP_PAGES = 1e5;
-var inflightByDatabase = /* @__PURE__ */ new WeakMap();
-var REPLICA_SCOPE_FIELD = "_replica_scope";
-var REPLICA_REVISION_FIELD = "_remote_rev";
-var ReplicationCoordinator = class {
-  constructor(db, source, options = {}) {
-    this.db = db;
-    this.source = source;
-    this.coverage = new CoverageStore(db);
-    this.key = {
-      origin: source.origin,
-      collection: source.collection,
-      scope: source.scope,
-      projectionVersion: source.projectionVersion,
-      schemaVersion: source.schemaVersion
-    };
-    this.pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
-    this.yieldFn = options.yieldFn ?? defaultYield;
-    this.onProgress = options.onProgress;
-    this.collectionOptions = options.collectionOptions;
-    let shared = inflightByDatabase.get(db);
-    if (!shared) {
-      shared = /* @__PURE__ */ new Map();
-      inflightByDatabase.set(db, shared);
-    }
-    this.inflight = shared;
-  }
-  get replicaScope() {
-    return coverageKey(this.key);
-  }
-  get identityNamespace() {
-    return `${this.source.origin}\0${this.source.scope}\0${this.source.collection}`;
-  }
-  getCoverage() {
-    return this.coverage.read(this.key);
-  }
-  /** Whether a purely local read is authorized right now. */
-  async isReady() {
-    return isAuthoritative(await this.getCoverage());
-  }
-  /** Dedup by intent: identical concurrent work joins rather than duplicating. */
-  dedup(key, run) {
-    const existing = this.inflight.get(key);
-    if (existing) return existing;
-    const pass = run().finally(() => this.inflight.delete(key));
-    this.inflight.set(key, pass);
-    return pass;
-  }
-  /**
-   * Write a batch of remote rows into the local collection.
-   *
-   * One commit for the whole batch, ids derived from the origin's primary key, and
-   * `origin: 'remote'` so the rows can never replicate back out at the origin they
-   * came from. This is the *only* write path in the coordinator — bootstrap, delta
-   * and bridge all funnel through it, which is precisely why they converge instead
-   * of conflicting.
-   */
-  async applyRows(rows) {
-    if (rows.length === 0) return [];
-    const col = this.db.collection(this.source.collection, this.collectionOptions);
-    const docs = rows.map(
-      (row) => {
-        const revision = this.source.revisionOf(row);
-        return {
-          ...this.source.mapRow(row),
-          _id: deriveDocId(this.identityNamespace, String(this.source.keyOf(row))),
-          [REPLICA_SCOPE_FIELD]: this.replicaScope,
-          [REPLICA_REVISION_FIELD]: revision
-        };
-      }
-    );
-    await col.replaceManyWithIds(docs, "remote");
-    return docs.map((doc) => doc._id);
-  }
-  /**
-   * Hydrate the scope: walk the origin page by page until the whole collection is
-   * local, then mark it complete.
-   *
-   * Resumable and idempotent. If the walk is interrupted — a reload, a crash, a
-   * dead network — the next call picks up from the last committed page, and
-   * re-applying a page it already wrote is a no-op because the ids are derived.
-   */
-  hydrate() {
-    return this.dedup(`${this.replicaScope}:hydrate`, () => this.runHydrate());
-  }
-  async runHydrate() {
-    let state = await this.coverage.read(this.key);
-    if (state.status === "complete") return state;
-    let page = null;
-    let snapshot = null;
-    let rowsApplied2 = 0;
-    let total;
-    let deltaCursor;
-    if (state.status === "hydrating") {
-      page = state.nextPage;
-      snapshot = state.snapshot;
-      rowsApplied2 = state.rowsApplied;
-      total = state.total;
-      deltaCursor = state.deltaCursor;
-    } else if (state.status === "error" && state.snapshot) {
-      page = state.resumeFrom;
-      snapshot = state.snapshot;
-      rowsApplied2 = state.rowsApplied ?? 0;
-      total = state.total;
-      deltaCursor = state.deltaCursor;
-    }
-    let snapshotSupported = true;
-    let pages = 0;
-    try {
-      for (; ; ) {
-        const result = await this.source.bootstrap({ page, snapshot, limit: this.pageSize });
-        if (snapshot !== null && result.snapshot !== void 0 && result.snapshot !== snapshot) {
-          throw new Error(
-            `replication: origin '${this.source.origin}' changed snapshot token mid-walk`
-          );
-        }
-        if (snapshot === null && result.snapshot) snapshot = result.snapshot;
-        if (result.snapshot === void 0 && page === null) snapshotSupported = false;
-        if (result.deltaCursor && !deltaCursor) deltaCursor = result.deltaCursor;
-        if (result.total !== void 0) total = result.total;
-        rowsApplied2 += (await this.applyRows(result.rows)).length;
-        page = result.nextPage;
-        if (page !== null) {
-          const next = {
-            status: "hydrating",
-            snapshot: snapshot ?? "",
-            nextPage: page,
-            rowsApplied: rowsApplied2,
-            ...deltaCursor !== void 0 ? { deltaCursor } : {},
-            ...total !== void 0 ? { total } : {}
-          };
-          await this.coverage.write(this.key, next);
-          this.onProgress?.(next);
-          if (++pages >= MAX_BOOTSTRAP_PAGES) {
-            throw new Error(
-              `replication: origin '${this.source.origin}' offered more than ${MAX_BOOTSTRAP_PAGES} bootstrap pages for '${this.source.collection}' \u2014 it is probably not advancing nextPage.`
-            );
-          }
-          await this.yieldFn();
-          continue;
-        }
-        if (snapshotSupported && this.source.delta && deltaCursor === void 0) {
-          throw new Error(
-            `replication: origin '${this.source.origin}' supports delta refresh but did not issue deltaCursor on the first bootstrap page`
-          );
-        }
-        state = snapshotSupported ? {
-          status: "complete",
-          cursor: deltaCursor ?? "",
-          completedAt: Date.now(),
-          rowsApplied: rowsApplied2,
-          ...total !== void 0 ? { total } : {}
-        } : {
-          // Every row the origin offered was applied — but without a snapshot
-          // we cannot prove we saw a consistent view of it, so we must not
-          // claim completeness. Reads keep going to the network.
-          status: "best-effort",
-          cursor: deltaCursor ?? "",
-          reason: "the origin did not return a snapshot token, so a row that moved between pages during the walk may have been missed",
-          rowsApplied: rowsApplied2,
-          ...total !== void 0 ? { total } : {}
-        };
-        await this.coverage.write(this.key, state);
-        this.onProgress?.(state);
-        return state;
-      }
-    } catch (error) {
-      const failed = {
-        status: "error",
-        resumeFrom: page ?? 0,
-        ...snapshot ? { snapshot } : {},
-        ...deltaCursor !== void 0 ? { deltaCursor } : {},
-        rowsApplied: rowsApplied2,
-        ...total !== void 0 ? { total } : {},
-        error: error instanceof Error ? error.message : String(error)
-      };
-      await this.coverage.write(this.key, failed);
-      this.onProgress?.(failed);
-      throw error;
-    }
-  }
-  /**
-   * Apply incremental changes since the stored cursor.
-   *
-   * Deletions are applied by mapping the origin's primary keys through the same
-   * `deriveDocId`, and are written with `origin: 'remote'` so they leave no
-   * tombstone — the origin already knows it deleted these, and a tombstone would
-   * push its own deletion back at it.
-   */
-  refresh() {
-    return this.dedup(`${this.replicaScope}:refresh`, () => this.runRefresh());
-  }
-  async runRefresh() {
-    const state = await this.coverage.read(this.key);
-    if (state.status !== "complete") return state;
-    if (!this.source.delta) return state;
-    const col = this.db.collection(this.source.collection);
-    let cursor = state.cursor;
-    let rowsApplied2 = state.rowsApplied;
-    for (; ; ) {
-      const page = await this.source.delta(cursor);
-      rowsApplied2 += (await this.applyRows(page.changed)).length;
-      if (page.deleted.length > 0) {
-        const ids = page.deleted.map(
-          (k) => deriveDocId(this.identityNamespace, String(k))
-        );
-        await col.deleteManyWithIds(ids, "remote");
-      }
-      cursor = page.cursor;
-      const next = { ...state, cursor, rowsApplied: rowsApplied2 };
-      await this.coverage.write(this.key, next);
-      if (!page.hasMore) {
-        this.onProgress?.(next);
-        return next;
-      }
-      await this.yieldFn();
-    }
-  }
-  /**
-   * Cold-start bridge: fetch exactly the rows one query needs, right now.
-   *
-   * Needed because a SPA or React Native app has no server render to paint behind
-   * while the replica fills. The rows land in the same collection under the same
-   * derived ids as the walk's, so this is not a cache — it is the replica, arriving
-   * early.
-   *
-   * **Does not advance coverage.** These rows did not come from the bootstrap
-   * snapshot and prove nothing about completeness; treating them as progress would
-   * let a page-1 fetch masquerade as a hydrated catalog.
-   */
-  bridge(query) {
-    if (!this.source.fetchQuery) return Promise.resolve({ count: 0, ids: [] });
-    const key = `bridge:${coverageKey(this.key)}:${JSON.stringify(query)}`;
-    return this.dedup(key, async () => {
-      const rows = await this.source.fetchQuery(query);
-      const ids = await this.applyRows(rows);
-      return { count: ids.length, ids };
-    });
-  }
-  /** Drop coverage and force a fresh bootstrap. Local rows are left alone. */
-  async reset() {
-    await this.coverage.clear(this.key);
-  }
-};
-
-// src/replication/rest.ts
-function parseRows(body, endpoint) {
-  if (Array.isArray(body)) return body;
-  if (body && typeof body === "object") {
-    const env = body;
-    for (const field of ["data", "items", "rows"]) {
-      const value = env[field];
-      if (Array.isArray(value)) return value;
-    }
-    throw new Error(
-      `taladb: could not find a row array in the response from ${endpoint}. Expected a bare array or a { data | items | rows } envelope, but got an object with keys: ${Object.keys(env).join(", ") || "(none)"}. Pass { parse } to extract them yourself.`
-    );
-  }
-  throw new Error(
-    `taladb: expected an array or object from ${endpoint}, got ${typeof body}.`
-  );
-}
-function pick(body, names) {
-  if (!body || typeof body !== "object") return void 0;
-  const rec = body;
-  for (const n of names) {
-    if (rec[n] !== void 0) return rec[n];
-    const meta = rec.meta;
-    if (meta && meta[n] !== void 0) return meta[n];
-  }
-  return void 0;
-}
-function createRestSource(options) {
-  const {
-    endpoint,
-    collection,
-    origin = endpoint,
-    scope = "global",
-    projectionVersion = 1,
-    schemaVersion = 1,
-    key = "id",
-    revision = "rev",
-    mapRow,
-    getAuth,
-    paths,
-    toParams,
-    parse,
-    pagination = "page"
-  } = options;
-  const doFetch = options.fetch ?? globalThis.fetch;
-  async function get(path, params) {
-    const url = new URL(path, globalThis.location?.origin ?? "http://localhost");
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const headers = getAuth ? await getAuth() : void 0;
-    const response = await doFetch(url.href, { headers });
-    if (!response.ok) {
-      throw new Error(
-        `taladb: ${path} responded ${response.status} ${response.statusText}`
-      );
-    }
-    return response.json();
-  }
-  const rowsFrom = (body) => parse ? parse(body) : parseRows(body, endpoint);
-  return {
-    origin,
-    collection,
-    scope,
-    projectionVersion,
-    schemaVersion,
-    keyOf: (row) => {
-      const value = row[key];
-      if (value === void 0 || value === null) {
-        throw new Error(
-          `taladb: row from ${endpoint} has no '${key}' field to use as its primary key. Pass { key } to name the right one. Without a stable key, repeated fetches of the same row cannot be recognized as the same row.`
-        );
-      }
-      return String(value);
-    },
-    revisionOf: (row) => {
-      const value = typeof revision === "function" ? revision(row) : row[revision];
-      if (value === void 0 || value === null) {
-        throw new Error(
-          `taladb: row from ${endpoint} has no authoritative revision. Pass { revision } to name the monotonic revision field.`
-        );
-      }
-      const n = Number(value);
-      if (!Number.isSafeInteger(n)) {
-        throw new Error(`taladb: authoritative revision must be a safe integer, got ${String(value)}`);
-      }
-      return n;
-    },
-    mapRow: (row) => {
-      if (mapRow) return mapRow(row);
-      const { _id, ...rest } = row;
-      void _id;
-      return rest;
-    },
-    bootstrap: async (request) => {
-      const params = { limit: String(request.limit) };
-      if (request.page !== null) params.page = String(request.page);
-      if (request.snapshot !== null) params.snapshot = request.snapshot;
-      const body = await get(endpoint + (paths?.bootstrap ?? ""), params);
-      const rows = rowsFrom(body);
-      const nextPage = pick(body, ["nextPage", "next_page", "next"]);
-      const snapshot = pick(body, ["snapshot"]);
-      const deltaCursor = pick(body, ["deltaCursor", "delta_cursor", "cursor"]);
-      const total = pick(body, ["total", "totalCount", "count"]);
-      return {
-        rows,
-        // An origin that reports no explicit `nextPage` is treated as exhausted
-        // once it returns a short page — the conventional REST behavior.
-        nextPage: nextPage !== void 0 ? nextPage : rows.length < request.limit ? null : pagination === "offset" ? Number(request.page ?? 0) + request.limit : Number(request.page ?? 1) + 1,
-        ...snapshot !== void 0 ? { snapshot } : {},
-        ...deltaCursor !== void 0 ? { deltaCursor } : {},
-        ...total !== void 0 ? { total } : {}
-      };
-    },
-    ...options.delta === true || paths?.delta ? { delta: async (cursor) => {
-      const body = await get(endpoint + (paths?.delta ?? ""), { since: cursor });
-      const changed = rowsFrom(body);
-      const deleted = pick(body, ["deleted", "removed"]) ?? [];
-      const next = pick(body, ["cursor", "now", "nextCursor"]);
-      return {
-        changed,
-        deleted: deleted.map(String),
-        cursor: next ?? cursor,
-        hasMore: Boolean(pick(body, ["hasMore", "has_more"]))
-      };
-    } } : {},
-    fetchQuery: async (query) => {
-      if (!toParams && Object.values(query.filter ?? {}).some((v) => typeof v === "object" && v !== null)) {
-        throw new Error(
-          "taladb: bridge filters with operators require RestSourceOptions.toParams; the default translator only supports scalar equality fields."
-        );
-      }
-      const sortEntry = Object.entries(query.sort ?? {})[0];
-      const params = toParams ? toParams(query) : {
-        ...query.page !== void 0 ? { page: String(query.page) } : {},
-        ...query.limit !== void 0 ? { limit: String(query.limit) } : {},
-        ...Object.fromEntries(
-          Object.entries(query.filter ?? {}).map(([k, v]) => [k, String(v)])
-        ),
-        ...sortEntry ? { sort: sortEntry[0], order: sortEntry[1] === -1 ? "desc" : "asc" } : {}
-      };
-      return rowsFrom(await get(endpoint, params));
-    }
-  };
 }
 
 // src/index.ts
@@ -744,10 +366,7 @@ function applySchema(col, options) {
   const engineOwned = /* @__PURE__ */ new Set([
     "_id",
     "_v",
-    "_changed_at",
-    "_remote",
-    "_remote_rev",
-    "_replica_scope"
+    "_changed_at"
   ]);
   const downcastViews = /* @__PURE__ */ new WeakSet();
   function preserveFields(original, next, preserveUnknown, preserveVersion = true) {
@@ -807,10 +426,6 @@ function applySchema(col, options) {
     }
   }
   function stamp(doc) {
-    if (!stampVersion || doc._v !== void 0) return doc;
-    return { ...doc, _v: targetVersion };
-  }
-  function stampDoc(doc) {
     if (!stampVersion || doc._v !== void 0) return doc;
     return { ...doc, _v: targetVersion };
   }
@@ -904,35 +519,6 @@ function applySchema(col, options) {
       if (schema) docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
       return col.insertMany(docs.map(stamp));
     } : col.insertMany.bind(col),
-    // Rows arriving from a remote origin are validated like any other write. This
-    // is the "parse, don't assert" boundary: the compile-time generic and the
-    // runtime schema check have to be the same seam, or a malformed server
-    // response walks straight into a typed collection.
-    replaceManyWithIds: wrapWrites ? async (docs, origin) => {
-      if (origin !== "remote") {
-        docs.forEach((doc, i) => assertWritableDocument(doc, `replaceManyWithIds[${i}]`));
-        if (targetVersion > 0) {
-          throw new Error(
-            "local replaceManyWithIds is disabled on versioned collections; use updateOne/updateMany so schema-version guards are atomic"
-          );
-        }
-      }
-      if (schema) docs.forEach((doc, i) => {
-        const { _replica_scope, _remote_rev, ...schemaDoc } = doc;
-        void _replica_scope;
-        void _remote_rev;
-        parseWrite(schemaDoc, `replaceManyWithIds[${i}]`);
-      });
-      return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
-    } : col.replaceManyWithIds.bind(col),
-    deleteManyWithIds: stampVersion ? async (ids, origin) => {
-      if (origin !== "remote") {
-        throw new Error(
-          "local deleteManyWithIds is disabled on versioned collections; use deleteOne/deleteMany so schema-version guards are atomic"
-        );
-      }
-      return col.deleteManyWithIds(ids, origin);
-    } : col.deleteManyWithIds.bind(col),
     updateOne: wrapWrites ? async (filter, update) => {
       assertSafeUpdate(update);
       return col.updateOne(writableFilter(filter), update);
@@ -995,6 +581,10 @@ function applySchema(col, options) {
       onError
     ) : col.subscribeAggregate.bind(col)
   };
+}
+function decorateCollection(raw, name, opts, webhook) {
+  const reported = webhook ? wrapCollectionWithWebhook(raw, name, webhook) : raw;
+  return opts ? applySchema(reported, opts) : reported;
 }
 function detectPlatform() {
   if (typeof navigator !== "undefined" && navigator.product === "ReactNative") {
@@ -1081,7 +671,7 @@ function makePoller(findFn, callback, onError) {
     active = false;
   };
 }
-async function createBrowserDB(dbName, config, passphrase, migrations) {
+async function createBrowserDB(dbName, webhook, config, passphrase, migrations) {
   const workerUrl = new URL("@taladb/web/worker/taladb.worker.js", import.meta.url);
   const worker = new Worker(workerUrl, { type: "module", name: "taladb" });
   const proxy = new WorkerProxy(worker);
@@ -1106,9 +696,7 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
       }
     };
   }
-  const syncSchemas = {};
   function wrapCollection(name, opts) {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const s = JSON.stringify;
     const wrapped = {
       insert: (doc) => proxy.send("insert", { collection: name, docJson: s(doc) }),
@@ -1119,19 +707,6 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         });
         return JSON.parse(json);
       },
-      replaceManyWithIds: async (docs, origin = "local") => {
-        const json = await proxy.send("replaceManyWithIds", {
-          collection: name,
-          docsJson: s(docs),
-          origin
-        });
-        return JSON.parse(json);
-      },
-      deleteManyWithIds: (ids, origin = "local") => proxy.send("deleteManyWithIds", {
-        collection: name,
-        idsJson: s(ids),
-        origin
-      }),
       find: async (filter) => {
         const json = await proxy.send("find", {
           collection: name,
@@ -1228,6 +803,7 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         return JSON.parse(json);
       },
       subscribe: (filter, callback, onError) => nudgedPoller(
+        name,
         () => proxy.send("find", {
           collection: name,
           filterJson: filter ? s(filter) : "null"
@@ -1236,6 +812,7 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         onError
       ),
       subscribeAggregate: (pipeline, callback, onError) => nudgedPoller(
+        name,
         () => proxy.send("aggregate", {
           collection: name,
           pipelineJson: s(pipeline)
@@ -1244,11 +821,13 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         onError
       )
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
-  function nudgedPoller(fetchJson, callback, onError) {
+  function nudgedPoller(collection, fetchJson, callback, onError) {
     let active = true;
     let lastJson = "";
+    let lastGeneration = -1;
+    let generationSupported = true;
     let timer = null;
     let running = false;
     let rerun = false;
@@ -1264,11 +843,23 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         timer = null;
       }
       try {
-        const json = await fetchJson();
-        if (!active) return;
-        if (json !== lastJson) {
-          lastJson = json;
-          callback(JSON.parse(json));
+        let unchanged = false;
+        if (generationSupported) {
+          try {
+            const gen = await proxy.send("writeGeneration", { collection });
+            if (gen === lastGeneration) unchanged = true;
+            else lastGeneration = gen;
+          } catch {
+            generationSupported = false;
+          }
+        }
+        if (!unchanged) {
+          const json = await fetchJson();
+          if (!active) return;
+          if (json !== lastJson) {
+            lastJson = json;
+            callback(JSON.parse(json));
+          }
         }
       } catch (error) {
         if (active) onError?.(error);
@@ -1299,8 +890,6 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
     flush: async () => {
       await proxy.send("flush");
     },
-    syncStatus: async () => JSON.parse(await proxy.send("syncStatus")),
-    flushSync: (timeoutMs = 5e3) => proxy.send("flushSync", { timeoutMs }),
     close: async () => {
       channel?.close();
       try {
@@ -1310,14 +899,7 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         proxy.abort(new Error("taladb worker closed"));
       }
     },
-    // All engine work (export scan, LWW merge) runs inside the worker, off the
-    // main thread — a sync pass never blocks rendering, whatever its size.
-    exportChanges: (collections, sinceMs) => proxy.send("exportChangeset", { collectionsJson: JSON.stringify(collections), sinceMs }),
-    importChanges: (changeset) => proxy.send("importChangeset", { changesetJson: changeset }),
-    importChangesValidated: async (changeset, schemasJson) => JSON.parse(await proxy.send("importChangesetValidated", { changesetJson: changeset, schemasJson })),
-    listCollectionNames: async () => JSON.parse(await proxy.send("listCollections")),
-    quarantined: async (collection) => JSON.parse(await proxy.send("quarantined", { collection })),
-    sync: (adapter, options) => runSync(handle, adapter, options, syncSchemas)
+    listCollectionNames: async () => JSON.parse(await proxy.send("listCollections"))
   };
   if (migrations?.length) {
     await runMigrations(
@@ -1331,21 +913,17 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
   }
   return handle;
 }
-async function createNodeDB(dbName, config, passphrase, migrations) {
+async function createNodeDB(dbName, webhook, config, passphrase, migrations) {
   const native = await import("@taladb/node");
   const TalaDBNode = native.TalaDbNode ?? native.TalaDBNode;
   if (!TalaDBNode) throw new Error("@taladb/node loaded but exports no TalaDbNode class \u2014 rebuild the native module");
   const configJson = config !== void 0 ? JSON.stringify(config) : null;
   const db = TalaDBNode.open(dbName, configJson, passphrase ?? null);
-  const syncSchemas = {};
   function wrapCollection(name, opts) {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const col = db.collection(name);
     const wrapped = {
       insert: async (doc) => col.insertAsync ? col.insertAsync(doc) : col.insert(doc),
       insertMany: async (docs) => col.insertManyAsync ? col.insertManyAsync(docs) : col.insertMany(docs),
-      replaceManyWithIds: async (docs, origin = "local") => col.replaceManyWithIdsAsync ? col.replaceManyWithIdsAsync(docs, origin) : col.replaceManyWithIds(docs, origin),
-      deleteManyWithIds: async (ids, origin = "local") => col.deleteManyWithIdsAsync ? col.deleteManyWithIdsAsync(ids, origin) : col.deleteManyWithIds(ids, origin),
       find: async (filter) => col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOneAsync ? col.updateOneAsync(filter, update) : col.updateOne(filter, update),
@@ -1380,7 +958,7 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
       subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => wrapped.aggregate(pipeline), callback, onError)
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
   const handle = {
     collection: (name, opts) => wrapCollection(name, opts),
@@ -1390,14 +968,7 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
     flush: db.flush ? async () => {
       db.flush();
     } : void 0,
-    exportChanges: async (collections, sinceMs) => db.exportChanges(sinceMs, collections),
-    importChanges: async (changeset) => db.importChanges(changeset),
-    // Feature-detected: only present when the loaded .node binary supports it,
-    // so older prebuilt binaries fall back to plain importChanges.
-    importChangesValidated: db.importChangesValidated ? async (changeset, schemasJson) => db.importChangesValidated(changeset, schemasJson) : void 0,
-    listCollectionNames: async () => db.listCollectionNames(),
-    quarantined: async (collection) => db.quarantined ? db.quarantined(collection) : [],
-    sync: (adapter, options) => runSync(handle, adapter, options, syncSchemas)
+    listCollectionNames: async () => db.listCollectionNames()
   };
   if (migrations?.length) {
     if (typeof db.userVersion !== "function" || typeof db.setUserVersion !== "function") {
@@ -1412,7 +983,7 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
   }
   return handle;
 }
-async function createNativeDB(_dbName, migrations) {
+async function createNativeDB(_dbName, webhook, migrations) {
   const maybeNative = globalThis.__TalaDB__;
   if (!maybeNative) {
     throw new Error(
@@ -1420,14 +991,10 @@ async function createNativeDB(_dbName, migrations) {
     );
   }
   const native = maybeNative;
-  const syncSchemas = {};
   function wrapCollection(name, opts) {
-    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const wrapped = {
       insert: async (doc) => native.insert(name, doc),
       insertMany: async (docs) => native.insertMany(name, docs),
-      replaceManyWithIds: async (docs, origin = "local") => native.replaceManyWithIds(name, docs, origin),
-      deleteManyWithIds: async (ids, origin = "local") => native.deleteManyWithIds(name, ids, origin),
       find: async (filter) => native.find(name, filter ?? {}),
       findOne: async (filter) => native.findOne(name, filter ?? {}),
       updateOne: async (filter, update) => native.updateOne(name, filter, update),
@@ -1474,34 +1041,15 @@ async function createNativeDB(_dbName, migrations) {
       subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError),
       subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => native.aggregate(name, pipeline), callback, onError)
     };
-    return opts ? applySchema(wrapped, opts) : wrapped;
+    return decorateCollection(wrapped, name, opts, webhook);
   }
-  const syncSurface = typeof native.exportChanges === "function" && typeof native.importChanges === "function" && typeof native.listCollectionNames === "function" ? (() => {
-    const handle2 = {
-      collection: (name, opts) => wrapCollection(name, opts),
-      exportChanges: async (collections, sinceMs) => native.exportChanges(collections, sinceMs),
-      importChanges: async (changeset) => native.importChanges(changeset),
-      // Feature-detected: present on 0.9.2+ JSI HostObjects; when absent,
-      // runSync falls back to unvalidated importChanges.
-      importChangesValidated: native.importChangesValidated ? async (changeset, schemasJson) => native.importChangesValidated(changeset, schemasJson) : void 0,
-      listCollectionNames: async () => native.listCollectionNames(),
-      sync: (adapter, options) => runSync(handle2, adapter, options, syncSchemas)
-    };
-    return {
-      exportChanges: handle2.exportChanges,
-      importChanges: handle2.importChanges,
-      sync: handle2.sync
-    };
-  })() : unsupportedSync("react-native");
   const handle = {
     collection: (name, opts) => wrapCollection(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
     flush: native.flush ? async () => {
       native.flush();
-    } : void 0,
-    quarantined: native.quarantined ? async (collection) => native.quarantined(collection) : void 0,
-    ...syncSurface
+    } : void 0
   };
   if (migrations?.length) {
     if (typeof native.userVersion !== "function" || typeof native.setUserVersion !== "function") {
@@ -1553,35 +1101,44 @@ async function openDB(dbName = "taladb.db", options) {
       durability: { ...resolvedConfig?.durability, ...options.durability }
     };
   }
+  const webhook = createWebhookDispatcher(options?.webhook ?? resolvedConfig?.webhook);
   const platform = detectPlatform();
   const migrations = options?.migrations;
+  let db;
   switch (platform) {
     case "browser":
-      return createBrowserDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createBrowserDB(dbName, webhook, resolvedConfig, options?.passphrase, migrations);
+      break;
     case "react-native":
       if (options?.passphrase !== void 0) {
         throw new Error("On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted");
       }
-      return createNativeDB(dbName, migrations);
+      db = await createNativeDB(dbName, webhook, migrations);
+      break;
     case "node":
-      return createNodeDB(dbName, resolvedConfig, options?.passphrase, migrations);
+      db = await createNodeDB(dbName, webhook, resolvedConfig, options?.passphrase, migrations);
+      break;
   }
+  return webhook ? attachWebhook(db, webhook) : db;
+}
+function attachWebhook(db, webhook) {
+  return {
+    ...db,
+    webhookStats: () => webhook.stats(),
+    flushWebhook: (timeoutMs) => webhook.flush(timeoutMs),
+    async close() {
+      await webhook.flush();
+      await db.close();
+    }
+  };
 }
 export {
-  COVERAGE_COLLECTION,
-  CoverageStore,
-  HttpSyncAdapter,
-  REPLICA_REVISION_FIELD,
-  REPLICA_SCOPE_FIELD,
-  ReplicationCoordinator,
   TalaDbValidationError,
   applySchema,
-  coverageKey,
-  createRestSource,
+  createWebhookDispatcher,
+  decorateCollection,
   deriveDocId,
-  isAuthoritative,
   openDB,
-  progress,
-  rowsApplied,
-  runMigrations
+  runMigrations,
+  validateWebhookConfig
 };

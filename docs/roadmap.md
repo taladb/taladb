@@ -29,11 +29,12 @@ engine. Remaining work:
   those need events written to a reserved collection inside the mutation's own
   transaction and drained separately. Deliberately opt-in: it re-adds the
   per-write cost that removing tombstones just reclaimed.
-- **Multi-tab write election.** Removing the changeset machinery also removed
-  cross-tab write merging in the browser IndexedDB-fallback path (see the
-  [web guide](/guide/web#multi-tab-behaviour)). A Web-Locks-based leader
-  election that routes writes through the primary tab would restore it without
-  reintroducing a merge protocol.
+- **Multi-tab write forwarding — durability under tab loss.** A tab without the
+  OPFS lock forwards its writes to the tab that holds it (see the
+  [web guide](/guide/web#multi-tab-behaviour)). The hand-off is a
+  BroadcastChannel post, so a write committed locally and then interrupted by an
+  immediate tab close can still be lost. An acknowledgement round-trip, or
+  routing writes to the primary *before* committing locally, would close it.
 
 ### Schema evolution on React Native — pending on-device verification
 

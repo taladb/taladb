@@ -119,21 +119,6 @@ export class CollectionWasm {
         return ret[0] >>> 0;
     }
     /**
-     * Delete many documents by id, in one commit. Returns the number removed.
-     * @param {any} ids
-     * @param {string} origin
-     * @returns {number}
-     */
-    deleteManyWithIds(ids, origin) {
-        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.collectionwasm_deleteManyWithIds(this.__wbg_ptr, ids, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
      * Delete the first matching document. Returns true if deleted.
      * @param {any} filter
      * @returns {boolean}
@@ -307,29 +292,6 @@ export class CollectionWasm {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Upsert many documents **by caller-supplied `_id`**, in one commit.
-     *
-     * Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
-     * this honours the id on each document, which is what lets replication address
-     * a remote row by a *derived* id so repeated fetches converge on one document
-     * instead of duplicating it.
-     *
-     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
-     * or `"local"` for ordinary user writes.
-     * @param {any} docs
-     * @param {string} origin
-     * @returns {any}
-     */
-    replaceManyWithIds(docs, origin) {
-        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.collectionwasm_replaceManyWithIds(this.__wbg_ptr, docs, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
      * Rank documents against a free-text query using BM25 (OR semantics).
      *
      * Returns a JSON array of `{ document, score }`.
@@ -425,34 +387,6 @@ export class TalaDBWasm {
         return CollectionWasm.__wrap(ret[0]);
     }
     /**
-     * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
-     * changeset string, for bidirectional sync. `sinceMs` is a millisecond
-     * epoch timestamp (the persisted sync cursor).
-     * @param {number} since_ms
-     * @param {string[]} collections
-     * @returns {string}
-     */
-    exportChanges(since_ms, collections) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArrayJsValueToWasm0(collections, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.taladbwasm_exportChanges(this.__wbg_ptr, since_ms, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
      * Serialize the entire in-memory database to bytes.
      *
      * Pass the returned `Uint8Array` to `opfs_flush_snapshot` to persist, or
@@ -470,23 +404,7 @@ export class TalaDBWasm {
         return v1;
     }
     /**
-     * Merge a JSON changeset string (from a remote peer) into the local
-     * database via Last-Write-Wins. Returns the number of documents changed.
-     * @param {string} changeset_json
-     * @returns {number}
-     */
-    importChanges(changeset_json) {
-        const ptr0 = passStringToWasm0(changeset_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.taladbwasm_importChanges(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
      * User collection names (reserved `_`-prefixed collections excluded).
-     * Backs the sync orchestration's "sync all collections" default.
      * @returns {string[]}
      */
     listCollectionNames() {
@@ -624,31 +542,6 @@ export class WorkerDB {
         }
     }
     /**
-     * Remove tombstones older than `before_ms` from the given collection.
-     *
-     * Call periodically (e.g. on app startup) after your sync retention window
-     * has elapsed so deleted document IDs no longer accumulate indefinitely.
-     * Returns the number of tombstones removed.
-     *
-     * ```js
-     * // Prune tombstones older than 30 days
-     * const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-     * const pruned = db.compactTombstones('users', cutoff);
-     * ```
-     * @param {string} collection
-     * @param {number} before_ms
-     * @returns {number}
-     */
-    compactTombstones(collection, before_ms) {
-        const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.workerdb_compactTombstones(this.__wbg_ptr, ptr0, len0, before_ms);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
      * Count matching documents.
      * @param {string} collection
      * @param {string} filter_json
@@ -755,20 +648,18 @@ export class WorkerDB {
         return ret[0] >>> 0;
     }
     /**
-     * Delete many documents by id, in one commit. Returns the number removed.
+     * Delete documents by id. Returns how many were present and removed.
+     * The delete half of cross-tab write propagation.
      * @param {string} collection
      * @param {string} ids_json
-     * @param {string} origin
      * @returns {number}
      */
-    deleteManyWithIds(collection, ids_json, origin) {
+    deleteManyWithIds(collection, ids_json) {
         const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.workerdb_deleteManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.workerdb_deleteManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -847,40 +738,6 @@ export class WorkerDB {
         const ret = wasm.workerdb_dropVectorIndex(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Export a changeset for the given collections since `since_ms`.
-     *
-     * Returns a JSON string representing `Vec<Change>` that can be sent
-     * to a remote peer via fetch, WebSocket, or SSE.
-     *
-     * ```js
-     * const json = db.exportChangeset(JSON.stringify(['users', 'posts']), 0);
-     * await fetch('/sync', { method: 'POST', body: json });
-     * ```
-     * @param {string} collections_json
-     * @param {number} since_ms
-     * @returns {string}
-     */
-    exportChangeset(collections_json, since_ms) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(collections_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.workerdb_exportChangeset(this.__wbg_ptr, ptr0, len0, since_ms);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
@@ -1049,60 +906,6 @@ export class WorkerDB {
         }
     }
     /**
-     * Import a remote changeset and merge it into the local database using
-     * Last-Write-Wins conflict resolution.
-     *
-     * Returns the number of documents actually changed.
-     *
-     * ```js
-     * const resp = await fetch('/sync?since=' + lastSync);
-     * const applied = db.importChangeset(await resp.text());
-     * if (applied > 0) { rerender(); }
-     * ```
-     * @param {string} changeset_json
-     * @returns {number}
-     */
-    importChangeset(changeset_json) {
-        const ptr0 = passStringToWasm0(changeset_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.workerdb_importChangeset(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Import a remote changeset through a tolerant structural validator built
-     * from `schemas_json` (`{ "<collection>": { version, required, types,
-     * defaults } }`). Returns a JSON `{ applied, skipped, quarantined }`.
-     * Rejected documents are set aside (see `quarantined`), never dropped.
-     * @param {string} changeset_json
-     * @param {string} schemas_json
-     * @returns {string}
-     */
-    importChangesetValidated(changeset_json, schemas_json) {
-        let deferred4_0;
-        let deferred4_1;
-        try {
-            const ptr0 = passStringToWasm0(changeset_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ptr1 = passStringToWasm0(schemas_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len1 = WASM_VECTOR_LEN;
-            const ret = wasm.workerdb_importChangesetValidated(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-            var ptr3 = ret[0];
-            var len3 = ret[1];
-            if (ret[3]) {
-                ptr3 = 0; len3 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred4_0 = ptr3;
-            deferred4_1 = len3;
-            return getStringFromWasm0(ptr3, len3);
-        } finally {
-            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-        }
-    }
-    /**
      * Insert a document. Returns the new ULID as a string.
      * @param {string} collection
      * @param {string} doc_json
@@ -1160,7 +963,6 @@ export class WorkerDB {
     }
     /**
      * Returns a JSON array of all collection names in the database.
-     * Used by the Worker to build the collections list for exportChangeset.
      * @returns {string}
      */
     listCollections() {
@@ -1314,72 +1116,6 @@ export class WorkerDB {
         return WorkerDB.__wrap(ret[0]);
     }
     /**
-     * Documents set aside in `collection`'s quarantine table, as a JSON array
-     * of `{ document, reason, changedAt }`.
-     * @param {string} collection
-     * @returns {string}
-     */
-    quarantined(collection) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.workerdb_quarantined(this.__wbg_ptr, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Upsert many documents **by caller-supplied `_id`**, in one commit.
-     *
-     * Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
-     * honours the id in each document. That is what lets the replication
-     * coordinator address a remote row by a *derived* id (see `deriveDocId`) and
-     * have repeated fetches converge on one document instead of duplicating it.
-     *
-     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
-     * or `"local"` for ordinary user writes. Remote rows are marked so they can
-     * never replicate back out — see `Collection::replace_many_with_ids`.
-     * @param {string} collection
-     * @param {string} docs_json
-     * @param {string} origin
-     * @returns {string}
-     */
-    replaceManyWithIds(collection, docs_json, origin) {
-        let deferred5_0;
-        let deferred5_1;
-        try {
-            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ptr1 = passStringToWasm0(docs_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len1 = WASM_VECTOR_LEN;
-            const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len2 = WASM_VECTOR_LEN;
-            const ret = wasm.workerdb_replaceManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
-            var ptr4 = ret[0];
-            var len4 = ret[1];
-            if (ret[3]) {
-                ptr4 = 0; len4 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred5_0 = ptr4;
-            deferred5_1 = len4;
-            return getStringFromWasm0(ptr4, len4);
-        } finally {
-            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-        }
-    }
-    /**
      * Rank documents against a free-text query using BM25 (OR semantics).
      *
      * Returns a JSON array of `{ document, score }`.
@@ -1440,28 +1176,6 @@ export class WorkerDB {
         }
     }
     /**
-     * @returns {bigint}
-     */
-    syncPending() {
-        const ret = wasm.workerdb_syncPending(this.__wbg_ptr);
-        return BigInt.asUintN(64, ret);
-    }
-    /**
-     * @returns {string}
-     */
-    syncStatus() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.workerdb_syncStatus(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
      * Update all matching documents. Returns the count updated.
      * @param {string} collection
      * @param {string} filter_json
@@ -1517,6 +1231,43 @@ export class WorkerDB {
         const ret = wasm.workerdb_upgradeVectorIndex(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Upsert documents **by their own `_id`**, in one commit per document.
+     *
+     * Backs cross-tab write propagation: a tab that cannot hold the OPFS lock
+     * writes to an in-memory database, then forwards the committed documents
+     * here so the tab holding the lock applies them to the durable file. The
+     * `_id`s travel with the documents, so an id an application already holds
+     * stays valid after the hand-off — which a plain re-`insert` would break by
+     * minting a new ULID.
+     *
+     * Unlike `insert_many`, a caller-supplied `_id` is required, not ignored.
+     * @param {string} collection
+     * @param {string} docs_json
+     * @returns {string}
+     */
+    upsertManyWithIds(collection, docs_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(docs_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_upsertManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
         }
     }
     /**
@@ -1747,10 +1498,6 @@ function __wbg_get_imports() {
         },
         __wbg_apply_ac9afb97ca32f169: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = arg0.apply(arg1, arg2);
-            return ret;
-        }, arguments); },
-        __wbg_apply_d7728efbea08f95e: function() { return handleError(function (arg0, arg1, arg2) {
-            const ret = Reflect.apply(arg0, arg1, arg2);
             return ret;
         }, arguments); },
         __wbg_arrayBuffer_7ff5e58aa85a64f7: function(arg0) {
@@ -2053,10 +1800,6 @@ function __wbg_get_imports() {
             const ret = Date.now();
             return ret;
         },
-        __wbg_of_d6376e3774c51f89: function(arg0, arg1) {
-            const ret = Array.of(arg0, arg1);
-            return ret;
-        },
         __wbg_process_44c7a14e11e9f69e: function(arg0) {
             const ret = arg0.process;
             return ret;
@@ -2158,13 +1901,13 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 548, function: Function { arguments: [Externref], shim_idx: 549, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h014c297fadd2a065, wasm_bindgen__convert__closures_____invoke__h20bda61557acb630);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 5, function: Function { arguments: [Externref], shim_idx: 6, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h4ecd198e6e5fb530, wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 6, function: Function { arguments: [Externref], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h6f0d9de467faf809, wasm_bindgen__convert__closures_____invoke__ha4a918128dde32ae);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 525, function: Function { arguments: [Externref], shim_idx: 526, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h014c297fadd2a065, wasm_bindgen__convert__closures_____invoke__h20bda61557acb630);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0) {
@@ -2215,8 +1958,8 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__ha4a918128dde32ae(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__ha4a918128dde32ae(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h20bda61557acb630(arg0, arg1, arg2) {
@@ -2412,16 +2155,6 @@ function passArrayF32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-
-function passArrayJsValueToWasm0(array, malloc) {
-    const ptr = malloc(array.length * 4, 4) >>> 0;
-    for (let i = 0; i < array.length; i++) {
-        const add = addToExternrefTable0(array[i]);
-        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
-    }
-    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 

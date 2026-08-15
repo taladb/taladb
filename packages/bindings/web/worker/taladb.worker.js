@@ -62,13 +62,32 @@
  * `"taladb:<dbName>"`.  Other tabs listening on the same channel re-trigger
  * their active `subscribe()` pollers immediately, bypassing the 300 ms tick.
  *
- * Fallback tabs are isolated (0.11.0)
- * -----------------------------------
- * A fallback tab's writes go to its own in-memory database and its own
- * IndexedDB snapshot; they do NOT reach the primary tab's OPFS file. Merging
- * them rode on the changeset/LWW machinery that 0.11.0 removed along with the
- * rest of sync. `taladb:changed` still crosses tabs, so live queries stay
- * reactive — only cross-tab write *merging* is gone.
+ * Cross-tab write forwarding
+ * --------------------------
+ * A tab that cannot take the OPFS lock runs an in-memory database and does NOT
+ * publish the IndexedDB snapshot, so it has no durable storage of its own.
+ * After every write it forwards the change on the BroadcastChannel as
+ * `{ type: 'taladb:tab-write', … }`; the tab holding the lock applies it and
+ * runs the normal onWriteCommitted() path, so every tab is notified and the
+ * OPFS file stays authoritative.
+ *
+ * Inserts forward whole documents with their `_id`s (upserted by id, so an id
+ * the application already holds stays valid); filter-based updates and deletes
+ * forward the filter and update, re-evaluated by the primary against
+ * authoritative data. Ordering is arrival order at the primary — two tabs on
+ * one device share a clock, so there is no skew to arbitrate.
+ *
+ * The primary acknowledges each forwarded write. Unacknowledged writes are kept
+ * so that a tab promoted to owner (below) can replay exactly the ones that were
+ * never persisted.
+ *
+ * Lock takeover
+ * -------------
+ * A tab that loses the OPFS lock queues for it in the background. When the
+ * holder closes its tab or calls `db.close()`, the lock passes to a waiting tab,
+ * which opens the OPFS file, adopts it as authoritative, and replays its own
+ * unacknowledged writes. Without this, closing the tab that owned the file left
+ * every other tab writing into memory that nothing would ever persist.
  *
  * IndexedDB fallback (no OPFS)
  * ----------------------------
@@ -111,6 +130,54 @@ let pendingSnapshotResolve = null;
  * @type {Map<string, Promise<void>>}
  */
 const initPromises = new Map();
+
+/**
+ * Identifies this worker on the BroadcastChannel, so a forwarded write's
+ * acknowledgement can be routed back to the tab that sent it.
+ */
+const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/**
+ * Forwarded writes this tab has sent but the primary has not acknowledged.
+ *
+ * A transient tab's writes live only in its own RAM until the primary applies
+ * them. If the primary goes away — the tab holding the OPFS lock is closed —
+ * nothing acknowledges them, and they used to be lost outright. Keeping them
+ * here lets `promoteToPrimary` replay exactly the writes that never landed,
+ * without replaying any that did (a replayed `$inc` would double-count).
+ * @type {Map<number, object>}
+ */
+const unackedWrites = new Map();
+let writeSeq = 0;
+
+/** Bound on `unackedWrites`, so an absent primary cannot grow it without limit. */
+const MAX_UNACKED = 1000;
+
+/**
+ * Per-collection offsets keeping `writeGeneration` monotonic across the
+ * database instance swaps a snapshot reload performs.
+ *
+ * The generation is an in-memory counter owned by the `Database` instance, so
+ * reloading a snapshot resets it to zero. Live-query pollers treat "same
+ * generation as last tick" as "nothing changed and the query can be skipped" —
+ * and a reload only ever happens *because* another tab wrote. Returning the raw
+ * counter therefore made a fallback tab's live queries go permanently silent:
+ * every reload put the generation back to the value the poller had already seen.
+ * @type {Map<string, number>}
+ */
+const generationBase = new Map();
+/** Last raw engine generation observed per collection, for the offset above. */
+const generationRaw = new Map();
+
+/** Fold the outgoing instance's generations into the offsets, before a swap. */
+function carryGenerationsForward() {
+  for (const [collection, raw] of generationRaw) {
+    // `+ 1` so the next reading differs even when the new instance starts at
+    // the same raw value the old one ended on.
+    generationBase.set(collection, (generationBase.get(collection) ?? 0) + raw + 1);
+  }
+  generationRaw.clear();
+}
 
 /**
  * WASM fetch + compile, started at module scope rather than inside `doInit`.
@@ -319,11 +386,105 @@ function applyDurability(inst) {
 }
 
 /**
+ * True when this tab writes into an in-memory database that nothing else
+ * persists — i.e. another tab holds the OPFS lock (`snapshotWriter === false`).
+ *
+ * Such a tab has no durable storage of its own: it does not own the OPFS file
+ * and does not publish the IndexedDB snapshot. Every write it makes must be
+ * forwarded to the tab that does, or it exists only in RAM and is discarded on
+ * the next snapshot reload.
+ */
+function isTransientTab() {
+  return idbFallback && !snapshotWriter;
+}
+
+/**
+ * Forward a committed write to the tab holding the OPFS lock.
+ *
+ * Inserts travel as whole documents **with their `_id`s** so the primary can
+ * upsert them by id — a plain re-insert would mint a new ULID and break any id
+ * the application is already holding. Filter-based updates and deletes travel
+ * as the filter and update themselves, and the primary re-evaluates them
+ * against authoritative data, which is more accurate than resolving ids here
+ * against a possibly-stale in-memory copy.
+ *
+ * Ordering is arrival order at the primary. Unlike the changeset merge this
+ * replaces, there is no timestamp comparison — two tabs on one device share a
+ * clock and an origin, so there is no skew for Last-Write-Wins to arbitrate.
+ */
+function forwardWriteToPrimary(op, args, result) {
+  if (!isTransientTab() || !broadcastChannel || !db) return;
+  try {
+    let payload = null;
+    if (op === 'insert' || op === 'insertMany') {
+      // Read the documents back so they carry the `_id`s just assigned.
+      // `insert` answers with a bare ULID, `insertMany` with a JSON array —
+      // parsing the bare id as JSON threw, and the catch below turned every
+      // single-document insert in a non-primary tab into a silent data loss.
+      const ids = op === 'insert' ? [result] : JSON.parse(result);
+      const docs = ids
+        .map((id) => JSON.parse(db.findOne(args.collection, JSON.stringify({ _id: id }))))
+        .filter((d) => d !== null);
+      if (docs.length === 0) return;
+      payload = { kind: 'upsert', collection: args.collection, docsJson: JSON.stringify(docs) };
+    } else {
+      payload = {
+        kind: 'replay',
+        op,
+        collection: args.collection,
+        filterJson: args.filterJson,
+        updateJson: args.updateJson,
+      };
+    }
+    // Held until the primary acknowledges, so `promoteToPrimary` can replay
+    // whatever never landed. Dropping the oldest keeps a tab that has been
+    // running without a primary from growing this without bound.
+    const seq = ++writeSeq;
+    if (unackedWrites.size >= MAX_UNACKED) {
+      const oldest = unackedWrites.keys().next().value;
+      unackedWrites.delete(oldest);
+      warn('Unacknowledged write buffer is full — the oldest forwarded write was dropped');
+    }
+    unackedWrites.set(seq, payload);
+    broadcastChannel.postMessage({ type: 'taladb:tab-write', origin: TAB_ID, seq, ...payload });
+  } catch (err) {
+    // A failed forward must not fail the caller's write — it already committed
+    // locally. Surface it loudly, because the write is now at risk of loss.
+    warn('Failed to forward write to the primary tab — it may not be persisted:', err);
+  }
+}
+
+/**
+ * Apply one forwarded write payload to the local (authoritative) database.
+ * Returns the number of documents affected.
+ */
+function applyForwardedWrite(payload) {
+  if (payload.kind === 'upsert') {
+    return JSON.parse(db.upsertManyWithIds(payload.collection, payload.docsJson)).length;
+  }
+  if (payload.kind !== 'replay') return 0;
+  switch (payload.op) {
+    case 'updateOne':
+      return db.updateOne(payload.collection, payload.filterJson, payload.updateJson) ? 1 : 0;
+    case 'updateMany':
+      return db.updateMany(payload.collection, payload.filterJson, payload.updateJson);
+    case 'deleteOne':
+      return db.deleteOne(payload.collection, payload.filterJson) ? 1 : 0;
+    case 'deleteMany':
+      return db.deleteMany(payload.collection, payload.filterJson);
+    default:
+      warn('Unknown forwarded write op:', payload.op);
+      return 0;
+  }
+}
+
+/**
  * Notify sibling tabs of a write and schedule IDB persistence.
  * Must be called after every mutating op.
  */
-function onWriteCommitted() {
+function onWriteCommitted(op, args, result) {
   broadcastChannel?.postMessage('taladb:changed');
+  if (op) forwardWriteToPrimary(op, args, result);
   // Debounced IDB flush — keeps other tabs' fallback instances in sync via
   // BroadcastChannel + snapshotDirty reload without writing to IDB on every op.
   if (snapshotWriter) scheduleSnapshot();
@@ -361,6 +522,9 @@ async function dispatch(op, args) {
     try {
       const fresh = await idbLoadSnapshot(activeDbName);
       if (fresh) {
+        // The new instance's generation counter starts from zero; fold the old
+        // one's into the offsets so live-query pollers still see a change.
+        carryGenerationsForward();
         db = activeConfigJson
           ? WorkerDB.openWithConfigAndSnapshot(fresh, activeConfigJson)
           : WorkerDB.openWithSnapshot(fresh);
@@ -392,13 +556,13 @@ async function dispatch(op, args) {
   switch (op) {
     case 'insert': {
       const result = db.insert(args.collection, args.docJson);
-      onWriteCommitted();
+      onWriteCommitted('insert', args, result);
       return result;
     }
 
     case 'insertMany': {
       const result = db.insertMany(args.collection, args.docsJson);
-      onWriteCommitted();
+      onWriteCommitted('insertMany', args, result);
       return result;
     }
 
@@ -410,25 +574,25 @@ async function dispatch(op, args) {
 
     case 'updateOne': {
       const result = db.updateOne(args.collection, args.filterJson, args.updateJson);
-      onWriteCommitted();
+      onWriteCommitted('updateOne', args, result);
       return result;
     }
 
     case 'updateMany': {
       const result = db.updateMany(args.collection, args.filterJson, args.updateJson);
-      onWriteCommitted();
+      onWriteCommitted('updateMany', args, result);
       return result;
     }
 
     case 'deleteOne': {
       const result = db.deleteOne(args.collection, args.filterJson);
-      onWriteCommitted();
+      onWriteCommitted('deleteOne', args, result);
       return result;
     }
 
     case 'deleteMany': {
       const result = db.deleteMany(args.collection, args.filterJson);
-      onWriteCommitted();
+      onWriteCommitted('deleteMany', args, result);
       return result;
     }
 
@@ -436,8 +600,11 @@ async function dispatch(op, args) {
       return db.count(args.collection, args.filterJson ?? 'null');
 
     // Cheap change-detection for subscribe(): one integer, no query.
-    case 'writeGeneration':
-      return db.writeGeneration(args.collection);
+    case 'writeGeneration': {
+      const raw = db.writeGeneration(args.collection);
+      generationRaw.set(args.collection, raw);
+      return (generationBase.get(args.collection) ?? 0) + raw;
+    }
 
     case 'aggregate':
       return db.aggregate(args.collection, args.pipelineJson ?? '[]');
@@ -551,8 +718,13 @@ async function dispatch(op, args) {
       if (releaseLock) { releaseLock(); releaseLock = null; }
       broadcastChannel?.close();
       broadcastChannel = null;
+      // Cleared before `db`: a promotion waiting on the lock reads these to
+      // decide whether this worker still wants the file.
       idbFallback = false;
       snapshotWriter = false;
+      unackedWrites.clear();
+      generationBase.clear();
+      generationRaw.clear();
       db = null;
       return null;
 
@@ -593,6 +765,81 @@ async function loadOrCreateSalt(root, saltFileName) {
 // ---------------------------------------------------------------------------
 // Initialisation — load WASM, acquire lock, open OPFS file
 // ---------------------------------------------------------------------------
+
+/**
+ * Wait for the OPFS lock this tab lost at open, and take over when it frees.
+ *
+ * ## Why a tab has to be able to take over
+ *
+ * A tab that loses the lock runs an in-memory copy and forwards every write to
+ * the tab that owns the file. That arrangement has one failure mode, and it is
+ * total: when the owning tab goes away, the survivors keep accepting writes
+ * that nobody persists. Closing the last "real" tab silently turned the others
+ * into scratch memory.
+ *
+ * ## What happens to writes made while there was no primary
+ *
+ * The OPFS file is authoritative on promotion — this tab's in-memory copy is
+ * discarded rather than merged, because merging two divergent document sets has
+ * no correct answer here. What is *not* discarded is `unackedWrites`: writes
+ * the primary never acknowledged, which are therefore absent from the file.
+ * Those are replayed, in order, against the freshly-opened OPFS database. A
+ * write the old primary *did* apply was acknowledged and is not in the map, so
+ * nothing is applied twice — which matters for `$inc`, where a double apply is
+ * silently wrong rather than merely redundant.
+ */
+async function waitForPromotion(lockName, fileHandle, openWithOpfs) {
+  try {
+    await navigator.locks.request(lockName, async () => {
+      // A close() between losing the race and winning the lock means this
+      // worker is done — take the lock only to release it again.
+      if (!idbFallback || !db || !activeDbName) return;
+
+      let syncHandle;
+      try {
+        syncHandle = await fileHandle.createSyncAccessHandle();
+      } catch (e) {
+        warn('Promoted to OPFS owner but the sync handle could not be opened:', e);
+        return;
+      }
+
+      const pending = [...unackedWrites.entries()].sort((a, b) => a[0] - b[0]);
+      try {
+        // The instance swap resets the engine's generation counter.
+        carryGenerationsForward();
+        db = openWithOpfs(syncHandle);
+        idbFallback = false;
+        snapshotWriter = true;
+        snapshotDirty = false;
+        unackedWrites.clear();
+        let replayed = 0;
+        for (const [, payload] of pending) {
+          try {
+            replayed += applyForwardedWrite(payload);
+          } catch (err) {
+            warn('Failed to replay a write during promotion:', err);
+          }
+        }
+        log(
+          `Promoted to OPFS owner${replayed ? ` (replayed ${replayed} unacknowledged write(s))` : ''}`,
+        );
+        // Tell the other tabs to re-read: this tab's data is now the file's.
+        onWriteCommitted();
+      } catch (e) {
+        try { syncHandle.close(); } catch { /* best-effort */ }
+        warn('Promotion to OPFS owner failed — staying in fallback mode:', e);
+        return;
+      }
+
+      // Hold the lock for as long as this worker owns the file.
+      await new Promise((res) => { releaseLock = res; });
+      try { syncHandle.close(); } catch { /* best-effort */ }
+      db = null;
+    });
+  } catch (e) {
+    warn('Waiting for the OPFS lock failed:', e);
+  }
+}
 
 async function doInit(dbName, configJson, passphrase = null) {
   encrypted = typeof passphrase === 'string' && passphrase.length > 0;
@@ -641,6 +888,42 @@ async function doInit(dbName, configJson, passphrase = null) {
         resolve();
       } else if (e.data === 'taladb:snapshot-ready' && idbFallback) {
         snapshotDirty = true;
+      } else if (e.data?.type === 'taladb:tab-write-ack' && e.data.origin === TAB_ID) {
+        // The primary applied one of our forwarded writes: it is now somebody
+        // else's durable responsibility, so stop holding it for replay.
+        unackedWrites.delete(e.data.seq);
+      } else if (e.data?.type === 'taladb:tab-write' && db && snapshotWriter && !encrypted) {
+        // Apply a write forwarded by a tab that has no durable storage of its
+        // own. Guarded on `snapshotWriter` so only the tab that actually owns
+        // persistence applies it — otherwise several fallback tabs would each
+        // apply the same write to their private in-memory copies.
+        //
+        // `!encrypted`: encrypted databases are single-tab by construction, so
+        // there is no legitimate forwarded write. Accepting one would let any
+        // same-origin script inject documents without knowing the passphrase.
+        try {
+          const n = applyForwardedWrite(e.data);
+          // Acknowledged whatever the count — the write has been evaluated
+          // against authoritative data, and a filter that matched nothing here
+          // will not match anything on a replay either. Sent before the
+          // notification below so the originating tab can release it promptly.
+          if (e.data.origin !== undefined) {
+            broadcastChannel.postMessage({
+              type: 'taladb:tab-write-ack',
+              origin: e.data.origin,
+              seq: e.data.seq,
+            });
+          }
+          if (n > 0) {
+            log(`Applied ${n} forwarded write(s) from another tab`);
+            // No op/args: this write must not be forwarded onward. Notifying
+            // and snapshotting is the whole point — it is what lets the
+            // originating tab read its own write back.
+            onWriteCommitted();
+          }
+        } catch (err) {
+          warn('Failed to apply a forwarded write from another tab:', err);
+        }
       }
     };
     log('BroadcastChannel opened:', `taladb:${dbName}`);
@@ -779,6 +1062,12 @@ async function doInit(dbName, configJson, passphrase = null) {
         } else {
           log('No IDB snapshot yet — starting with empty in-memory database');
         }
+        // Queue for the lock in the background. The holder releases it when its
+        // tab closes or calls db.close(), and this tab is then promoted to the
+        // OPFS file. Without this a tab that lost the race stayed transient for
+        // its whole life: once the primary went away, every write it made had
+        // nowhere to be persisted and was silently discarded.
+        void waitForPromotion(lockName, fileHandle, openWithOpfs);
         resolve();
         return; // Do not hold the lock; returning releases it back to the queue.
       }

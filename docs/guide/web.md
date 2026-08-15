@@ -294,15 +294,26 @@ Tab A (primary, OPFS)          Tab B (secondary, in-memory)
       │─── taladb:changed ────────────────→│  Tab B reloads snapshot
 ```
 
-::: warning Secondary-tab writes are local to that tab (0.11.0)
-A secondary tab's writes go to its own in-memory database and its own IndexedDB
-snapshot — they do **not** reach the primary tab's OPFS file. Merging them rode
-on the Last-Write-Wins changeset machinery that 0.11.0 removed along with sync.
+Writes made on a secondary tab are forwarded to the primary tab over the same
+BroadcastChannel and applied there, so the OPFS file stays authoritative — no
+extra code required.
 
-If your app writes from more than one tab, route mutations through a single tab
-(a leader elected with the Web Locks API), or treat each tab's data as its own.
-Reads and live queries are unaffected: `taladb:changed` still crosses tabs.
-:::
+```
+Tab A (primary, OPFS)          Tab B (secondary, in-memory)
+      │                                    │
+      │←── taladb:tab-write ───────────────┤  forwarded write
+      │    apply + write to OPFS           │
+      │─── taladb:changed ────────────────→│  Tab B reloads snapshot
+```
+
+Inserts are forwarded as whole documents carrying their `_id`s, so an id your
+code already holds stays valid after the hand-off. Filter-based updates and
+deletes forward the filter and update instead, and the primary re-evaluates them
+against authoritative data. Concurrent edits resolve by arrival order at the
+primary — two tabs on one device share a clock, so there is no skew to arbitrate.
+
+For bulk write workloads across many tabs, prefer routing mutations through the
+primary tab. Forwarding adds one BroadcastChannel round-trip per write.
 
 ## Change webhook
 
