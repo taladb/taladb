@@ -61,6 +61,152 @@ export default defineConfig({
 })
 ```
 
+## Next.js setup
+
+Turbopack — the default for `next dev` and `next build` since Next 16 — needs no
+configuration at all from **0.11.1** onward. Install, mount the provider on the
+client, and you are done. The rest of this section is the things that are easy
+to get wrong, in the order they bite.
+
+### The provider is client-only, and so is everything under it
+
+`TalaDBProvider` opens the database in an effect, and effects do not run on the
+server. It renders its `fallback` during SSR, which means **nothing beneath it
+appears in the server-rendered HTML**, and there is no `dehydrate` /
+`HydrationBoundary` equivalent to prefetch through.
+
+So do not wrap `app/layout.tsx`, and do not wrap a page whose content has to be
+indexed. Mount it around the smallest subtree that reads from TalaDB:
+
+```tsx
+// app/providers/taladb.tsx
+'use client'
+
+import { TalaDBProvider } from '@taladb/react'
+
+export function LocalData({ children }: { children: React.ReactNode }) {
+  return (
+    <TalaDBProvider name="myapp.db" collections={{ books: {} }} fallback={null}>
+      {children}
+    </TalaDBProvider>
+  )
+}
+```
+
+To keep a page server-rendered *and* leave a local copy behind, render the
+server's data as HTML and hydrate it into TalaDB from a client component that
+renders `null`. The page stays indexable; the collection ends up warm.
+
+### Content-Security-Policy
+
+The engine is WebAssembly running inside a Worker, so a CSP needs both of these
+or the database never opens:
+
+```
+script-src 'self' 'wasm-unsafe-eval';
+worker-src 'self' blob:;
+```
+
+### Webpack, if you opt out of Turbopack
+
+`next dev --webpack` / `next build --webpack` needs help that Turbopack does not.
+Webpack only follows the inline `new Worker(new URL(…, import.meta.url))` form,
+and the browser build spawns its worker from a variable — so it copies the worker
+out verbatim without ever bundling the worker's own
+`import('../pkg/taladb_web.js')`. At runtime that relative URL resolves to
+`/_next/static/pkg/taladb_web.js`, which nothing has emitted. The symptom is a
+white screen on a cold start.
+
+Emit both files there:
+
+```ts
+// next.config.ts
+webpack(config, { isServer }) {
+  if (isServer) return config
+
+  config.experiments = { ...config.experiments, asyncWebAssembly: true }
+  config.module.rules.push({
+    test: /\.wasm$/,
+    type: 'asset/resource',
+    generator: { filename: 'static/wasm/[name][ext]' },
+  })
+
+  const path = require('path')
+  const fs = require('fs')
+  const pkgDir = path.dirname(require.resolve('@taladb/web/pkg/taladb_web.js'))
+
+  config.plugins.push({
+    apply(compiler) {
+      const { Compilation, sources } = compiler.webpack
+      compiler.hooks.thisCompilation.tap('EmitTaladbPkg', (compilation) => {
+        compilation.hooks.processAssets.tap(
+          { name: 'EmitTaladbPkg', stage: Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL },
+          () => {
+            for (const file of ['taladb_web.js', 'taladb_web_bg.wasm']) {
+              if (compilation.getAsset(`static/pkg/${file}`)) continue
+              compilation.emitAsset(
+                `static/pkg/${file}`,
+                new sources.RawSource(fs.readFileSync(path.join(pkgDir, file))),
+              )
+            }
+          },
+        )
+      })
+    },
+  })
+
+  return config
+}
+```
+
+### `transpilePackages`
+
+Not required, but harmless and occasionally useful if another tool in your chain
+chokes on the published ESM:
+
+```ts
+transpilePackages: ['taladb', '@taladb/web', '@taladb/react']
+```
+
+### Weight
+
+The engine is roughly **570 kB gzipped** of WebAssembly, fetched when the
+database first opens. That is a real cost on a landing page, and a JS-only
+bundle budget will not see it. On a page where TalaDB is not needed for the
+first paint, mount the provider after the page is interactive:
+
+```tsx
+const [ready, setReady] = useState(false)
+useEffect(() => {
+  const id = requestIdleCallback(() => setReady(true), { timeout: 5000 })
+  return () => cancelIdleCallback(id)
+}, [])
+if (!ready) return null
+```
+
+### React StrictMode
+
+Safe from **0.11.1**. Handles are shared and reference-counted per database
+name, so StrictMode's double-mount opens one instance rather than two. On
+0.11.0 and earlier it opened two, the second lost the OPFS lock, fell back to an
+IndexedDB snapshot, and silently dropped its writes — if you are pinned there,
+set `reactStrictMode: false`.
+
+### Linking a local checkout
+
+Two settings, and Next requires them to agree — it warns and then silently
+prefers `outputFileTracingRoot`, so changing only one looks applied but is not:
+
+```ts
+outputFileTracingRoot: path.join(__dirname, '../..'),
+turbopack: { root: path.join(__dirname, '../..') },
+```
+
+Both must be an ancestor of the linked checkout, or Turbopack reports
+`Can't resolve 'taladb'`. Note also that `link:` brings the checkout's own
+`node_modules` along — a second copy of `@types/react` there will clash with
+yours. A `pnpm pack` tarball installed by `file:` avoids both problems.
+
 ## Quick start
 
 ```ts

@@ -431,7 +431,7 @@ export function useQuery(options: AnyQueryOptions): QueryResult<unknown> {
         documents: documentsRef.current as ((raw: unknown) => Doc[]) | undefined,
       })
 
-      await hydrate(collection, docs as unknown as Document[], fetchedAt)
+      await hydrate(collection, docs as unknown as Document[], fetchedAt, name)
       const nextIds = docs.map((doc) => doc._id as string)
       // The response is kept only when `assemble` will read it back — it
       // duplicates every document it carries, so storing it otherwise is

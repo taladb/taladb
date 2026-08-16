@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "React hooks for TalaDB — useFind, useFindOne, and useCollection for React and React Native",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -57,7 +57,7 @@
   },
   "peerDependencies": {
     "react": ">=18.0.0",
-    "taladb": "^0.11.0"
+    "taladb": "^0.11.1"
   },
   "devDependencies": {
     "@testing-library/react": "^16.0.0",

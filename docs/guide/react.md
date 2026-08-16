@@ -58,7 +58,7 @@ root.render(
 
 > **React Native**: call `TalaDBModule.initialize('myapp.db')` before `openDB`. See the [React Native guide](/guide/react-native) for setup details.
 >
-> **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary.
+> **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary. Note that nothing beneath the provider is server-rendered — it shows `fallback` until the database opens on the client — so do not wrap the root layout or a page that has to be indexed. See [Next.js setup](/guide/web#next-js-setup) for provider placement, CSP, and bundler configuration.
 
 ### Registering collection options
 

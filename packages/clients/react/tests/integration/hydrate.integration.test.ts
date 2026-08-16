@@ -162,6 +162,100 @@ describe.skipIf(db === null)('hydrate', () => {
     await expect(hydrate(todos, [{ title: 'no id' } as Todo], 1)).rejects.toThrow(/_id/)
   })
 
+  /**
+   * The failure every migration from TanStack Query hits first: a REST endpoint
+   * returns `id: "265"`, it is passed straight through, and the engine refuses
+   * it. Caught here rather than in the engine so the message can say where the
+   * value came from and which call to make instead.
+   */
+  it('rejects a natural key and points at deriveDocId', async () => {
+    const error = await hydrate(
+      todos,
+      [{ _id: '265', title: 'The Book of Dragons' } as Todo],
+      1,
+      'todos',
+    ).catch((e: Error) => e)
+
+    expect(error.message).toContain('not a ULID')
+    expect(error.message).toContain('deriveDocId')
+    // Names the offending value and the collection, so the fix is mechanical.
+    expect(error.message).toContain('"265"')
+    expect(error.message).toContain('todos')
+  })
+
+  it('rejects a UUID, which is a string but still not storable', async () => {
+    await expect(
+      hydrate(todos, [{ _id: crypto.randomUUID(), title: 'x' } as Todo], 1),
+    ).rejects.toThrow(/not a ULID/)
+  })
+
+  it('rejects a non-string id', async () => {
+    await expect(
+      hydrate(todos, [{ _id: 265, title: 'x' } as unknown as Todo], 1),
+    ).rejects.toThrow(/must be a string/)
+  })
+
+  /**
+   * A payload naming the same row twice is ordinary — shelves merged for one
+   * write, overlapping pages, a feed joined across categories. Before this was
+   * collapsed, both copies reached `insertMany` and the whole hydration failed
+   * with `duplicate document id`, losing every other document in the call.
+   */
+  it('collapses a document repeated within one response', async () => {
+    const result = await hydrate(
+      todos,
+      [
+        { _id: id('n1'), title: 'one' },
+        { _id: id('n2'), title: 'two' },
+        { _id: id('n1'), title: 'one, again' },
+      ],
+      1000,
+    )
+
+    expect(result).toEqual({ inserted: 2, updated: 0, skipped: 0 })
+    expect(await todos.count()).toBe(2)
+    // Last copy wins.
+    expect((await todos.findOne({ _id: id('n1') }))?.title).toBe('one, again')
+  })
+
+  it('collapses a repeat against a document already stored', async () => {
+    await todos.insert(stampSynced({ _id: id('n1'), title: 'old' }, 1) as never)
+
+    const result = await hydrate(
+      todos,
+      [
+        { _id: id('n1'), title: 'first' },
+        { _id: id('n1'), title: 'second' },
+      ],
+      2000,
+    )
+
+    expect(result).toEqual({ inserted: 0, updated: 1, skipped: 0 })
+    expect((await todos.findOne({ _id: id('n1') }))?.title).toBe('second')
+  })
+
+  /**
+   * Two overlapping hydrations used to both read "absent" and both insert, and
+   * the loser failed the entire response with `duplicate document id`. A
+   * StrictMode effect firing twice is enough to cause it.
+   */
+  it('serialises overlapping hydrations of the same collection', async () => {
+    const response = [
+      { _id: id('n1'), title: 'one' },
+      { _id: id('n2'), title: 'two' },
+    ]
+
+    const [first, second] = await Promise.all([
+      hydrate(todos, response, 1000),
+      hydrate(todos, response, 1000),
+    ])
+
+    expect(first).toEqual({ inserted: 2, updated: 0, skipped: 0 })
+    // The second call sees the first's writes rather than colliding with them.
+    expect(second).toEqual({ inserted: 0, updated: 2, skipped: 0 })
+    expect(await todos.count()).toBe(2)
+  })
+
   it('does nothing on an empty response', async () => {
     expect(await hydrate(todos, [], 1)).toEqual({ inserted: 0, updated: 0, skipped: 0 })
   })

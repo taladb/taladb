@@ -75,6 +75,34 @@ function encodeUlid(value: bigint): string {
  * sort. Documents written via `insert`/`insertMany` are unaffected — they still
  * get monotonic ULIDs.
  */
+/**
+ * Crockford base32, the ULID alphabet — `I`, `L`, `O` and `U` are excluded.
+ *
+ * Deliberately case-insensitive and deliberately *not* range-checked on the
+ * leading character, because that is exactly what the Rust decoder does: it
+ * lower-cases through a lookup table and shifts 26 × 5 = 130 bits into a `u128`,
+ * letting the top two bits fall off rather than reporting an overflow. A
+ * stricter check here would reject ids the engine stores happily, which is a
+ * worse failure than the one this is here to prevent.
+ */
+const DOC_ID_PATTERN = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/
+
+/**
+ * Whether `value` is usable as a document `_id`.
+ *
+ * Ids are 16 raw bytes on disk, so only a ULID qualifies — a natural key like
+ * `'sku-1'`, `'265'` or a UUID is rejected on insert. Use this to check a value
+ * before writing it, and {@link deriveDocId} to turn a natural key into one.
+ *
+ * @example
+ * isDocId(deriveDocId('products', 'sku-123'))  // true
+ * isDocId('sku-123')                           // false
+ * isDocId(crypto.randomUUID())                 // false — a UUID is not a ULID
+ */
+export function isDocId(value: unknown): value is string {
+  return typeof value === 'string' && DOC_ID_PATTERN.test(value)
+}
+
 export function deriveDocId(collection: string, key: string): string {
   // A 0x00 separator keeps the preimage unambiguous: without it, ('ab', 'c') and
   // ('a', 'bc') would hash identically.

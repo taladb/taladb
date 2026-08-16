@@ -17,9 +17,10 @@ import { TodoList } from './fixtures/TodoList'
 import { TodoDetail } from './fixtures/TodoDetail'
 import { TodoPage } from './fixtures/TodoPage'
 import type { Todo } from './fixtures/todo'
+import { id as docId } from '../helpers/docId'
 
 const todo = (id: string, title: string, dueAt: string | null = null): Todo => ({
-  _id: id,
+  _id: docId(id),
   title,
   done: false,
   dueAt,

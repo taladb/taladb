@@ -18,9 +18,10 @@ import { CreateTodo } from './fixtures/CreateTodo'
 import { ToggleTodo } from './fixtures/ToggleTodo'
 import { CheckoutOrder } from './fixtures/CheckoutOrder'
 import type { Order, Todo } from './fixtures/todo'
+import { id as docId } from '../helpers/docId'
 
 const todo = (id: string, title: string, done = false): Todo => ({
-  _id: id,
+  _id: docId(id),
   title,
   done,
   dueAt: null,
@@ -84,8 +85,10 @@ describe('ToggleTodo — an update with per-call callbacks', () => {
 
     fireEvent.click(screen.getByRole('checkbox'))
 
-    await waitFor(() => expect(onToggled).toHaveBeenCalledWith('a'))
-    await waitFor(() => expect(screen.getByTestId('status-a').textContent).toBe('success'))
+    await waitFor(() => expect(onToggled).toHaveBeenCalledWith(docId('a')))
+    await waitFor(() =>
+      expect(screen.getByTestId(`status-${docId('a')}`).textContent).toBe('success'),
+    )
     // An update sends only what changed; the rest of the document survives.
     const stored = docsIn('todos')[0]
     expect(stored.done).toBe(true)

@@ -5,7 +5,83 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - 2026-08-16
+## [0.11.1] - 2026-08-16
+
+Fixes from the first real application migration onto `@taladb/react/query`. All
+three problems below cost debugging time in an app where the layer otherwise
+worked, and none of them failed at compile time.
+
+### Fixed
+
+- **`@taladb/node` no longer breaks web builds.** The adapter is selected at
+  runtime, so the browser bundle contains an `import('@taladb/node')` on a
+  branch it never takes. Bundlers resolve dynamic specifiers statically, and
+  that optional peer dependency is not installed in a web app — Next.js failed
+  with `Module not found: Can't resolve '@taladb/node'` during Client Component
+  SSR, which the `browser` export condition does not cover because that bundle
+  renders in Node. The specifier now carries `webpackIgnore` and
+  `turbopackIgnore` comments, so webpack, Turbopack, Vite and Metro all resolve
+  it without an alias. Node is unaffected.
+
+- **`TalaDBProvider` no longer loses writes under React StrictMode.** `openDB`
+  is async, so a StrictMode mount-unmount-mount left two opens of the same
+  database in flight at once. Only one can hold the OPFS lock; the other
+  concluded it was a second tab, fell back to an IndexedDB snapshot, and
+  forwarded its writes to a primary that the teardown then closed — so the
+  writes vanished, with no error and nothing to see but missing data. Next.js
+  enables StrictMode in development by default, which made this the common case
+  rather than an edge one. Handles are now shared and reference-counted per
+  `(name, options)`, with the close deferred so a remount in the same tick
+  reclaims the live handle. Two providers naming one database now share it too,
+  which is what a client-side navigation does between pages.
+
+- **Concurrent hydrations of one collection no longer collide.** `hydrate`
+  reads which ids exist and then writes, with no transaction spanning the two,
+  so two overlapping calls both read "absent", both inserted, and the loser
+  failed the whole response with `duplicate document id`. Calls are now
+  serialised per collection handle.
+
+- **Hydration no longer fails on a document repeated inside one response.**
+  `hydrate` de-duplicated against what was already stored but not within the
+  incoming array, so two copies of a row both reached `insertMany` and the whole
+  call died with `duplicate document id` — taking every other document in that
+  response with it. Repeats are ordinary: shelves merged for one write,
+  overlapping pages, a feed joined across categories. Copies now collapse by
+  `_id`, last one winning, at the position the id first appeared.
+
+- **Hydration reports an unusable `_id` properly.** `hydrate` validated only
+  that `_id` was a non-empty string, then let the engine reject it with a
+  message written for someone inserting a document by hand. Passing a natural
+  key straight through from a REST endpoint — `"265"`, a slug, a UUID — is the
+  single most likely first mistake in a migration, so it now fails in the query
+  layer with the collection, the offending value, and the `deriveDocId` call to
+  make instead.
+
+### Added
+
+- **`isDocId(value)`** — whether a value is storable as an `_id`. Mirrors the
+  engine's decoder exactly, including its case-insensitivity, so it never
+  rejects an id the database would accept.
+- **`resetSharedDatabases()`** — drops every shared handle. For test suites,
+  which would otherwise inherit the previous case's instance.
+
+### Documentation
+
+- The query and migration guides said `_id` need only be **a string**. Both now
+  state the ULID requirement up front and show the `deriveDocId` mapping.
+- The query guide claimed the provider "works in Next.js without touching
+  server rendering". The opposite is true: nothing beneath `TalaDBProvider` is
+  server-rendered, and there is no `dehydrate`/`HydrationBoundary` equivalent.
+  Both consequences are now documented, along with the advice not to wrap a
+  root layout or an SEO-critical page.
+
+### Internal
+
+- Unit and parity fixtures used ids like `'a'` against mock collections that
+  enforced nothing, so every test passed with values the real engine refuses.
+  Fixtures now derive real ULIDs — the gap that let the `_id` bug ship.
+
+## [0.11.0] - 2026-08-15
 
 0.11.0 narrows TalaDB to its core: an embedded document + vector database, and
 the work to harden it. Dropping replication is the first step — it frees the

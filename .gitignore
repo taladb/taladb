@@ -24,3 +24,4 @@ docs/.vitepress/cache/
 # Working plans. Personal notes-to-self, not documentation — they go stale and
 # contradict docs/ the moment the work lands.
 PLAN-*.md
+.gstack/

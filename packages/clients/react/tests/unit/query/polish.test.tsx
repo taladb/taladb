@@ -18,13 +18,14 @@ import { resetInflight } from '../../../src/query/inflight'
 import { readQueryRecord } from '../../../src/query/queries'
 import { openQueryCollection } from '../../../src/query/queries'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Todo extends Document {
   _id?: string
   title: string
 }
 
-const todo = (id: string, title: string): Todo => ({ _id: id, title })
+const todo = (label: string, title: string): Todo => ({ _id: id(label), title })
 
 function setup() {
   const { db, docsIn } = createFakeDB()

@@ -19,6 +19,7 @@ import { TalaDBProvider } from '../../../src/context'
 import { QueryProvider } from '../../../src/query/context'
 import { useQuery, keepPreviousData } from '../../../src/query/useQuery'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Todo extends Document {
   _id?: string
@@ -35,7 +36,7 @@ function setup() {
   return { wrapper, docsIn }
 }
 
-const todo = (id: string, title: string): Todo => ({ _id: id, title })
+const todo = (label: string, title: string): Todo => ({ _id: id(label), title })
 
 describe('useQuery', () => {
   it('fetches on a cold key and returns documents in server order', async () => {
@@ -303,7 +304,7 @@ describe('useQuery', () => {
     )
     await waitFor(() => expect(result.current.status).toBe('success'))
 
-    expect(result.current.data).toMatchObject({ _id: 'a', title: 'just one' })
+    expect(result.current.data).toMatchObject({ _id: id('a'), title: 'just one' })
   })
 
   it('restores the single-document shape from the record without refetching', async () => {

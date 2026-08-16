@@ -54,7 +54,32 @@ unchanged:
 This is the one that cannot be papered over. TanStack's `data` *is* whatever
 `queryFn` returned. Here `data` is resolved from your local collection — that is
 what makes it live, offline-readable, and searchable — so the response has to
-reduce to documents with a string `_id`.
+reduce to documents with an `_id`.
+
+**`_id` must be a ULID**, and your server's id almost certainly is not one. Ids
+are 16 raw bytes on disk and every index key ends with one, so `"265"`, a slug,
+or a UUID is rejected outright. Fold your natural key into a ULID in `queryFn`:
+
+```ts
+import { deriveDocId } from 'taladb'
+
+useQuery({
+  queryKey: ['books', shelf],
+  queryFn: async () => {
+    const rows = await api.get(`/books?shelf=${shelf}`)
+    return rows.map((row) => ({ ...row, _id: deriveDocId('books', String(row.id)) }))
+  },
+})
+```
+
+`deriveDocId` is a hash, so the same `(collection, key)` always maps to the same
+id. That is what makes hydration idempotent: refetching a page updates the rows
+it already stored instead of inserting a second copy. Keep passing your original
+`id` through as an ordinary field — nothing stops you reading or filtering on it.
+
+Use `isDocId(value)` if you need to check one yourself. Note the ordering
+caveat: a derived id's ULID timestamp prefix is a hash, not a clock, so reads
+over a hydrated collection need an explicit `$sort`.
 
 Three shapes are recognised without configuration:
 
@@ -166,7 +191,9 @@ The default is `Infinity`, because that record is what makes a warm start warm.
   and a memory one. A cold *and* disabled query stays `pending` with
   `data: undefined`, as TanStack does.
 - **Your model types need no changes.** `interface Todo { _id: string }` works
-  as-is; there is no `extends Document` requirement on the public API.
+  as-is; there is no `extends Document` requirement on the public API. The type
+  is just `string` — that a stored `_id` must be a *ULID* is a runtime rule, not
+  one the compiler can check for you, which is why it is called out above.
 
 ## Mutations
 

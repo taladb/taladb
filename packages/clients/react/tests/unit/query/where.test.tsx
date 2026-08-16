@@ -18,6 +18,7 @@ import { QueryProvider } from '../../../src/query/context'
 import { useQuery } from '../../../src/query/useQuery'
 import { openQueryCollection, readQueryRecord } from '../../../src/query/queries'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Todo extends Document {
   _id?: string
@@ -25,7 +26,7 @@ interface Todo extends Document {
   done: boolean
 }
 
-const todo = (id: string, title: string, done = false): Todo => ({ _id: id, title, done })
+const todo = (label: string, title: string, done = false): Todo => ({ _id: id(label), title, done })
 
 function setup() {
   const { db, docsIn } = createFakeDB()
@@ -130,7 +131,7 @@ describe('where', () => {
     // indistinguishable from one the server deleted.
     const queries = await openQueryCollection(db)
     const record = await readQueryRecord(queries, 'todos', ['todos'])
-    expect(record?.ids).toEqual(['a', 'b', 'c'])
+    expect(record?.ids).toEqual([id('a'), id('b'), id('c')])
   })
 
   it('supports operators, not just equality', async () => {

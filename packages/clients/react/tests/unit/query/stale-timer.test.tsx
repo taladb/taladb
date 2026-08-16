@@ -22,6 +22,7 @@ import { useQuery, resetForgetTimers } from '../../../src/query/useQuery'
 import { resetWarnings } from '../../../src/query/dev'
 import { resetInflight } from '../../../src/query/inflight'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Todo extends Document {
   _id?: string
@@ -64,7 +65,7 @@ afterEach(() => {
 describe('isStale with an early-waking timer', () => {
   it('re-checks and still flips once the window has really passed', async () => {
     const { wrapper } = setup()
-    const queryFn = vi.fn().mockResolvedValue([{ _id: 'a', title: 'one' }])
+    const queryFn = vi.fn().mockResolvedValue([{ _id: id('a'), title: 'one' }])
 
     const { result } = renderHook(
       () =>

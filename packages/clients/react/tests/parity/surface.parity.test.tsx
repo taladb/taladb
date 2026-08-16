@@ -17,6 +17,7 @@ import { QueryProvider } from '../../src/query/context'
 import { useQuery } from '../../src/query/useQuery'
 import { createFakeDB } from '../helpers/fakeQueryDB'
 import type { Todo } from './fixtures/todo'
+import { id as docId } from '../helpers/docId'
 
 /**
  * Every field TanStack v5's `UseQueryResult` documents as stable.
@@ -63,7 +64,7 @@ function setup() {
 }
 
 const todo = (id: string, title: string): Todo => ({
-  _id: id,
+  _id: docId(id),
   title,
   done: false,
   dueAt: null,

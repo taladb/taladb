@@ -4,9 +4,10 @@
  * close on unmount (including a StrictMode-style cancelled open).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { StrictMode } from 'react'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
 import type { TalaDB } from 'taladb'
-import { TalaDBProvider, useTalaDB } from '../../src/context'
+import { TalaDBProvider, resetSharedDatabases, useTalaDB } from '../../src/context'
 
 const closeSpy = vi.fn()
 let resolveOpen: ((db: TalaDB) => void) | undefined
@@ -31,6 +32,9 @@ function Probe() {
 
 beforeEach(() => {
   cleanup()
+  // Handles are shared per database name across the module, so without this a
+  // case inherits the previous one's instance and never calls `openDB`.
+  resetSharedDatabases()
   closeSpy.mockClear()
   resolveOpen = undefined
   openCalls = []
@@ -75,7 +79,9 @@ describe('<TalaDBProvider name="...">', () => {
     await waitFor(() => expect(screen.getByTestId('ready')).toBeDefined())
 
     unmount()
-    expect(closeSpy).toHaveBeenCalledTimes(1)
+    // Deferred, not synchronous: the handle is shared, and a StrictMode
+    // remount lands in the same tick as the unmount.
+    await waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1))
   })
 
   it('closes an orphaned handle when the open resolves after unmount', async () => {
@@ -89,6 +95,69 @@ describe('<TalaDBProvider name="...">', () => {
 
     resolveOpen!(makeDb())
     await waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1))
+  })
+
+  /**
+   * The bug this guards: `openDB` is async, so a StrictMode mount-unmount-mount
+   * used to leave two opens of the same database in flight at once. Only one can
+   * hold the OPFS lock — the other concludes it is a second tab, falls back to an
+   * IndexedDB snapshot, and forwards its writes to a primary that the teardown
+   * then closes. The writes vanish, with no error and no trace beyond the data
+   * simply not being there. Next.js enables StrictMode in development by default,
+   * so this was the common case, not an edge one.
+   */
+  it('opens the database once under a StrictMode double-mount', async () => {
+    render(
+      <StrictMode>
+        <TalaDBProvider name="app.db">
+          <Probe />
+        </TalaDBProvider>
+      </StrictMode>,
+    )
+
+    await waitFor(() => expect(resolveOpen).toBeDefined())
+    resolveOpen!(makeDb())
+    await waitFor(() => expect(screen.getByTestId('ready')).toBeDefined())
+
+    expect(openCalls).toHaveLength(1)
+    // And the surviving mount still holds a live handle.
+    expect(closeSpy).not.toHaveBeenCalled()
+  })
+
+  it('shares one handle between two providers naming the same database', async () => {
+    render(
+      <>
+        <TalaDBProvider name="app.db">
+          <Probe />
+        </TalaDBProvider>
+        <TalaDBProvider name="app.db">
+          <Probe />
+        </TalaDBProvider>
+      </>,
+    )
+
+    await waitFor(() => expect(resolveOpen).toBeDefined())
+    resolveOpen!(makeDb())
+    await waitFor(() => expect(screen.getAllByTestId('ready')).toHaveLength(2))
+
+    expect(openCalls).toHaveLength(1)
+  })
+
+  it('opens separate databases for different names', async () => {
+    render(
+      <TalaDBProvider name="one.db">
+        <Probe />
+      </TalaDBProvider>,
+    )
+    await waitFor(() => expect(openCalls).toHaveLength(1))
+
+    render(
+      <TalaDBProvider name="two.db">
+        <Probe />
+      </TalaDBProvider>,
+    )
+    await waitFor(() => expect(openCalls).toHaveLength(2))
+    expect(openCalls.map((call) => call.name)).toEqual(['one.db', 'two.db'])
   })
 
   it('db-prop form still works unchanged', () => {

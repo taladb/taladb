@@ -73,8 +73,7 @@ version on every document.
 ## Step 3 — Wrap your app
 
 `QueryProvider` nests inside [`TalaDBProvider`](/guide/react#setup), so it
-inherits the client-only `openDB` lifecycle — which is also why this works in
-Next.js without touching server rendering.
+inherits the client-only `openDB` lifecycle.
 
 ```tsx
 import { TalaDBProvider } from '@taladb/react'
@@ -101,6 +100,45 @@ TanStack's client owns its cache; here the database owns it. Anything you passed
 to `new QueryClient({ defaultOptions })` goes on `<QueryProvider defaultOptions>`
 instead, in the same shape.
 :::
+
+::: warning Nothing inside this provider is server-rendered
+The database opens on the client, so `TalaDBProvider` renders `fallback`
+(default: `null`) until it is ready — during SSR and on the first client paint.
+Everything below it is therefore **absent from the server-rendered HTML**, and
+there is no `dehydrate`/`HydrationBoundary` equivalent to prefetch through.
+
+In a Next.js App Router app this has two consequences:
+
+- **Do not wrap the root layout**, or a marketing page whose content has to be
+  in the HTML. Mount the provider around the smallest subtree that actually
+  reads from TalaDB, and give `fallback` the same shape the server used to
+  render so the layout does not jump.
+- **Moving a query off a server-prefetched cache costs you that prefetch.**
+  Weigh it per route: an authenticated dashboard rarely cares, a public page
+  ranked by search engines does.
+:::
+
+::: warning Bundlers and the optional native adapter
+`taladb` picks its storage adapter at runtime, which means the browser build
+contains an `import('@taladb/node')` on a branch it never takes. `@taladb/node`
+is an optional peer dependency that a web app rightly does not install, and
+bundlers resolve dynamic specifiers statically — so some setups fail with
+`Module not found: Can't resolve '@taladb/node'`.
+
+Since **0.11.1** that specifier carries `webpackIgnore` and `turbopackIgnore`
+comments and the browser and React Native builds stub it outright, so webpack,
+Turbopack, Vite and Metro all resolve it without configuration. On an older
+version, alias it to an empty module — for Next.js:
+
+```ts
+// next.config.ts
+turbopack: { resolveAlias: { '@taladb/node': './stubs/empty.js' } }
+```
+:::
+
+For everything else a Next.js app needs — where to mount the provider, the CSP
+directives, the webpack fallback, StrictMode, and the size of the WASM payload —
+see [Next.js setup](/guide/web#next-js-setup).
 
 ## Step 4 — Read
 
@@ -170,7 +208,26 @@ freshness.
 ### What `queryFn` may return
 
 `data` is rebuilt from the collection, so the response has to reduce to
-documents with a string `_id`. Three shapes are recognised:
+documents with an `_id` — and that `_id` must be a **ULID**, which your server's
+id almost certainly is not. Derive one from whatever natural key the row already
+has:
+
+```ts
+import { deriveDocId } from 'taladb'
+
+queryFn: async () => {
+  const rows = await api.get('/todos')
+  return rows.map((row) => ({ ...row, _id: deriveDocId('todos', String(row.id)) }))
+}
+```
+
+The mapping is deterministic, so refetching updates the rows it already stored
+rather than inserting duplicates. Your original `id` stays on the document as an
+ordinary field. A hashed id has no chronological prefix, so reads over a
+hydrated collection need an explicit `$sort` — see the
+[ordering caveat](../api/collection.md#sorting-pagination-and-projection).
+
+Three shapes are recognised:
 
 | `queryFn` returns | `data` is |
 |---|---|

@@ -15,13 +15,14 @@ import { QueryProvider } from '../../../src/query/context'
 import { useQuery, resetForgetTimers } from '../../../src/query/useQuery'
 import { resetInflight, isShared, runShared, inflightKey } from '../../../src/query/inflight'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Todo extends Document {
   _id?: string
   title: string
 }
 
-const todo = (id: string, title: string): Todo => ({ _id: id, title })
+const todo = (label: string, title: string): Todo => ({ _id: id(label), title })
 
 afterEach(() => {
   cleanup()

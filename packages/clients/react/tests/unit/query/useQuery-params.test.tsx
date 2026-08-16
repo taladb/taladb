@@ -15,6 +15,7 @@ import { QueryProvider } from '../../../src/query/context'
 import { useQuery } from '../../../src/query/useQuery'
 import { defineParams, eq, gte, shape } from '../../../src/query/params'
 import { createFakeDB } from '../../helpers/fakeQueryDB'
+import { id } from '../../helpers/docId'
 
 interface Book extends Document {
   _id?: string
@@ -23,8 +24,8 @@ interface Book extends Document {
   price: number
 }
 
-const book = (id: string, title: string, category = 'book', price = 10): Book => ({
-  _id: id,
+const book = (label: string, title: string, category = 'book', price = 10): Book => ({
+  _id: id(label),
   title,
   category,
   price,
@@ -157,7 +158,7 @@ describe('params', () => {
     )
     await waitFor(() => expect(result.current.data).toHaveLength(2))
 
-    await db.collection<Book>('books').updateOne({ _id: 'b' }, { $set: { category: 'stationery' } })
+    await db.collection<Book>('books').updateOne({ _id: id('b') }, { $set: { category: 'stationery' } })
 
     // This is the reason to translate parameters at all. Against the raw id
     // list the document would linger until a refetch, because membership was
