@@ -207,7 +207,7 @@ jobs:
   # Build CLI binary (linux / macos / windows)
   # ---------------------------------------------------------------------------
   build-cli:
-    name: Build — CLI (${{ matrix.os }})
+    name: Build — CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: [rust-check, ts-check]
 
@@ -220,21 +220,29 @@ jobs:
         # which release is current.
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             artifact: taladb-x86_64-unknown-linux-gnu
             bin: taladb
           - os: macos-latest
+            target: aarch64-apple-darwin
             artifact: taladb-aarch64-apple-darwin
             bin: taladb
-          - os: macos-13 # Intel runner; macos-latest is Apple silicon
+          # GitHub retired the Intel `macos-13` runners, so the x86_64 slice is
+          # cross-compiled from the Apple-silicon runner instead.
+          - os: macos-latest
+            target: x86_64-apple-darwin
             artifact: taladb-x86_64-apple-darwin
             bin: taladb
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
             artifact: taladb-x86_64-pc-windows-msvc
             bin: taladb.exe
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: actions/cache@v4
         with:
@@ -242,23 +250,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-cli-rel-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-cli-rel-
+          key: ${{ matrix.target }}-cargo-cli-rel-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.target }}-cargo-cli-rel-
 
       - name: Build CLI
-        run: cargo build -p taladb-cli --release
+        run: cargo build -p taladb-cli --release --target ${{ matrix.target }}
 
       - name: Compress binary (unix)
         if: runner.os != 'Windows'
         run: |
           tar -czf ${{ matrix.artifact }}.tar.gz \
-            -C target/release ${{ matrix.bin }}
+            -C target/${{ matrix.target }}/release ${{ matrix.bin }}
 
       - name: Compress binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/release/${{ matrix.bin }} `
+          Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.bin }} `
             -DestinationPath ${{ matrix.artifact }}.zip
 
       - uses: actions/upload-artifact@v4
