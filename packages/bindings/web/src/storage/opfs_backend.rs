@@ -7,9 +7,18 @@
 //!
 //! Safety
 //! ------
-//! WASM is single-threaded. `FileSystemSyncAccessHandle` (a JS object) is not
-//! `Send` by Rust's type system, but since there is exactly one thread in the
-//! WASM runtime, the `unsafe impl Send + Sync` below is sound.
+//! `FileSystemSyncAccessHandle` is a JS object and is not `Send`, and this type
+//! also holds a `RefCell`, whose borrow counter is not atomic. Both are fine on
+//! wasm32 without threads, where there is exactly one thread and no two borrows
+//! can overlap — so `unsafe impl Send + Sync` below is sound *there*.
+//!
+//! That is a claim about the target, not about the code, so it is enforced by the
+//! target: the impls are gated on `target_arch = "wasm32"` and
+//! `not(target_feature = "atomics")`, and enabling wasm threads is a
+//! `compile_error!` rather than a silent race. The gate is what keeps the
+//! justification honest — it used to be a comment, which meant building this
+//! module for any other target, or for wasm-with-threads, would have compiled a
+//! `Sync` impl over a non-atomic `RefCell`.
 
 use std::cell::RefCell;
 use std::io;
@@ -52,8 +61,23 @@ impl std::fmt::Debug for OpfsBackend {
     }
 }
 
-// WASM is single-threaded — this is safe.
+// If wasm threads are ever enabled, the single-thread argument below stops
+// holding and this module needs real synchronisation around `scratch`. Fail
+// loudly here rather than let the reader hunt a missing-trait error.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+compile_error!(
+    "OpfsBackend's Send/Sync impls assume a single-threaded wasm runtime, which      `target_feature = \"atomics\"` breaks: `scratch` is a RefCell with a      non-atomic borrow counter, and `FileSystemSyncAccessHandle` is not Send.      Replace the RefCell with a real lock and re-justify both impls before      enabling wasm threads."
+);
+
+// SAFETY: on wasm32 without the `atomics` target feature the runtime has exactly
+// one thread, so no two references to an `OpfsBackend` can be used concurrently:
+// the JS handle is never touched from another thread, and `scratch.borrow_mut()`
+// can never race. Both conditions are enforced by the `cfg` rather than assumed
+// — see the module-level Safety section.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 unsafe impl Send for OpfsBackend {}
+// SAFETY: as above.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 unsafe impl Sync for OpfsBackend {}
 
 #[allow(dead_code)]
@@ -99,15 +123,28 @@ impl OpfsBackend {
     }
 
     fn js_read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
-        // Grow the scratch buffer only when a read outgrows it; steady state
-        // reuses the same JS allocation for every page.
-        let mut scratch = self.scratch.borrow_mut();
-        if (scratch.length() as usize) < len {
-            *scratch = Uint8Array::new_with_length(len as u32);
-        }
-        // `read` fills from index 0, so a longer scratch buffer would report a
-        // read longer than requested — subarray keeps the length exact.
-        let view = scratch.subarray(0, len as u32);
+        // `Uint8Array` lengths are `u32`. On wasm32 `usize` is 32 bits so this is
+        // lossless, but the struct also compiles for the host, where it is not.
+        let len_u32 =
+            u32::try_from(len).map_err(|_| io_err("opfs read: request longer than u32::MAX"))?;
+
+        // The borrow is scoped to growing the buffer and taking the view, and
+        // released before the JS call below. `subarray` hands back its own
+        // `Uint8Array` handle rather than borrowing from `scratch`, so nothing
+        // needs the guard afterwards — and holding a `RefCell` borrow across a
+        // call out into JS is how a re-entrant caller (a polyfilled OPFS handle
+        // that calls back into the module) turns into a `BorrowMutError` panic.
+        let view = {
+            // Grow the scratch buffer only when a read outgrows it; steady state
+            // reuses the same JS allocation for every page.
+            let mut scratch = self.scratch.borrow_mut();
+            if scratch.length() < len_u32 {
+                *scratch = Uint8Array::new_with_length(len_u32);
+            }
+            // `read` fills from index 0, so a longer scratch buffer would report
+            // a read longer than requested — subarray keeps the length exact.
+            scratch.subarray(0, len_u32)
+        };
 
         let opts = self.opts_at(offset)?;
         let result = self
@@ -115,11 +152,33 @@ impl OpfsBackend {
             .call2(self.handle.as_ref(), &view, opts)
             .map_err(|e| io_err(&format!("opfs read: {e:?}")))?;
 
-        let n = result
+        // The byte count comes back from JavaScript, so it is validated rather
+        // than trusted. A well-behaved `FileSystemSyncAccessHandle` always
+        // returns `0..=len`; a polyfill or a shimmed handle need not, and each
+        // way of being wrong has a distinct, bad ending:
+        //
+        //   NaN / negative  → `as usize` saturates to 0, and redb silently sees
+        //                     a short read where it asked for a page.
+        //   huge            → `as usize` saturates near `usize::MAX` and
+        //                     `vec![0u8; n]` exhausts the wasm heap.
+        //   len < n < huge  → `subarray` clamps to the view's real length, and
+        //                     `copy_to` then panics on the length mismatch.
+        //
+        // A trap in the storage layer is the worst place to take one, so all
+        // three become an ordinary `io::Error`.
+        let raw = result
             .as_f64()
-            .ok_or_else(|| io_err("opfs read: non-numeric return"))? as usize;
-        let mut out = vec![0u8; n];
-        view.subarray(0, n as u32).copy_to(&mut out[..n]);
+            .ok_or_else(|| io_err("opfs read: non-numeric return"))?;
+        if !raw.is_finite() || raw < 0.0 || raw > f64::from(len_u32) {
+            return Err(io_err(&format!(
+                "opfs read: handle reported {raw} bytes for a {len}-byte request"
+            )));
+        }
+        // Now provably in `0..=len`, so neither cast can lose anything.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n = raw as u32;
+        let mut out = vec![0u8; n as usize];
+        view.subarray(0, n).copy_to(&mut out);
         Ok(out)
     }
 
@@ -143,6 +202,11 @@ impl OpfsBackend {
 // redb StorageBackend impl
 // ---------------------------------------------------------------------------
 
+// `redb::StorageBackend` is declared `Send + Sync`, so this impl only exists
+// where the impls above do. On any other target the struct and its inherent
+// methods still compile — which keeps the workspace's host-target clippy run
+// looking at `js_read`/`js_write` — it simply cannot be handed to redb.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 impl redb::StorageBackend for OpfsBackend {
     fn len(&self) -> Result<u64, io::Error> {
         self.handle

@@ -216,8 +216,7 @@ impl CollectionWasm {
     /// Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
     /// `$skip`, `$limit`, `$project`). Returns the resulting documents.
     pub fn aggregate(&self, pipeline: JsValue) -> Result<JsValue, JsValue> {
-        let json: serde_json::Value =
-            from_value(pipeline).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let json = js_to_json(pipeline)?;
         let pl = taladb_core::aggregate::parse_pipeline(&json, &|v| {
             json_to_filter(v).ok_or_else(|| "invalid $match filter".to_string())
         })
@@ -434,9 +433,25 @@ impl CollectionWasm {
 // Conversion helpers: JS ↔ Rust
 // ---------------------------------------------------------------------------
 
+/// `serde_wasm_bindgen::from_value` plus a nesting check.
+///
+/// Every JS value that goes on to a recursive converter comes through here.
+/// `from_value` imposes no depth limit of its own — unlike `serde_json`'s string
+/// parser, which stops at 128 — so without this a caller-supplied object graph
+/// sets the recursion depth of `json_to_filter`, `json_to_value` and friends.
+///
+/// One function rather than a check at each call site: a new `from_value` call
+/// added later gets the guard by using this, and the reviewer's question becomes
+/// "why is this one not using `js_to_json`?" instead of "is a check missing?".
+fn js_to_json(val: JsValue) -> Result<serde_json::Value, JsValue> {
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    taladb_core::json_depth::check_json_depth(&json).map_err(err_to_js)?;
+    Ok(json)
+}
+
 /// Convert a JS object like { name: "Alice", age: 30 } to Vec<(String, Value)>.
 fn js_object_to_fields(val: JsValue) -> Result<Vec<(String, Value)>, JsValue> {
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     match json {
         serde_json::Value::Object(map) => Ok(map
             .into_iter()
@@ -544,7 +559,7 @@ fn js_to_filter(val: JsValue) -> Result<Filter, JsValue> {
     if val.is_null() || val.is_undefined() {
         return Ok(Filter::All);
     }
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     json_to_filter(&json).ok_or_else(|| JsValue::from_str("invalid filter"))
 }
 
@@ -634,7 +649,7 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
 /// Supports: { $set: {...} }, { $unset: {...} }, { $inc: {...} },
 ///           { $push: { field: val } }, { $pull: { field: val } }
 fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     let obj = json
         .as_object()
         .ok_or_else(|| JsValue::from_str("update must be an object"))?;

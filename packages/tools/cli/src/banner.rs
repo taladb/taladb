@@ -113,7 +113,10 @@ pub(crate) fn studio_banner(version: &str) -> String {
     // Subtitle: letter-spaced to sit under the wordmark rather than compete
     // with it, with the version trailing so both read as one line of metadata.
     let subtitle = paint("S T U D I O", ACCENT_DIM, true);
-    out.push_str(&format!("  {subtitle}  {}\n\n", dim(&format!("v{version}"))));
+    out.push_str(&format!(
+        "  {subtitle}  {}\n\n",
+        dim(&format!("v{version}"))
+    ));
     out
 }
 
@@ -151,7 +154,9 @@ mod tests {
 
     impl EnvGuard {
         fn new(keys: &[&'static str]) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let saved = keys
                 .iter()
                 .map(|k| (*k, std::env::var(k).ok()))
@@ -221,13 +226,23 @@ mod tests {
 
         let banner = studio_banner("0.11.0");
         assert!(!banner.contains('\x1b'));
-        assert!(banner.contains("T A L A D B"), "expected the ASCII wordmark");
+        assert!(
+            banner.contains("T A L A D B"),
+            "expected the ASCII wordmark"
+        );
         assert!(!banner.contains('█'));
     }
 
     #[test]
     fn non_utf8_locale_falls_back_to_ascii() {
-        let _guard = EnvGuard::new(&["NO_COLOR", "CLICOLOR_FORCE", "TERM", "LC_ALL", "LC_CTYPE", "LANG"]);
+        let _guard = EnvGuard::new(&[
+            "NO_COLOR",
+            "CLICOLOR_FORCE",
+            "TERM",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LANG",
+        ]);
         unsafe { std::env::set_var("LANG", "C") };
 
         // Mojibake is worse than a plain wordmark.
@@ -238,7 +253,14 @@ mod tests {
 
     #[test]
     fn utf8_locale_gets_the_wordmark() {
-        let _guard = EnvGuard::new(&["NO_COLOR", "CLICOLOR_FORCE", "TERM", "LC_ALL", "LC_CTYPE", "LANG"]);
+        let _guard = EnvGuard::new(&[
+            "NO_COLOR",
+            "CLICOLOR_FORCE",
+            "TERM",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LANG",
+        ]);
         unsafe { std::env::set_var("LANG", "en_US.UTF-8") };
 
         assert!(studio_banner("0.11.0").contains('█'));

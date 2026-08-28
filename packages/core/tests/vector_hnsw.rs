@@ -279,3 +279,46 @@ fn multiple_collections_independent() {
     assert_eq!(ra.len(), 1);
     assert_eq!(rb.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// A caller-supplied `top_k` must not overflow the HNSW over-fetch margin
+// ---------------------------------------------------------------------------
+
+/// The HNSW branch over-fetches by `top_k + (top_k / 5).max(8)` so churn in the
+/// graph doesn't starve the caller of results. That addition used to be a plain
+/// `+`, so a `top_k` near the top of the range panicked with "attempt to add
+/// with overflow" — reachable from every binding, since `top_k` is passed
+/// straight through from JS (`u32`, and a 32-bit `usize` on wasm32) and from the
+/// React Native FFI (a raw `usize`).
+///
+/// Only the graph path over-fetches, so the cache has to be warm for this to
+/// exercise anything: a cold collection takes the flat path and never computes
+/// `fetch_k` at all.
+#[test]
+fn a_huge_top_k_saturates_the_hnsw_over_fetch() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("items").unwrap();
+    seed_collection(&db, "items", 6);
+    col.create_vector_index(
+        "emb",
+        4,
+        Some(VectorMetric::Cosine),
+        Some(HnswOptions {
+            m: 8,
+            ef_construction: 50,
+        }),
+    )
+    .unwrap();
+
+    // Warm the graph cache so the next call takes the HNSW path.
+    col.find_nearest("emb", &fv(&[1.0, 0.0, 0.0, 0.0]), 1, None)
+        .unwrap();
+
+    let results = col
+        .find_nearest("emb", &fv(&[1.0, 0.0, 0.0, 0.0]), usize::MAX, None)
+        .expect("a top_k past the overflow boundary must still answer");
+
+    // Asking for more than the graph holds returns what it holds.
+    assert!(!results.is_empty());
+    assert!(results.len() <= 6);
+}

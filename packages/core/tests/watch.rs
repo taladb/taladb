@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use taladb_core::Database;
 use taladb_core::document::Value;
@@ -202,12 +201,28 @@ fn iter_yields_successive_snapshots() {
     let registry_clone = Arc::clone(&registry);
     let col_thread = db.collection("log").unwrap();
 
-    // Spawn a thread that inserts 3 items with notifications
+    // The writer waits for the reader to observe each snapshot before sending
+    // the next notification.
+    //
+    // Without that handshake this test races a *documented feature*: events
+    // coalesce, and `next()` drains everything queued into one snapshot (see
+    // `rapid_writes_coalesce`). The writer used to just `sleep(1ms)` between
+    // notifies, so on a loaded machine two of the three would coalesce, `count`
+    // would never reach 3, and `handle.iter()` — which blocks, with no timeout
+    // in the API — would wait forever. That is a CI job that hangs until the
+    // runner's own limit kills it, not a test that fails.
+    let (consumed_tx, consumed_rx) = std::sync::mpsc::channel::<()>();
+
     let writer = thread::spawn(move || {
         for n in 0i64..3 {
             col_thread.insert(vec![("n".into(), i(n))]).unwrap();
             notify(&registry_clone);
-            thread::sleep(Duration::from_millis(1));
+            // Block until the reader has taken this one, so the next notify
+            // cannot be folded into it.
+            if consumed_rx.recv().is_err() {
+                // Reader stopped early — nothing left to synchronise with.
+                break;
+            }
         }
     });
 
@@ -215,6 +230,8 @@ fn iter_yields_successive_snapshots() {
     for snapshot in handle.iter() {
         count += 1;
         let _ = snapshot.unwrap();
+        // Release the writer *before* breaking, so its `recv` never dangles.
+        let _ = consumed_tx.send(());
         if count == 3 {
             break;
         }

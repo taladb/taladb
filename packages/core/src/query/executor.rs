@@ -87,8 +87,16 @@ pub fn execute_limited(
                         return Ok(ScanFlow::Stop);
                     }
                 };
-                if matcher.matches(&doc) {
-                    results.push(doc);
+                // Same `err` channel as the decode failure above: the scan
+                // callback cannot return a `TalaDbError`, so a filter failure is
+                // parked and re-raised after the scan stops.
+                match matcher.matches(&doc) {
+                    Ok(true) => results.push(doc),
+                    Ok(false) => {}
+                    Err(e) => {
+                        err = Some(e);
+                        return Ok(ScanFlow::Stop);
+                    }
                 }
                 Ok(if wants_more(&results) {
                     ScanFlow::Continue
@@ -357,19 +365,25 @@ impl<'a> Matcher<'a> {
         })
     }
 
-    fn matches(&self, doc: &Document) -> bool {
+    /// # Errors
+    ///
+    /// Propagates a filter-evaluation failure. In practice `Matcher::new` has
+    /// already compiled every pattern, so this cannot fail for a matcher built
+    /// from the same filter — but swallowing it here is what turned a bad regex
+    /// under `$not` into "match everything".
+    fn matches(&self, doc: &Document) -> Result<bool, TalaDbError> {
         match self {
             Matcher::Contains { field, tokens } => {
                 if tokens.is_empty() {
-                    return true;
+                    return Ok(true);
                 }
-                match doc.get(field) {
+                Ok(match doc.get(field) {
                     Some(Value::Str(text)) => {
                         let doc_tokens: HashSet<String> = tokenize(text).into_iter().collect();
                         tokens.iter().all(|t| doc_tokens.contains(t))
                     }
                     _ => false,
-                }
+                })
             }
             Matcher::General { filter, regexes } => filter.matches_with_cache(doc, regexes),
         }
@@ -398,7 +412,7 @@ fn fetch_filtered(
         let keys: Vec<&[u8]> = chunk.iter().map(<[u8; 16]>::as_slice).collect();
         for bytes in txn.get_many(&table, &keys)?.into_iter().flatten() {
             let doc: Document = postcard::from_bytes(&bytes)?;
-            if matcher.matches(&doc) {
+            if matcher.matches(&doc)? {
                 out.push(doc);
                 if limit.is_some_and(|n| out.len() >= n) {
                     return Ok(());

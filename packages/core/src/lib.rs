@@ -65,6 +65,7 @@ pub mod engine;
 pub mod error;
 pub mod fts;
 pub mod index;
+pub mod json_depth;
 pub mod migration;
 pub mod query;
 pub mod time;

@@ -1,0 +1,23 @@
+# Pins the toolchain for local dev, CI and releases so all three agree.
+#
+# Why this file exists: CI used `dtolnay/rust-toolchain@stable`, so the compiler
+# moved on its own schedule. On 2026-08-18 stable became 1.98, which added
+# `clippy::chunks_exact_to_as_chunks` — and the `-D warnings` gate went red two
+# days after the last commit, with nothing in the repo having changed. A pinned
+# toolchain turns "the gate broke overnight" into "someone bumped this line".
+#
+# This is a *pin*, not the MSRV. `rust-version = "1.88"` in Cargo.toml is the
+# floor downstream users must satisfy and is a breaking change to raise; this
+# file only says what we build and lint with. Keep the pin ≥ that floor.
+#
+# Bumping it: change `channel`, then run the §11 gate locally
+# (`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+# --all-features -- -D warnings`, `cargo test --workspace --all-features`) and
+# fix any new lints in the same commit. A new stable usually adds a few.
+[toolchain]
+channel = "1.98.0"
+# clippy/rustfmt so the lint and format gates need no extra install step;
+# wasm32 so `wasm-pack build` and the wasm-target clippy run work out of the box.
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 authors = ["taladb"]
 license = "MIT OR Apache-2.0"
@@ -52,6 +52,18 @@ lto = true
 # One codegen unit lets LTO see the whole crate graph: better inlining across
 # the storage/query boundary, and a smaller wasm binary.
 codegen-units = 1
+# Overflow wraps silently in release by default, so the same expression has two
+# behaviours: a panic in `cargo test` and a wrong answer in the shipped build.
+# For a database whose sizes, offsets and `top_k` values all arrive from a
+# caller, the wrong answer is worse — an overflowed candidate pool returns a
+# plausible, under-recalled result set with nothing in the logs. Keeping checks
+# on makes the two builds agree.
+#
+# Measured cost on the payload where size matters most: the release wasm bundle
+# goes from 1526.7 KB to 1544.7 KB, so +18 KB / +1.18%. Worth it — that is well
+# under the noise of one extra dependency, and it buys the guarantee that a
+# release build cannot silently compute a wrong length or offset.
+overflow-checks = true
 
 # NOTE: there is deliberately no `release-wasm` profile. `wasm-pack build
 # --release` uses `[profile.release]` and cannot be pointed at a custom one, so

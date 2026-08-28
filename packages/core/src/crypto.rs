@@ -104,16 +104,35 @@ pub fn encrypt(
 ) -> Result<Vec<u8>, TalaDbError> {
     #[cfg(feature = "encryption")]
     {
-        use aes_gcm::aead::{Aead, KeyInit, OsRng};
+        use aes_gcm::aead::{Aead, KeyInit};
         use aes_gcm::{Aes256Gcm, Nonce};
-        use rand::RngCore;
 
         let cipher = Aes256Gcm::new_from_slice(enc_key.as_ref())
             .map_err(|e| TalaDbError::Encryption(e.to_string()))?;
 
+        // `getrandom::fill` rather than `rand`'s `OsRng.fill_bytes`, for two
+        // reasons beyond dropping a dependency.
+        //
+        // 1. It reports failure. `OsRng::fill_bytes` *panics* if the OS entropy
+        //    source fails; a panic on the encryption path is a denial of service
+        //    where an `Err` is a handled error. A GCM nonce built from anything
+        //    other than real entropy is catastrophic — nonce reuse under the same
+        //    key leaks the keystream — so this must fail loudly and recoverably,
+        //    never silently or fatally.
+        // 2. It removes a version coupling. The `OsRng` this used was re-exported
+        //    by `aes-gcm`, while the `RngCore` trait came from our own `rand`
+        //    dependency, so the two had to agree on a `rand_core` major forever.
+        //    `getrandom` is already how the salt and every ULID are generated.
         let mut nonce_bytes = [0u8; NONCE_LEN_V1];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        getrandom::fill(&mut nonce_bytes).map_err(|e| {
+            TalaDbError::Encryption(format!("system entropy source failed for a GCM nonce: {e}"))
+        })?;
+        // `Nonce::from_slice` is deprecated in aead 0.6 and *panicked* on a
+        // length mismatch; `TryFrom` reports it. Here `nonce_bytes` is a fixed
+        // `[u8; NONCE_LEN_V1]`, so the conversion cannot fail — but a typed
+        // error beats a panic even on an unreachable branch.
+        let nonce = Nonce::try_from(&nonce_bytes[..])
+            .map_err(|_| TalaDbError::Encryption("internal: bad nonce length".into()))?;
 
         let aad = make_aad(table, key);
         let payload = aes_gcm::aead::Payload {
@@ -121,7 +140,7 @@ pub fn encrypt(
             aad: &aad,
         };
         let ciphertext = cipher
-            .encrypt(nonce, payload)
+            .encrypt(&nonce, payload)
             .map_err(|e| TalaDbError::Encryption(e.to_string()))?;
 
         let mut out = Vec::with_capacity(1 + NONCE_LEN_V1 + ciphertext.len());
@@ -175,7 +194,11 @@ pub fn decrypt(
 
         let cipher = Aes256Gcm::new_from_slice(enc_key.as_ref())
             .map_err(|e| TalaDbError::Encryption(e.to_string()))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        // Length is already guaranteed by the `data.len()` check above, so this
+        // is a typed restatement of an established invariant rather than a new
+        // failure mode — and it replaces a call that panicked on mismatch.
+        let nonce = Nonce::try_from(nonce_bytes)
+            .map_err(|_| TalaDbError::Encryption("ciphertext nonce is malformed".into()))?;
 
         let aad = make_aad(table, key);
         let payload = aes_gcm::aead::Payload {
@@ -183,7 +206,7 @@ pub fn decrypt(
             aad: &aad,
         };
         cipher
-            .decrypt(nonce, payload)
+            .decrypt(&nonce, payload)
             .map_err(|e| TalaDbError::Encryption(e.to_string()))
     }
     #[cfg(not(feature = "encryption"))]
@@ -561,10 +584,12 @@ pub fn migrate_encrypted_v0_to_v1(
 
             let nonce_bytes = &raw_val[..NONCE_LEN_V1];
             let ciphertext = &raw_val[NONCE_LEN_V1..];
-            let nonce = Nonce::from_slice(nonce_bytes);
+            let nonce = Nonce::try_from(nonce_bytes).map_err(|_| {
+                TalaDbError::Encryption("legacy value has a malformed nonce".into())
+            })?;
 
             // Old format used no AAD — pass empty slice.
-            let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
+            let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|e| {
                 TalaDbError::Encryption(format!(
                     "migrate v0→v1: failed to decrypt value in table \"{table}\": {e}"
                 ))

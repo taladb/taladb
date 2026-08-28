@@ -16,6 +16,20 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
 // Helpers: JSON ↔ taladb_core::Value
 // ---------------------------------------------------------------------------
 
+/// Reject caller-supplied JSON nested deeper than the engine's ceiling.
+///
+/// napi builds a `serde_json::Value` by walking a live JS object graph, with no
+/// depth limit of its own — `serde_json`'s 128-level cap applies only to its
+/// string parser, which this path never uses. Without this, a caller sets the
+/// recursion depth of `json_to_filter`, `json_to_update` and `json_to_value`.
+///
+/// Applied inside the three converters rather than at each of the ~20 exported
+/// methods, so a new method cannot forget it.
+fn check_depth(json: &JsonValue) -> napi::Result<()> {
+    taladb_core::json_depth::check_json_depth(json)
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
 fn json_to_value(j: JsonValue) -> Value {
     match j {
         JsonValue::Null => Value::Null,
@@ -66,6 +80,7 @@ fn doc_to_json(doc: &taladb_core::Document) -> JsonValue {
 }
 
 fn obj_to_fields(json: JsonValue) -> napi::Result<Vec<(String, Value)>> {
+    check_depth(&json)?;
     match json {
         JsonValue::Object(map) => Ok(map
             .into_iter()
@@ -76,6 +91,13 @@ fn obj_to_fields(json: JsonValue) -> napi::Result<Vec<(String, Value)>> {
 }
 
 fn json_to_filter(json: &JsonValue) -> napi::Result<Filter> {
+    check_depth(json)?;
+    json_to_filter_inner(json)
+}
+
+/// The recursive body. Separate from `json_to_filter` so the depth check runs
+/// once for the tree instead of once per level.
+fn json_to_filter_inner(json: &JsonValue) -> napi::Result<Filter> {
     if json.is_null() {
         return Ok(Filter::All);
     }
@@ -90,17 +112,17 @@ fn json_to_filter(json: &JsonValue) -> napi::Result<Filter> {
                 expr.as_array()
                     .ok_or_else(|| napi::Error::from_reason("$and must be an array"))?
                     .iter()
-                    .map(json_to_filter)
+                    .map(json_to_filter_inner)
                     .collect::<napi::Result<_>>()?,
             ),
             "$or" => Filter::Or(
                 expr.as_array()
                     .ok_or_else(|| napi::Error::from_reason("$or must be an array"))?
                     .iter()
-                    .map(json_to_filter)
+                    .map(json_to_filter_inner)
                     .collect::<napi::Result<_>>()?,
             ),
-            "$not" => Filter::Not(Box::new(json_to_filter(expr)?)),
+            "$not" => Filter::Not(Box::new(json_to_filter_inner(expr)?)),
             op if op.starts_with('$') => {
                 return Err(napi::Error::from_reason(format!(
                     "unknown logical operator: {op}"
@@ -182,6 +204,7 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
 }
 
 fn json_to_update(json: JsonValue) -> napi::Result<Update> {
+    check_depth(&json)?;
     let obj = json
         .as_object()
         .ok_or_else(|| napi::Error::from_reason("update must be an object"))?;

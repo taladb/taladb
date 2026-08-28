@@ -342,15 +342,15 @@ pub fn encode_f32_vec(v: &[f32]) -> Vec<u8> {
 /// Decode little-endian bytes back to `Vec<f32>`.
 /// Returns `None` if `bytes.len()` is not a multiple of 4.
 pub fn decode_f32_vec(bytes: &[u8]) -> Option<Vec<f32>> {
-    if !bytes.len().is_multiple_of(4) {
+    // `as_chunks` splits and length-checks in one step: a non-empty remainder
+    // *is* "not a multiple of 4", so the guard cannot drift from the split it
+    // guards. The chunks come back as `[u8; 4]`, which `from_le_bytes` takes
+    // directly — no per-element indexing to bounds-check.
+    let (quads, rest) = bytes.as_chunks::<4>();
+    if !rest.is_empty() {
         return None;
     }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect(),
-    )
+    Some(quads.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 /// Extract a float vector from a document field value.
@@ -388,15 +388,15 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 pub fn dot_similarity(a: &[f32], b: &[f32]) -> f32 {
     // Lane-parallel for the same reason as `dot_and_norm_sq` — see `LANES`.
     let mut acc = [0.0f32; LANES];
-    let mut a_chunks = a.chunks_exact(LANES);
-    let mut b_chunks = b.chunks_exact(LANES);
-    for (x, y) in a_chunks.by_ref().zip(b_chunks.by_ref()) {
+    let (a_lanes, a_rest) = a.as_chunks::<LANES>();
+    let (b_lanes, b_rest) = b.as_chunks::<LANES>();
+    for (x, y) in a_lanes.iter().zip(b_lanes) {
         for i in 0..LANES {
             acc[i] += x[i] * y[i];
         }
     }
     let mut total: f32 = acc.iter().sum();
-    for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
+    for (x, y) in a_rest.iter().zip(b_rest) {
         total += x * y;
     }
     total
@@ -406,16 +406,16 @@ pub fn dot_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Identical vectors → 1.0; the further apart, the closer to 0.
 pub fn euclidean_similarity(a: &[f32], b: &[f32]) -> f32 {
     let mut acc = [0.0f32; LANES];
-    let mut a_chunks = a.chunks_exact(LANES);
-    let mut b_chunks = b.chunks_exact(LANES);
-    for (x, y) in a_chunks.by_ref().zip(b_chunks.by_ref()) {
+    let (a_lanes, a_rest) = a.as_chunks::<LANES>();
+    let (b_lanes, b_rest) = b.as_chunks::<LANES>();
+    for (x, y) in a_lanes.iter().zip(b_lanes) {
         for i in 0..LANES {
             let d = x[i] - y[i];
             acc[i] += d * d;
         }
     }
     let mut dist_sq: f32 = acc.iter().sum();
-    for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
+    for (x, y) in a_rest.iter().zip(b_rest) {
         let d = x - y;
         dist_sq += d * d;
     }
@@ -497,9 +497,14 @@ fn dot_and_norm_sq(query: &[f32], stored: &[f32]) -> (f32, f32) {
     let mut dot = [0.0f32; LANES];
     let mut norm_sq = [0.0f32; LANES];
 
-    let mut q_chunks = query.chunks_exact(LANES);
-    let mut s_chunks = stored.chunks_exact(LANES);
-    for (q, s) in q_chunks.by_ref().zip(s_chunks.by_ref()) {
+    // `as_chunks` rather than `chunks_exact`: the chunks arrive as
+    // `&[[f32; LANES]]`, so `q[i]` for `i in 0..LANES` is in bounds by type and
+    // needs no bounds check at all. With `chunks_exact` each chunk is a
+    // runtime-length `&[f32]` and the checks only vanish if the optimiser
+    // happens to prove the range — which is a thin thing to rest a hot loop on.
+    let (q_lanes, q_rest) = query.as_chunks::<LANES>();
+    let (s_lanes, s_rest) = stored.as_chunks::<LANES>();
+    for (q, s) in q_lanes.iter().zip(s_lanes) {
         for i in 0..LANES {
             dot[i] += q[i] * s[i];
             norm_sq[i] += s[i] * s[i];
@@ -508,7 +513,7 @@ fn dot_and_norm_sq(query: &[f32], stored: &[f32]) -> (f32, f32) {
 
     let mut dot_total: f32 = dot.iter().sum();
     let mut norm_total: f32 = norm_sq.iter().sum();
-    for (q, s) in q_chunks.remainder().iter().zip(s_chunks.remainder()) {
+    for (q, s) in q_rest.iter().zip(s_rest) {
         dot_total += q * s;
         norm_total += s * s;
     }
@@ -672,6 +677,71 @@ mod tests {
             assert!(
                 (euc - 1.0).abs() < 1e-6,
                 "euclidean self-similarity at len {len}"
+            );
+        }
+    }
+    /// `dot_and_norm_sq` was refactored from `chunks_exact(LANES)` to
+    /// `as_chunks::<LANES>()` to clear `clippy::chunks_exact_to_as_chunks`. It is
+    /// a hot float reduction whose *lane structure is the point*, so the bar is
+    /// bit-identical output, not "close enough" — a reordered accumulation would
+    /// silently shift every cosine score in the database.
+    ///
+    /// This lives in-module because `dot_and_norm_sq` is private; the public
+    /// `dot_similarity` / `euclidean_similarity` / `decode_f32_vec` were checked
+    /// the same way.
+    #[test]
+    fn dot_and_norm_sq_matches_the_chunks_exact_original_bit_for_bit() {
+        // The whole point of `original` is to be the pre-refactor code, so the
+        // lint that prompted the refactor must not be applied to it. Rewriting
+        // it to `as_chunks` would make it a copy of the new implementation and
+        // the test would compare something to itself.
+        #[allow(clippy::chunks_exact_to_as_chunks)]
+        fn original(query: &[f32], stored: &[f32]) -> (f32, f32) {
+            let mut dot = [0.0f32; LANES];
+            let mut norm_sq = [0.0f32; LANES];
+            let mut q_chunks = query.chunks_exact(LANES);
+            let mut s_chunks = stored.chunks_exact(LANES);
+            for (q, s) in q_chunks.by_ref().zip(s_chunks.by_ref()) {
+                for i in 0..LANES {
+                    dot[i] += q[i] * s[i];
+                    norm_sq[i] += s[i] * s[i];
+                }
+            }
+            let mut dot_total: f32 = dot.iter().sum();
+            let mut norm_total: f32 = norm_sq.iter().sum();
+            for (q, s) in q_chunks.remainder().iter().zip(s_chunks.remainder()) {
+                dot_total += q * s;
+                norm_total += s * s;
+            }
+            (dot_total, norm_total)
+        }
+
+        // Deterministic, and spread across magnitudes so summation order matters.
+        let mut seed = 0xC0FF_EE12_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let bits = (seed >> 33) as u32;
+            (f32::from_bits((bits & 0x007F_FFFF) | 0x3F80_0000) - 1.5) * 1e3
+        };
+
+        // Lengths either side of LANES, and real embedding sizes, so both the
+        // lane loop and the remainder tail are exercised.
+        for len in [0usize, 1, 7, 8, 9, 15, 16, 17, 31, 384, 385, 768, 1536] {
+            let q: Vec<f32> = (0..len).map(|_| next()).collect();
+            let s: Vec<f32> = (0..len).map(|_| next()).collect();
+            let (new_dot, new_norm) = dot_and_norm_sq(&q, &s);
+            let (old_dot, old_norm) = original(&q, &s);
+            assert_eq!(
+                new_dot.to_bits(),
+                old_dot.to_bits(),
+                "dot diverged at len={len}"
+            );
+            assert_eq!(
+                new_norm.to_bits(),
+                old_norm.to_bits(),
+                "norm_sq diverged at len={len}"
             );
         }
     }

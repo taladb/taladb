@@ -8,8 +8,12 @@
 //! `JSON.stringify` / `JSON.parse` — no complex serialisation on the JS side.
 
 use wasm_bindgen::prelude::*;
+// Only the wasm32-only OPFS constructors take one of these.
+#[cfg(target_arch = "wasm32")]
 use web_sys::FileSystemSyncAccessHandle;
 
+// Only reached from the wasm32-only OPFS constructors.
+#[cfg(target_arch = "wasm32")]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Document, Filter, HnswOptions, Update, Value, VectorMetric};
 // Encryption is only wired on the wasm OPFS open path — gate the imports the
@@ -21,6 +25,8 @@ use std::sync::Arc;
 use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
 use crate::doc_to_json;
+// Only the two OPFS constructors use this, and both are wasm32-only.
+#[cfg(target_arch = "wasm32")]
 use crate::storage::opfs_backend::OpfsBackend;
 
 // ---------------------------------------------------------------------------
@@ -76,14 +82,14 @@ impl WorkerDB {
     pub fn open_with_config_and_snapshot(
         data: Option<Vec<u8>>,
         config_json: Option<String>,
-    ) -> Result<WorkerDB, JsValue> {
+    ) -> Result<Self, JsValue> {
         let db = match data {
             Some(ref bytes) if !bytes.is_empty() => Database::restore_from_snapshot(bytes)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
         let _ = config_json;
-        Ok(WorkerDB { db })
+        Ok(Self { db })
     }
 
     /// Serialize the entire in-memory database to bytes for persistence.
@@ -121,6 +127,11 @@ impl WorkerDB {
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const workerDb = WorkerDB.openWithOpfs(handle);
     /// ```
+    ///
+    /// wasm32-only, like `openWithConfigAndOpfs` below — it takes a JS handle and
+    /// hands `OpfsBackend` to redb, whose `Send + Sync` impls exist only on that
+    /// target. This gate was missing while the sibling method had it.
+    #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = openWithOpfs)]
     pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<Self, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
@@ -146,7 +157,7 @@ impl WorkerDB {
         config_json: Option<String>,
         passphrase: Option<String>,
         salt: Option<Vec<u8>>,
-    ) -> Result<WorkerDB, JsValue> {
+    ) -> Result<Self, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -178,7 +189,7 @@ impl WorkerDB {
         let db = Database::open_with_backend(backend)
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
         let _ = config_json;
-        Ok(WorkerDB { db })
+        Ok(Self { db })
     }
 
     // ------------------------------------------------------------------
@@ -859,6 +870,10 @@ fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::R
 fn parse_filter(json: &str) -> Result<Filter, JsValue> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // `serde_json`'s parser caps at 128 levels; the engine's ceiling is 64. This
+    // keeps the worker in step with the main-thread binding, which checks the
+    // same way in `js_to_json`.
+    taladb_core::json_depth::check_json_depth(&v).map_err(|e| JsValue::from_str(&e.to_string()))?;
     if v.is_null() {
         return Ok(Filter::All);
     }
@@ -868,6 +883,8 @@ fn parse_filter(json: &str) -> Result<Filter, JsValue> {
 fn parse_update(json: &str) -> Result<Update, JsValue> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // See `parse_filter` above.
+    taladb_core::json_depth::check_json_depth(&v).map_err(|e| JsValue::from_str(&e.to_string()))?;
     json_to_update_val(&v)
 }
 
