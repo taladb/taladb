@@ -17,6 +17,15 @@ workspace = true
 
 [dependencies]
 redb       = "4.2"
+# redb 2, alongside redb 4, purely to open databases written before the bump.
+# redb 4 refuses a v2 file outright and has no upgrade path of its own; redb 2
+# reads *both* v2 and v3 and can rewrite one into the other in place, so it is the
+# only version that can perform the conversion. Two majors of redb link into one
+# binary without conflict — they are distinct crates to cargo.
+#
+# Optional, and gated by `legacy-migration`, because in the browser it is a second
+# copy of redb in the bundle.
+redb2      = { package = "redb", version = "2.6", optional = true }
 # `default-features = false` drops postcard's default `heapless-cas` feature.
 # Only `to_allocvec` and `from_bytes` are used here — both `alloc` APIs — while
 # the default pulls in heapless 0.7 and, through it, the unmaintained
@@ -69,13 +78,25 @@ getrandom = "0.4"
 # WASM bundle. See `config::split_http_endpoint`.
 
 [features]
-default      = ["config-yaml"]
+# `legacy-migration` is on by default so a native app that upgrades TalaDB does
+# not silently lose the ability to open its own databases. The browser binding
+# builds with `default-features = false` and opts back in only if it has shipped
+# before — see the feature's own comment.
+default      = ["config-yaml", "legacy-migration"]
 encryption   = ["dep:aes-gcm", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = ["dep:instant-distance"]
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
 # Native builds turn it off (`default-features = false`) to drop serde_yaml and
 # unsafe-libyaml from the bundle. JSON config works either way.
 config-yaml  = ["dep:serde_yaml_ng"]
+# Read and upgrade databases written before the redb 4 bump.
+#
+# On native this is unconditional — `RedbBackend::open` owns a real file and there
+# is no reason to make not-bricking-it opt-in. In the browser it costs a second
+# copy of redb in the wasm bundle, so it is a feature: an app shipping its first
+# TalaDB release has no v2 databases in the field and should not pay for the
+# reader. One that has been live needs it, or its users' data becomes unreachable.
+legacy-migration = ["dep:redb2"]
 
 [[bench]]
 name = "engine"
@@ -86,14 +107,3 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 tempfile = "3.10"
 zeroize  = { version = "1.7", features = ["derive"] }
 
-# redb 2, kept alongside redb 4 solely to migrate databases written before the
-# bump. redb 4 refuses a v2 file outright ("Manual upgrade required") and offers
-# no upgrade API, so the only way to not brick every existing database is to read
-# it with the version that wrote it and copy it forward. Two majors of redb link
-# into one binary without conflict — they are distinct crates to cargo.
-#
-# Native only: this exists for `RedbBackend::open`, which owns a real file it can
-# back up and atomically replace. The browser/OPFS path has no such filesystem
-# and is handled separately — see `migrate::detect_legacy_backend`.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-redb2 = { package = "redb", version = "2.6" }

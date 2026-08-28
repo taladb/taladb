@@ -15,6 +15,23 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# On by default: TalaDB has shipped browser releases, so there are v2 databases in
+# users' OPFS storage. Without this the wasm bundle has no reader for them and
+# that data is simply unreachable.
+#
+# It costs a second copy of redb — measured at **+506 KB (+18.5%)** on the release
+# wasm, 2.68 MB to 3.17 MB. An app with no install base to migrate can build with
+# `--no-default-features` and skip it:
+#
+#     wasm-pack build packages/bindings/web --target web --release -- --no-default-features
+#
+# The upgrade itself is one-time and in place; once a database has been through it
+# the legacy reader is never touched again (and must not be — see
+# `open_opfs_upgrading_if_needed`).
+default = ["legacy-migration"]
+legacy-migration = ["taladb-core/legacy-migration"]
+
 [dependencies]
 # `default-features = false` drops the YAML parser entirely: the browser
 # receives its config as a JSON string and never reads a file off disk.

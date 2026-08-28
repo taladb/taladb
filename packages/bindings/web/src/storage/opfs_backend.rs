@@ -240,6 +240,102 @@ impl redb::StorageBackend for OpfsBackend {
 }
 
 // ---------------------------------------------------------------------------
+// redb 2 view of the same storage
+//
+// Only used to open a database written before the redb 4 bump and upgrade it in
+// place — redb 2 reads both the old and new formats and can rewrite one into the
+// other, which redb 4 cannot do at all. Once the upgrade has run, everything goes
+// through the redb 4 impl above.
+//
+// The two traits differ in exactly two places: redb 2's `read` returns an owned
+// `Vec` rather than filling a caller buffer, and its `sync_data` takes an
+// `eventual` flag. Both forward to the same `js_read`/`js_write` as the redb 4
+// impl, so there is one implementation of the actual OPFS calls, not two.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+unsafe impl Send for LegacyOpfs {}
+// SAFETY: as for `OpfsBackend` — see the module-level Safety section. `LegacyOpfs`
+// is a newtype over it and adds no interior mutability of its own.
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+unsafe impl Sync for LegacyOpfs {}
+
+/// `OpfsBackend` seen through redb 2's trait.
+///
+/// A newtype rather than a second `impl` on `OpfsBackend` itself: the two traits
+/// share method names, so having both on one type would force every call site to
+/// disambiguate.
+///
+/// wasm32-only, like the trait impls below and the OPFS constructors that use it —
+/// nothing on any other target has an OPFS handle to migrate.
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+pub struct LegacyOpfs(pub OpfsBackend);
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+impl std::fmt::Debug for LegacyOpfs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LegacyOpfs").finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+impl taladb_core::redb2::StorageBackend for LegacyOpfs {
+    fn len(&self) -> Result<u64, io::Error> {
+        self.0
+            .handle
+            .get_size()
+            .map(|s| s as u64)
+            .map_err(|e| io_err(&format!("opfs get_size: {e:?}")))
+    }
+
+    fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
+        // redb 2 allocates per read; redb 4's buffer-filling signature is what
+        // removed that, and this path only runs during a one-off upgrade.
+        let mut out = vec![0u8; len];
+        self.0.js_read(offset, &mut out)?;
+        Ok(out)
+    }
+
+    fn set_len(&self, new_len: u64) -> Result<(), io::Error> {
+        self.0
+            .handle
+            .truncate_with_f64(new_len as f64)
+            .map_err(|e| io_err(&format!("opfs truncate: {e:?}")))
+    }
+
+    fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
+        self.0
+            .handle
+            .flush()
+            .map_err(|e| io_err(&format!("opfs flush: {e:?}")))
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+        self.0.js_write(offset, data)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper to open an OPFS file and return a SyncAccessHandle.
 // Must be called from a Worker context.
 // ---------------------------------------------------------------------------

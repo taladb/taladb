@@ -172,10 +172,21 @@ impl RedbBackend {
         // A database written before the redb 4 bump is in a format redb 4 refuses
         // outright. Bring it forward first — this is a no-op for a file that is
         // already current, and for one that does not exist yet.
-        #[cfg(not(target_arch = "wasm32"))]
+        //
+        // Without `legacy-migration` there is no reader for the old format, so the
+        // open below fails; the error is translated further down rather than left
+        // as redb's bare "manual upgrade required".
+        #[cfg(all(feature = "legacy-migration", not(target_arch = "wasm32")))]
         crate::migrate::migrate_file_if_needed(path)?;
 
-        let db = Database::create(path)?;
+        let db = Database::create(path).map_err(|e| {
+            let msg = e.to_string();
+            if crate::migrate::is_legacy_format_error(&msg) {
+                TalaDbError::Storage(crate::migrate::LEGACY_BACKEND_HELP.to_string())
+            } else {
+                TalaDbError::from(e)
+            }
+        })?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),

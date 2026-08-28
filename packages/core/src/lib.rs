@@ -92,6 +92,11 @@ pub use query::options::{FindOptions, SortDirection, SortSpec};
 /// their [`source`](std::error::Error::source): downcasting to them requires
 /// naming the same `redb` version the engine was built against.
 pub use redb;
+// Re-exported so a binding can implement redb 2's `StorageBackend` for its own
+// storage and hand it to `migrate::migrate_backend_if_needed`, without having to
+// depend on a second major of redb itself and risk the two versions drifting.
+#[cfg(feature = "legacy-migration")]
+pub use redb2;
 pub use time::now_ms;
 /// Re-exported so bindings can parse and construct document ids without taking a
 /// direct `ulid` dependency (and risking a version skew against the engine's).

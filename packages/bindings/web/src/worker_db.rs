@@ -38,6 +38,59 @@ pub struct WorkerDB {
     db: Database,
 }
 
+/// Open OPFS-backed storage with redb 4, upgrading it first only if it turns out
+/// to predate redb 4.
+///
+/// The order matters and is not an optimisation. redb 2 **panics** on a database
+/// redb 4 wrote — its version check lets it through and it then hits an
+/// `unreachable!()`, which in wasm is an unrecoverable trap. So the legacy reader
+/// must never run speculatively: the ordinary open goes first, and redb 2 is
+/// reached for only when that open has failed *and* said the format is the old
+/// one.
+///
+/// Getting this the wrong way round is the difference between "upgrades once" and
+/// "traps on the second page load".
+///
+/// The handle is cloned per attempt. Cloning a `FileSystemSyncAccessHandle` is
+/// another reference to the same open file, not a second file, so every attempt
+/// addresses the same bytes.
+#[cfg(target_arch = "wasm32")]
+fn open_opfs_upgrading_if_needed(
+    sync_handle: &FileSystemSyncAccessHandle,
+) -> Result<RedbBackend, JsValue> {
+    let first = RedbBackend::open_with_redb_backend(OpfsBackend::from_handle(sync_handle.clone()));
+    let err = match first {
+        Ok(backend) => return Ok(backend),
+        Err(e) => e,
+    };
+
+    if !taladb_core::migrate::is_legacy_format_error(&err.to_string()) {
+        return Err(JsValue::from_str(&err.to_string()));
+    }
+
+    // Built without `legacy-migration`, there is no reader for the old format in
+    // this bundle at all. Say so, and say what to do instead, rather than
+    // repeating redb's "manual upgrade required".
+    #[cfg(not(feature = "legacy-migration"))]
+    {
+        Err(JsValue::from_str(taladb_core::migrate::LEGACY_BACKEND_HELP))
+    }
+
+    #[cfg(feature = "legacy-migration")]
+    {
+        use crate::storage::opfs_backend::LegacyOpfs;
+
+        // Now — and only now — it is safe to hand the storage to redb 2.
+        taladb_core::migrate::upgrade_legacy_backend(LegacyOpfs(OpfsBackend::from_handle(
+            sync_handle.clone(),
+        )))
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        RedbBackend::open_with_redb_backend(OpfsBackend::from_handle(sync_handle.clone()))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
 #[wasm_bindgen]
 impl WorkerDB {
     // ------------------------------------------------------------------
@@ -134,9 +187,7 @@ impl WorkerDB {
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = openWithOpfs)]
     pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<Self, JsValue> {
-        let opfs = OpfsBackend::from_handle(sync_handle);
-        let redb_backend = RedbBackend::open_with_redb_backend(opfs)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let redb_backend = open_opfs_upgrading_if_needed(&sync_handle)?;
         let db = Database::open_with_backend(Box::new(redb_backend))
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
         Ok(Self { db })
@@ -158,9 +209,10 @@ impl WorkerDB {
         passphrase: Option<String>,
         salt: Option<Vec<u8>>,
     ) -> Result<Self, JsValue> {
-        let opfs = OpfsBackend::from_handle(sync_handle);
-        let redb_backend = RedbBackend::open_with_redb_backend(opfs)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        // Ahead of the encryption wrapper, because encryption sits *above* redb —
+        // redb sees the raw OPFS bytes either way, so one upgrade path covers both
+        // the plain and the encrypted case.
+        let redb_backend = open_opfs_upgrading_if_needed(&sync_handle)?;
 
         // When a passphrase is supplied, wrap the OPFS-backed storage in the
         // AES-GCM-256 EncryptedBackend so every value is ciphertext at rest —
@@ -1095,7 +1147,8 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::*;
 
-    wasm_bindgen_test_configure!(run_in_browser);
+    // Not `run_in_browser` — see the note in `lib.rs`. These snapshot tests are
+    // pure encode/decode and run under node.
 
     // ------------------------------------------------------------------
     // WorkerDB::open_with_snapshot

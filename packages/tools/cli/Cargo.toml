@@ -23,9 +23,22 @@ serde_json = "1.0"
 anyhow = "1.0"
 tiny_http = "0.12"
 
-# Used by `taladb studio` (the local web UI) to proxy requests.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-
 [dev-dependencies]
 tempfile = "3.10"
 ulid     = "1.1"
+# Only the `studio` tests use this — they drive the local web UI over HTTP. It sat
+# in `[dependencies]` with a comment claiming `taladb studio` proxied requests
+# through it, which the code has not done for some time: every reference is inside
+# `#[cfg(test)]`.
+#
+# Moving it here takes reqwest and its TLS stack out of the shipped binary's
+# dependency graph — `cargo tree -e normal` no longer reaches it.
+#
+# It does NOT quiet `cargo audit`: that reads `Cargo.lock`, which records
+# dev-dependencies too. Worth knowing what those entries are, though. reqwest
+# declares `quinn` as an optional dependency, so `quinn`, `quinn-proto`, `rand`
+# and `chacha20` are all written into the lockfile even though no feature
+# selection in this workspace ever builds them — `cargo tree` finds none of them
+# in any configuration. When a yanked `chacha20` failed the gate, that was an
+# alert about a crate this project has never compiled.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
