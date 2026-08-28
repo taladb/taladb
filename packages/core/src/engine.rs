@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use redb::ReadableDatabase as _;
 use redb::{Database, Durability, ReadableTable, TableDefinition, TableHandle};
 
 use crate::error::TalaDbError;
@@ -168,7 +169,24 @@ pub struct RedbBackend {
 
 impl RedbBackend {
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
-        let db = Database::create(path)?;
+        // A database written before the redb 4 bump is in a format redb 4 refuses
+        // outright. Bring it forward first — this is a no-op for a file that is
+        // already current, and for one that does not exist yet.
+        //
+        // Without `legacy-migration` there is no reader for the old format, so the
+        // open below fails; the error is translated further down rather than left
+        // as redb's bare "manual upgrade required".
+        #[cfg(all(feature = "legacy-migration", not(target_arch = "wasm32")))]
+        crate::migrate::migrate_file_if_needed(path)?;
+
+        let db = Database::create(path).map_err(|e| {
+            let msg = e.to_string();
+            if crate::migrate::is_legacy_format_error(&msg) {
+                TalaDbError::Storage(crate::migrate::LEGACY_BACKEND_HELP.to_string())
+            } else {
+                TalaDbError::from(e)
+            }
+        })?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),
@@ -187,7 +205,20 @@ impl RedbBackend {
     pub fn open_with_redb_backend<B: redb::StorageBackend + 'static>(
         backend: B,
     ) -> Result<Self, TalaDbError> {
-        let db = Database::builder().create_with_backend(backend)?;
+        // A custom backend (OPFS in the browser, anything host-supplied) has no
+        // filesystem to copy and rename, so the migration that `open` performs is
+        // not available here. Translate redb's "manual upgrade required", which
+        // does not say *how*, into something the caller can act on.
+        let db = Database::builder()
+            .create_with_backend(backend)
+            .map_err(|e| {
+                let msg = e.to_string();
+                if crate::migrate::is_legacy_format_error(&msg) {
+                    TalaDbError::Storage(crate::migrate::LEGACY_BACKEND_HELP.to_string())
+                } else {
+                    TalaDbError::from(e)
+                }
+            })?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             eventual: AtomicBool::new(false),
@@ -202,11 +233,29 @@ impl StorageBackend for RedbBackend {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .begin_write()?;
-        txn.set_durability(if self.eventual.load(Ordering::Relaxed) {
-            Durability::Eventual
+        // redb 4 removed `Durability::Eventual`, leaving `None` and `Immediate`.
+        // `None` is the closest match and is consistent with what this API already
+        // promises: `set_durability(true)` is documented as batching writes and
+        // *requiring* `flush()` to make them durable, and `flush` issues an empty
+        // `Immediate` commit — exactly what `None` needs to be persisted.
+        //
+        // What changes: redb 2's `Eventual` also persisted on its own eventually,
+        // so an unflushed write usually survived. Under `None` it does not — an
+        // unflushed write is lost on crash, and redb notes that commits at this
+        // level never free pages, so a caller who never flushes also grows the
+        // file. Both are addressed by the `flush()` the docs already require.
+        // redb 4 made this fallible: it refuses a non-`Immediate` durability when
+        // a persistent savepoint has been created or deleted in this transaction.
+        // TalaDB never uses savepoints, so this cannot fire today — but swallowing
+        // it would mean a future caller silently getting durability they did not
+        // ask for, which for `Immediate` is a data-safety promise, not a hint.
+        let wanted = if self.eventual.load(Ordering::Relaxed) {
+            Durability::None
         } else {
             Durability::Immediate
-        });
+        };
+        txn.set_durability(wanted)
+            .map_err(|e| TalaDbError::Storage(format!("could not set write durability: {e}")))?;
         Ok(Box::new(RedbWriteTxn { txn }))
     }
 
@@ -237,14 +286,20 @@ impl StorageBackend for RedbBackend {
 
     fn flush(&self) -> Result<(), TalaDbError> {
         // An empty commit with Immediate durability fsyncs the file, persisting
-        // any prior Eventual commits. No-op cost when already committing
+        // any prior non-durable commits. No-op cost when already committing
         // immediately (the data is already durable).
+        //
+        // This matters more under redb 4 than it did under redb 2: `Durability::None`
+        // — what `set_durability(true)` now maps to — never persists on its own,
+        // where redb 2's `Eventual` eventually would. This commit is the only thing
+        // that makes a batched write durable.
         let mut txn = self
             .db
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .begin_write()?;
-        txn.set_durability(Durability::Immediate);
+        txn.set_durability(Durability::Immediate)
+            .map_err(|e| TalaDbError::Storage(format!("could not force durable flush: {e}")))?;
         txn.commit()?;
         Ok(())
     }

@@ -90,7 +90,7 @@ pub fn load_from_path(path: &Path) -> Result<TalaDbConfig, TalaDbError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let config: TalaDbConfig = match ext {
         #[cfg(feature = "config-yaml")]
-        "yml" | "yaml" => serde_yaml::from_str(&content)
+        "yml" | "yaml" => serde_yaml_ng::from_str(&content)
             .map_err(|e| TalaDbError::Config(format!("invalid YAML config: {e}")))?,
         #[cfg(not(feature = "config-yaml"))]
         "yml" | "yaml" => {

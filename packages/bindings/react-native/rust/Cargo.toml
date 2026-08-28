@@ -16,7 +16,17 @@ workspace = true
 name = "taladb_ffi"
 # staticlib  → linked into iOS .app (lipo'd universal .a)
 # cdylib     → loaded by Android as libtaladb_ffi.so
-crate-type = ["staticlib", "cdylib"]
+# rlib       → so Rust tooling can depend on this crate. Only the fuzz targets do
+#              (see the `fuzzing` feature); shipping builds ignore the extra
+#              artifact. Without it the JSON→Filter parsers here are unreachable
+#              from a fuzzer, which is where the nesting and operator handling
+#              actually live.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Exposes the internal JSON parsers so `packages/core/fuzz` can drive them.
+# Off by default, so the shipped library's surface is unchanged.
+fuzzing = []
 
 [dependencies]
 taladb-core = { path = "../../../core", features = ["encryption"] }

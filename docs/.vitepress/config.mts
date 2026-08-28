@@ -110,7 +110,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.11.1",
+        text: "v0.11.2",
         items: [
           {
             text: "Changelog",

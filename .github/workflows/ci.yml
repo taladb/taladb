@@ -69,28 +69,258 @@ jobs:
   # Lint & Test — native Rust (fast, no WASM toolchain needed)
   # ---------------------------------------------------------------------------
   rust-check:
-    name: Rust — check / clippy / test
+    name: Rust — fmt / clippy / test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # Deliberately no toolchain action. `rust-toolchain.toml` pins the
+      # version, components and wasm target, and rustup — preinstalled on the
+      # runner — honours a directory override file ahead of any default an action
+      # would set. Installing a toolchain here would download one that never gets
+      # used and, worse, attach clippy/rustfmt to the wrong version. The pin is
+      # the point: the compiler must not move under the repo between commits,
+      # which is how the `-D warnings` gate went red overnight when 1.98 landed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo registry & build
         uses: Swatinem/rust-cache@v2
 
+      # Formatting first: it is the cheapest failure and needs no build.
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
       - name: cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --all-features
 
+      # `--all-targets` lints tests and benches too — previously they were never
+      # linted at all. `--all-features` reaches the `encryption`, `vector-hnsw`
+      # and `config-yaml` code, none of which is on by default.
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # `--all-features` is load-bearing, not tidiness: `tests/encryption.rs` and
+      # `tests/vector_hnsw.rs` both open with `#![cfg(feature = "...")]`, so
+      # without it they compile to nothing and CI reports a pass having run
+      # neither. The HNSW suite includes the regression test for the `top_k`
+      # overflow in `find_nearest`, so dropping the flag silently un-guards it.
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
+
+      # The web binding is only ever *built* by wasm-pack elsewhere in this
+      # workflow, so nothing lints it. `usize` is 32-bit on wasm32 and several
+      # findings only exist there, which makes this the target most worth linting.
+      - name: cargo clippy (wasm32)
+        run: cargo clippy -p taladb-web --target wasm32-unknown-unknown --all-features -- -D warnings
+
+      # The browser bundle can be built without the legacy redb reader, which is a
+      # 506 KB saving for an app with no pre-redb-4 databases to migrate. That
+      # configuration compiles different code — a different error path, and the
+      # `LegacyOpfs` backend absent entirely — so it needs its own check. It broke
+      # twice while being written, both times invisibly to the default build.
+      - name: clippy — wasm32 without the legacy reader
+        run: cargo clippy -p taladb-web --target wasm32-unknown-unknown --no-default-features -- -D warnings
+
+      # The web binding has 17 `#[wasm_bindgen_test]` tests and, until now, nothing
+      # ran them: they were configured `run_in_browser`, which needs a webdriver,
+      # so they sat here looking like coverage. None of them actually touch the
+      # DOM, OPFS or a worker, so they run under node with no browser at all.
+      #
+      # `wasm-bindgen-cli` must match the `wasm-bindgen` version in the lockfile or
+      # the runner refuses the module, so it is read from there rather than pinned
+      # in two places.
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          version=$(cargo metadata --format-version 1 --locked \
+            | python3 -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='wasm-bindgen'))")
+          echo "wasm-bindgen $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: cargo test (wasm32, node)
+        run: cargo test -p taladb-web --target wasm32-unknown-unknown
+
+  # ---------------------------------------------------------------------------
+  # Supply chain — advisories against the committed Cargo.lock
+  #
+  # Split from `rust-check` so an advisory published upstream shows up as its own
+  # red job rather than masquerading as a code failure, and so it keeps running
+  # when the lint job is broken. `continue-on-error` is deliberately absent: a
+  # warn-only advisory check is one nobody reads.
+  #
+  # `--deny warnings` promotes unmaintained/unsound/yanked to failures, not just
+  # vulnerabilities. That is only sustainable because the tree is currently clean
+  # of all four — reaching that took bumping crossbeam-epoch, anyhow, spin,
+  # unicode-segmentation and both `rand` lines, and dropping postcard's default
+  # `heapless-cas` feature (which pulled in the unmaintained `atomic-polyfill`).
+  #
+  # When an advisory lands that genuinely cannot be fixed — a transitive dep with
+  # no patched release — add it to a `.cargo/audit.toml` `[advisories] ignore`
+  # list with a comment saying why and when to revisit. Do not reach for
+  # `continue-on-error`: that silences every future advisory too.
+  # ---------------------------------------------------------------------------
+  rust-audit:
+    name: Rust — cargo audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+  # ---------------------------------------------------------------------------
+  # MSRV — the floor downstream users must satisfy
+  #
+  # `rust-toolchain.toml` pins what *we* build with (currently well ahead of this);
+  # `rust-version` in Cargo.toml is a promise to consumers, and nothing was checking
+  # it. Adopting redb 4 forced it from 1.88 to 1.90 and the workspace build stayed
+  # green throughout, because the pinned toolchain compiles anything — the break was
+  # invisible until someone ran this by hand. Now it is not.
+  #
+  # A failure here means either a dependency raised its own floor, or new code used
+  # something newer than the declared minimum. Both are decisions, not accidents:
+  # raise `rust-version` deliberately (it is a breaking change) or pin the dependency
+  # back.
+  # ---------------------------------------------------------------------------
+  rust-msrv:
+    name: Rust — MSRV
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          msrv=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $msrv"
+
+      - name: Install the declared MSRV toolchain
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      # `check`, not `test`: dev-dependencies are free to require a newer compiler
+      # than the published crates do, and holding them to the consumer floor would
+      # be a promise nobody asked for.
+      - name: cargo check on the MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-features
+
+  # ---------------------------------------------------------------------------
+  # Miri — undefined-behaviour check over the FFI's raw-pointer layer
+  #
+  # Scoped to the `miri_safe` module on purpose. Miri interprets rather than
+  # executes, and redb's B-tree and page machinery is far too much work to
+  # interpret: one in-memory open plus a single insert does not finish in eight
+  # minutes. Pointing Miri at the whole suite would mean a job that always times
+  # out, which is the same as no job. `miri_safe` holds the tests that exercise
+  # the raw-pointer layer without touching a database, and runs in ~6 seconds.
+  #
+  # Nightly, because Miri only exists there — this is the one place the pinned
+  # toolchain is deliberately bypassed.
+  # ---------------------------------------------------------------------------
+  rust-miri:
+    name: Rust — miri (FFI pointer layer)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly with miri
+        run: |
+          rustup toolchain install nightly --component miri
+          rustup run nightly cargo miri setup
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+
+      # Both aliasing models: Stacked Borrows is the default, Tree Borrows is
+      # stricter about how references derived from raw pointers may be used.
+      - name: cargo miri test (stacked borrows)
+        run: cargo +nightly miri test -p taladb-ffi -- miri_safe
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+
+      - name: cargo miri test (tree borrows)
+        run: cargo +nightly miri test -p taladb-ffi -- miri_safe
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-tree-borrows
+
+  # ---------------------------------------------------------------------------
+  # Fuzzing — time-boxed smoke run over every target
+  #
+  # 60s per target, not a soak. The point is to keep the targets *building* and
+  # to catch a regression that any seeded input reaches; finding genuinely new
+  # bugs takes hours and belongs in a scheduled or manual run, not in the path of
+  # every push. The committed `seeds/` corpus is what makes a minute useful — with
+  # random bytes alone the parser targets would spend the whole budget failing to
+  # produce valid JSON.
+  #
+  # Nightly, because cargo-fuzz requires it. The fuzz crate is its own workspace
+  # root (see its Cargo.toml), so it is not covered by the main rust-check job.
+  # ---------------------------------------------------------------------------
+  rust-fuzz:
+    name: Rust — fuzz (smoke)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly
+        run: rustup toolchain install nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz
+          workspaces: |
+            .
+            packages/core/fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # Build every target first. A target that stops compiling is the failure
+      # mode this job is most likely to catch, and it should be reported as a
+      # build error rather than as a fuzzing failure.
+      - name: Build all fuzz targets
+        working-directory: packages/core/fuzz
+        run: |
+          for t in $(sed -n 's/^name = "\(fuzz_[a-z_]*\)"$/\1/p' Cargo.toml); do
+            echo "::group::build $t"
+            cargo +nightly fuzz build "$t"
+            echo "::endgroup::"
+          done
+
+      - name: Fuzz (60s per target)
+        working-directory: packages/core/fuzz
+        env:
+          SECONDS_PER_TARGET: 60
+        run: ./run.sh
+
+      # A crash is only actionable with the input that caused it.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: packages/core/fuzz/artifacts/
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # TypeScript type-check
@@ -143,10 +373,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add build targets
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -184,8 +421,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -233,8 +476,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -352,6 +601,10 @@ jobs:
     needs:
       - setup
       - rust-check
+      - rust-audit
+      - rust-msrv
+      - rust-miri
+      - rust-fuzz
       - ts-check
       - build-wasm
       - build-node

@@ -179,9 +179,16 @@ pub fn parse_pipeline(
     Ok(stages)
 }
 
+/// Reject a `$match` whose regexes will not compile, at pipeline-parse time.
+///
+/// Goes through `build_regex` — the same builder the executor uses — so
+/// validation and execution agree on what is legal. They did not: this used a
+/// bare `regex::Regex::new`, whose default size ceiling is 10 MiB against the
+/// executor's 1 MiB, so a pattern between the two passed validation here and
+/// then failed when the stage actually ran.
 fn validate_regexes(filter: &Filter) -> Result<(), String> {
     match filter {
-        Filter::Regex(_, pattern) => regex::Regex::new(pattern)
+        Filter::Regex(_, pattern) => crate::query::filter::build_regex(pattern)
             .map(|_| ())
             .map_err(|e| format!("invalid regex: {e}")),
         Filter::And(filters) | Filter::Or(filters) => filters.iter().try_for_each(validate_regexes),
@@ -432,10 +439,14 @@ fn apply_stage(
     regex_cache: &HashMap<String, regex::Regex>,
 ) -> Result<Vec<Document>, TalaDbError> {
     match stage {
-        Stage::Match(filter) => Ok(docs
-            .into_iter()
-            .filter(|d| filter.matches_with_cache(d, regex_cache))
-            .collect()),
+        // `try_fold` rather than `filter`: the predicate can now fail, and a
+        // closure passed to `filter` has nowhere to send an error.
+        Stage::Match(filter) => docs.into_iter().try_fold(Vec::new(), |mut kept, d| {
+            if filter.matches_with_cache(&d, regex_cache)? {
+                kept.push(d);
+            }
+            Ok(kept)
+        }),
 
         Stage::Group { key, accumulators } => apply_group(docs, key, accumulators),
 

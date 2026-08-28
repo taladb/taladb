@@ -58,9 +58,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - uses: actions/cache@v4
         with:
@@ -117,9 +122,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add build targets
+        run: rustup target add wasm32-unknown-unknown
 
       - uses: actions/cache@v4
         with:
@@ -166,8 +179,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -240,9 +259,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add build targets
+        run: rustup target add ${{ matrix.target }}
 
       - uses: actions/cache@v4
         with:
@@ -287,9 +314,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add build targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
       - uses: actions/cache@v4
         with:
@@ -339,9 +374,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      # `rust-toolchain.toml` decides the version; rustup honours it ahead of any
+      # default. Targets are added with `rustup target add` rather than the
+      # toolchain action's `targets:` input, because that input installs them for
+      # the toolchain *the action* resolves — which stops being the active one the
+      # moment `stable` moves past the pin, and the build then fails looking for a
+      # std it never installed.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add build targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 
       - name: Cache cargo registry, build, and cargo-ndk binary
         uses: actions/cache@v4

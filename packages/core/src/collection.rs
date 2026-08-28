@@ -858,7 +858,14 @@ impl Collection {
         // Fusing only `top_k` from each side loses documents that sit just
         // outside one ranking but high in the other — exactly the recall the
         // technique is meant to recover. Over-fetch, fuse, then truncate.
-        let pool = candidates.unwrap_or_else(|| (top_k * 4).max(20));
+        //
+        // `saturating_mul`, not `*`: `top_k` arrives from the caller — a `u32`
+        // from JS through the wasm and napi bindings, a raw `usize` through the
+        // React Native FFI — and on wasm32 a `usize` is 32 bits, so `top_k * 4`
+        // overflows from `top_k > u32::MAX / 4`. Saturating is the right answer
+        // rather than an error: a pool larger than the collection already means
+        // "fetch everything", which is what saturating gives you.
+        let pool = candidates.unwrap_or_else(|| top_k.saturating_mul(4).max(20));
 
         let text_hits = self.search_text_with(text_field, text, pool, &bm25, filter.clone())?;
         let vector_hits = self.find_nearest(vector_field, vector, pool, filter)?;
@@ -1289,7 +1296,12 @@ impl Collection {
                 // The graph may contain ids deleted since the last rebuild —
                 // load_results drops those. Over-fetch so the caller still
                 // receives top_k results despite a moderate amount of churn.
-                let fetch_k = top_k + (top_k / 5).max(8);
+                //
+                // `saturating_add` for the same reason as the pool in
+                // `hybrid_search`: `top_k` is caller-supplied and unbounded, and
+                // the over-fetch margin pushes it past `usize::MAX` near the top
+                // of the range. Saturating already means "the whole graph".
+                let fetch_k = top_k.saturating_add((top_k / 5).max(8));
                 let scored = search_hnsw(&graph, query, &def.metric, fetch_k);
                 let mut results = self.load_results(scored)?;
                 results.truncate(top_k);
@@ -2292,7 +2304,7 @@ impl Collection {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
                 None => continue, // deleted since the snapshot
             };
-            if !filter.matches_with_cache(&stored_old, &regex_cache) {
+            if !filter.matches_with_cache(&stored_old, &regex_cache)? {
                 continue; // modified since the snapshot and no longer matches
             }
             // Clone BEFORE decryption: the write path needs the exact stored
@@ -2359,7 +2371,7 @@ impl Collection {
         for bytes in stored.into_iter() {
             let Some(bytes) = bytes else { continue };
             let stored_old: Document = postcard::from_bytes(&bytes)?;
-            if !filter.matches_with_cache(&stored_old, &regex_cache) {
+            if !filter.matches_with_cache(&stored_old, &regex_cache)? {
                 continue;
             }
             let mut plain_old = stored_old.clone();
@@ -2409,7 +2421,7 @@ impl Collection {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
                 None => continue,
             };
-            if !filter.matches_with_cache(&current, &regex_cache) {
+            if !filter.matches_with_cache(&current, &regex_cache)? {
                 continue;
             }
             let doc_id = current.id.to_string();
@@ -2450,7 +2462,7 @@ impl Collection {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
                 None => continue,
             };
-            if !filter.matches_with_cache(&current, &regex_cache) {
+            if !filter.matches_with_cache(&current, &regex_cache)? {
                 continue;
             }
             // Audit row commits atomically with the batch.

@@ -7,12 +7,23 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# An empty `[workspace]` table makes this its own workspace root, which is what
+# keeps it out of the parent's `members` — the parent lists neither this crate
+# nor an `exclude` entry for it. Without this, every `cargo fuzz` invocation
+# fails with "current package believes it's in a workspace when it's not", which
+# is why the two targets that predate this file were never runnable.
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 postcard = { version = "1.0", features = ["alloc"] }
+serde_json = "1.0"
 taladb-core = { path = "..", features = ["encryption"] }
+# The JSON→Filter/Update parsers live in the bindings, not the core. This is the
+# one binding reachable from a fuzzer without a napi or wasm toolchain; the
+# `fuzzing` feature exposes its parsers and is off in shipping builds.
+taladb-ffi = { path = "../../bindings/react-native/rust", features = ["fuzzing"] }
 
-# Prevent the fuzzer from being built as part of the workspace.
 [[bin]]
 name = "fuzz_snapshot"
 path = "fuzz_targets/fuzz_snapshot.rs"
@@ -22,5 +33,23 @@ doc = false
 [[bin]]
 name = "fuzz_filter"
 path = "fuzz_targets/fuzz_filter.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_filter_parser"
+path = "fuzz_targets/fuzz_filter_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_update_parser"
+path = "fuzz_targets/fuzz_update_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pipeline"
+path = "fuzz_targets/fuzz_pipeline.rs"
 test = false
 doc = false

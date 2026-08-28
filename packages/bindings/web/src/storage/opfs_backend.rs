@@ -7,9 +7,18 @@
 //!
 //! Safety
 //! ------
-//! WASM is single-threaded. `FileSystemSyncAccessHandle` (a JS object) is not
-//! `Send` by Rust's type system, but since there is exactly one thread in the
-//! WASM runtime, the `unsafe impl Send + Sync` below is sound.
+//! `FileSystemSyncAccessHandle` is a JS object and is not `Send`, and this type
+//! also holds a `RefCell`, whose borrow counter is not atomic. Both are fine on
+//! wasm32 without threads, where there is exactly one thread and no two borrows
+//! can overlap — so `unsafe impl Send + Sync` below is sound *there*.
+//!
+//! That is a claim about the target, not about the code, so it is enforced by the
+//! target: the impls are gated on `target_arch = "wasm32"` and
+//! `not(target_feature = "atomics")`, and enabling wasm threads is a
+//! `compile_error!` rather than a silent race. The gate is what keeps the
+//! justification honest — it used to be a comment, which meant building this
+//! module for any other target, or for wasm-with-threads, would have compiled a
+//! `Sync` impl over a non-atomic `RefCell`.
 
 use std::cell::RefCell;
 use std::io;
@@ -52,8 +61,23 @@ impl std::fmt::Debug for OpfsBackend {
     }
 }
 
-// WASM is single-threaded — this is safe.
+// If wasm threads are ever enabled, the single-thread argument below stops
+// holding and this module needs real synchronisation around `scratch`. Fail
+// loudly here rather than let the reader hunt a missing-trait error.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+compile_error!(
+    "OpfsBackend's Send/Sync impls assume a single-threaded wasm runtime, which      `target_feature = \"atomics\"` breaks: `scratch` is a RefCell with a      non-atomic borrow counter, and `FileSystemSyncAccessHandle` is not Send.      Replace the RefCell with a real lock and re-justify both impls before      enabling wasm threads."
+);
+
+// SAFETY: on wasm32 without the `atomics` target feature the runtime has exactly
+// one thread, so no two references to an `OpfsBackend` can be used concurrently:
+// the JS handle is never touched from another thread, and `scratch.borrow_mut()`
+// can never race. Both conditions are enforced by the `cfg` rather than assumed
+// — see the module-level Safety section.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 unsafe impl Send for OpfsBackend {}
+// SAFETY: as above.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 unsafe impl Sync for OpfsBackend {}
 
 #[allow(dead_code)]
@@ -98,16 +122,39 @@ impl OpfsBackend {
         Ok(&self.opts)
     }
 
-    fn js_read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
-        // Grow the scratch buffer only when a read outgrows it; steady state
-        // reuses the same JS allocation for every page.
-        let mut scratch = self.scratch.borrow_mut();
-        if (scratch.length() as usize) < len {
-            *scratch = Uint8Array::new_with_length(len as u32);
+    /// Fill `out` from `offset`, or fail.
+    ///
+    /// redb 4 requires the buffer be filled completely — a short read is an
+    /// error, not a partial success — which removes the per-read `Vec` the redb
+    /// 2 signature forced and makes the validation below sharper: there is now
+    /// exactly one acceptable answer from JavaScript.
+    fn js_read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+        let len = out.len();
+        if len == 0 {
+            return Ok(());
         }
-        // `read` fills from index 0, so a longer scratch buffer would report a
-        // read longer than requested — subarray keeps the length exact.
-        let view = scratch.subarray(0, len as u32);
+        // `Uint8Array` lengths are `u32`. On wasm32 `usize` is 32 bits so this is
+        // lossless, but the struct also compiles for the host, where it is not.
+        let len_u32 =
+            u32::try_from(len).map_err(|_| io_err("opfs read: request longer than u32::MAX"))?;
+
+        // The borrow is scoped to growing the buffer and taking the view, and
+        // released before the JS call below. `subarray` hands back its own
+        // `Uint8Array` handle rather than borrowing from `scratch`, so nothing
+        // needs the guard afterwards — and holding a `RefCell` borrow across a
+        // call out into JS is how a re-entrant caller (a polyfilled OPFS handle
+        // that calls back into the module) turns into a `BorrowMutError` panic.
+        let view = {
+            // Grow the scratch buffer only when a read outgrows it; steady state
+            // reuses the same JS allocation for every page.
+            let mut scratch = self.scratch.borrow_mut();
+            if scratch.length() < len_u32 {
+                *scratch = Uint8Array::new_with_length(len_u32);
+            }
+            // `read` fills from index 0, so a longer scratch buffer would report
+            // a read longer than requested — subarray keeps the length exact.
+            scratch.subarray(0, len_u32)
+        };
 
         let opts = self.opts_at(offset)?;
         let result = self
@@ -115,12 +162,25 @@ impl OpfsBackend {
             .call2(self.handle.as_ref(), &view, opts)
             .map_err(|e| io_err(&format!("opfs read: {e:?}")))?;
 
-        let n = result
+        // The byte count comes back from JavaScript, so it is validated rather
+        // than trusted. redb has asked for exactly `len` bytes and treats
+        // anything less as an error, so a short read must be reported here
+        // rather than papered over: a well-behaved
+        // `FileSystemSyncAccessHandle` returns `len`, and a polyfill or shimmed
+        // handle returning NaN, a negative, or an over-long count would
+        // otherwise become a silent truncation, a heap-exhausting allocation, or
+        // a `copy_to` length-mismatch panic. A trap in the storage layer is the
+        // worst place to take one.
+        let raw = result
             .as_f64()
-            .ok_or_else(|| io_err("opfs read: non-numeric return"))? as usize;
-        let mut out = vec![0u8; n];
-        view.subarray(0, n as u32).copy_to(&mut out[..n]);
-        Ok(out)
+            .ok_or_else(|| io_err("opfs read: non-numeric return"))?;
+        if raw != f64::from(len_u32) {
+            return Err(io_err(&format!(
+                "opfs read: handle returned {raw} bytes for a {len}-byte read"
+            )));
+        }
+        view.copy_to(out);
+        Ok(())
     }
 
     fn js_write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
@@ -143,6 +203,11 @@ impl OpfsBackend {
 // redb StorageBackend impl
 // ---------------------------------------------------------------------------
 
+// `redb::StorageBackend` is declared `Send + Sync`, so this impl only exists
+// where the impls above do. On any other target the struct and its inherent
+// methods still compile — which keeps the workspace's host-target clippy run
+// looking at `js_read`/`js_write` — it simply cannot be handed to redb.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 impl redb::StorageBackend for OpfsBackend {
     fn len(&self) -> Result<u64, io::Error> {
         self.handle
@@ -151,8 +216,8 @@ impl redb::StorageBackend for OpfsBackend {
             .map_err(|e| io_err(&format!("opfs get_size: {e:?}")))
     }
 
-    fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
-        self.js_read(offset, len)
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+        self.js_read(offset, out)
     }
 
     fn set_len(&self, new_len: u64) -> Result<(), io::Error> {
@@ -161,7 +226,9 @@ impl redb::StorageBackend for OpfsBackend {
             .map_err(|e| io_err(&format!("opfs truncate: {e:?}")))
     }
 
-    fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
+    // redb 4 dropped the `eventual` argument; durability is chosen per commit
+    // through `Durability` rather than per sync. The body was already ignoring it.
+    fn sync_data(&self) -> Result<(), io::Error> {
         self.handle
             .flush()
             .map_err(|e| io_err(&format!("opfs flush: {e:?}")))
@@ -169,6 +236,102 @@ impl redb::StorageBackend for OpfsBackend {
 
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
         self.js_write(offset, data)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// redb 2 view of the same storage
+//
+// Only used to open a database written before the redb 4 bump and upgrade it in
+// place — redb 2 reads both the old and new formats and can rewrite one into the
+// other, which redb 4 cannot do at all. Once the upgrade has run, everything goes
+// through the redb 4 impl above.
+//
+// The two traits differ in exactly two places: redb 2's `read` returns an owned
+// `Vec` rather than filling a caller buffer, and its `sync_data` takes an
+// `eventual` flag. Both forward to the same `js_read`/`js_write` as the redb 4
+// impl, so there is one implementation of the actual OPFS calls, not two.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+unsafe impl Send for LegacyOpfs {}
+// SAFETY: as for `OpfsBackend` — see the module-level Safety section. `LegacyOpfs`
+// is a newtype over it and adds no interior mutability of its own.
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+unsafe impl Sync for LegacyOpfs {}
+
+/// `OpfsBackend` seen through redb 2's trait.
+///
+/// A newtype rather than a second `impl` on `OpfsBackend` itself: the two traits
+/// share method names, so having both on one type would force every call site to
+/// disambiguate.
+///
+/// wasm32-only, like the trait impls below and the OPFS constructors that use it —
+/// nothing on any other target has an OPFS handle to migrate.
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+pub struct LegacyOpfs(pub OpfsBackend);
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+impl std::fmt::Debug for LegacyOpfs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LegacyOpfs").finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(
+    feature = "legacy-migration",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+impl taladb_core::redb2::StorageBackend for LegacyOpfs {
+    fn len(&self) -> Result<u64, io::Error> {
+        self.0
+            .handle
+            .get_size()
+            .map(|s| s as u64)
+            .map_err(|e| io_err(&format!("opfs get_size: {e:?}")))
+    }
+
+    fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
+        // redb 2 allocates per read; redb 4's buffer-filling signature is what
+        // removed that, and this path only runs during a one-off upgrade.
+        let mut out = vec![0u8; len];
+        self.0.js_read(offset, &mut out)?;
+        Ok(out)
+    }
+
+    fn set_len(&self, new_len: u64) -> Result<(), io::Error> {
+        self.0
+            .handle
+            .truncate_with_f64(new_len as f64)
+            .map_err(|e| io_err(&format!("opfs truncate: {e:?}")))
+    }
+
+    fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
+        self.0
+            .handle
+            .flush()
+            .map_err(|e| io_err(&format!("opfs flush: {e:?}")))
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+        self.0.js_write(offset, data)
     }
 }
 

@@ -25,6 +25,7 @@
 //! is **not** sort order — see [`TAG_INT`]. Readers that rely on index order
 //! being sort order must handle that case.
 
+use std::collections::HashSet;
 use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
@@ -77,10 +78,21 @@ pub fn encode_index_key(value: &Value, id: Ulid) -> Option<Vec<u8>> {
 pub fn encode_index_keys(value: &Value, id: Ulid) -> Vec<Vec<u8>> {
     match value {
         Value::Array(items) => {
+            // `seen` rather than `keys.contains(&key)`: the array length is
+            // caller-controlled, and a linear scan inside the loop made one
+            // insert quadratic in it. Measured on a debug build, a single
+            // document went from 170 ms at 2,000 elements to 4.5 s at 16,000 —
+            // a frozen UI in the browser or on a phone, from one write.
+            //
+            // `keys` still carries the output so element order is preserved.
+            // Returning the set directly would be cheaper by one clone per key
+            // but would hand back a nondeterministic order, which is a poor
+            // trade for something this easy to debug into.
             let mut keys: Vec<Vec<u8>> = Vec::with_capacity(items.len());
+            let mut seen: HashSet<Vec<u8>> = HashSet::with_capacity(items.len());
             for item in items {
                 if let Some(key) = encode_index_key(item, id)
-                    && !keys.contains(&key)
+                    && seen.insert(key.clone())
                 {
                     keys.push(key);
                 }
@@ -314,7 +326,9 @@ pub fn encode_compound_keys(
         return Ok(encode_compound_key(values, id).into_iter().collect());
     }
 
+    // Same quadratic-dedup fix as `encode_index_keys` — see the comment there.
     let mut keys: Vec<Vec<u8>> = Vec::new();
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let position = values
         .iter()
         .position(|v| matches!(v, Value::Array(_)))
@@ -331,7 +345,7 @@ pub fn encode_compound_keys(
         let mut expanded: Vec<&Value> = values.to_vec();
         expanded[position] = item;
         if let Some(key) = encode_compound_key(&expanded, id)
-            && !keys.contains(&key)
+            && seen.insert(key.clone())
         {
             keys.push(key);
         }

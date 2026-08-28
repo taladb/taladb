@@ -15,22 +15,49 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# On by default: TalaDB has shipped browser releases, so there are v2 databases in
+# users' OPFS storage. Without this the wasm bundle has no reader for them and
+# that data is simply unreachable.
+#
+# It costs a second copy of redb — measured at **+506 KB (+18.5%)** on the release
+# wasm, 2.68 MB to 3.17 MB. An app with no install base to migrate can build with
+# `--no-default-features` and skip it:
+#
+#     wasm-pack build packages/bindings/web --target web --release -- --no-default-features
+#
+# The upgrade itself is one-time and in place; once a database has been through it
+# the legacy reader is never touched again (and must not be — see
+# `open_opfs_upgrading_if_needed`).
+default = ["legacy-migration"]
+legacy-migration = ["taladb-core/legacy-migration"]
+
 [dependencies]
-# `default-features = false` drops serde_yaml + unsafe-libyaml: the browser
+# `default-features = false` drops the YAML parser entirely: the browser
 # receives its config as a JSON string and never reads a file off disk.
 taladb-core = { path = "../../core", default-features = false, features = ["encryption"] }
-redb = "2.1"
+redb = "4.2"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
-getrandom = { version = "0.3", features = ["wasm_js"] }
-# `rand` (pulled in by taladb-core's `encryption` feature) depends on
-# getrandom 0.2, which needs its `js` backend explicitly enabled for wasm.
-# Renamed so it can coexist with the 0.3 line above; the feature unifies
-# across the whole dependency graph.
-getrandom_v02 = { package = "getrandom", version = "0.2", features = ["js"] }
+# On wasm32-unknown-unknown `getrandom` refuses to compile unless a backend is
+# selected, and it must be selected per major version. Two majors genuinely reach
+# this build, so both entries are load-bearing — deleting either turns the wasm
+# build red, not merely slower:
+#
+#   0.4  our own `getrandom::fill` calls in taladb-core, and aes-gcm 0.11 through
+#        aead 0.6 → crypto-common 0.2.
+#   0.3  `ulid` → rand 0.9 → rand_core 0.9. Nothing we control; it goes away only
+#        when ulid moves to rand 0.10.
+#
+# A third entry for 0.2 used to sit here for `rand` 0.8, pulled in by the
+# `encryption` feature. That one *is* gone: taladb-core no longer depends on rand
+# (the GCM nonce comes from `getrandom::fill`), and the RustCrypto bump moved the
+# crypto chain from 0.2 to 0.4.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom_v03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 serde_json = "1.0"
 console_error_panic_hook = "0.1"
 

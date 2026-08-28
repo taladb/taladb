@@ -5,4 +5,17 @@ runner = "wasm-bindgen-test-runner"
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
 [alias]
-wasm = "build --target wasm32-unknown-unknown --profile release-wasm"
+# `--release`, not `--profile release-wasm`: that profile was deliberately removed
+# (see the NOTE in the root Cargo.toml — wasm-pack cannot be pointed at a custom
+# profile, so a size-tuned one would silently never run). The alias kept naming it
+# and had been failing with "profile `release-wasm` is not defined" ever since.
+#
+# `-p taladb-web` because that is the only crate meant to reach wasm. Unscoped, the
+# alias also tried to build the CLI and node bindings for wasm32, which fails in
+# their transitive `getrandom` copies — those crates never select a wasm backend
+# because they are never meant to be built this way.
+#
+# This is a quick local check that the wasm target still compiles. It is not what
+# ships: `wasm-pack build packages/bindings/web --target web --release` is, and
+# only that applies the `wasm-opt` flags from the web crate's manifest.
+wasm = "build -p taladb-web --target wasm32-unknown-unknown --release"

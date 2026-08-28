@@ -388,3 +388,35 @@ fn a_document_only_one_retriever_finds_still_ranks() {
     assert!(lonely.text_rank.is_none());
     assert_eq!(lonely.vector_rank, Some(0));
 }
+
+/// `top_k` crosses into the engine straight from a caller — a `u32` from JS
+/// through the wasm and napi bindings, a raw `usize` through the React Native
+/// FFI — and the candidate pool is derived from it by multiplication. That
+/// multiply used to be a plain `*`, so a large `top_k` panicked with "attempt to
+/// multiply with overflow" in debug and, with overflow checks off, wrapped in
+/// release into a 20-document pool that returned a quietly under-recalled
+/// result set. On wasm32 a `usize` is 32 bits, so `top_k` only had to exceed
+/// `u32::MAX / 4` to get there.
+#[test]
+fn a_huge_top_k_saturates_the_candidate_pool_instead_of_overflowing() {
+    let db = db_with(&[
+        ("keyword", "shared term", TOPIC_B, "en"),
+        ("lonely", "zzz", TOPIC_A, "en"),
+    ]);
+    let col = db.collection("docs").unwrap();
+
+    // The smallest `top_k` for which `top_k * 4` leaves the address space.
+    let top_k = usize::MAX / 4 + 1;
+    let results = col
+        .hybrid_search(HybridQuery::new(
+            "body",
+            "shared term",
+            "embedding",
+            &TOPIC_A,
+            top_k,
+        ))
+        .expect("a top_k past the overflow boundary must still answer");
+
+    // Asking for more than the collection holds returns the collection.
+    assert_eq!(titles(&results).len(), 2);
+}

@@ -216,8 +216,7 @@ impl CollectionWasm {
     /// Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
     /// `$skip`, `$limit`, `$project`). Returns the resulting documents.
     pub fn aggregate(&self, pipeline: JsValue) -> Result<JsValue, JsValue> {
-        let json: serde_json::Value =
-            from_value(pipeline).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let json = js_to_json(pipeline)?;
         let pl = taladb_core::aggregate::parse_pipeline(&json, &|v| {
             json_to_filter(v).ok_or_else(|| "invalid $match filter".to_string())
         })
@@ -434,9 +433,88 @@ impl CollectionWasm {
 // Conversion helpers: JS ↔ Rust
 // ---------------------------------------------------------------------------
 
+/// `serde_wasm_bindgen::from_value` plus a nesting check.
+///
+/// Every JS value that goes on to a recursive converter comes through here.
+/// `from_value` imposes no depth limit of its own — unlike `serde_json`'s string
+/// parser, which stops at 128 — so without this a caller-supplied object graph
+/// sets the recursion depth of `json_to_filter`, `json_to_value` and friends.
+///
+/// One function rather than a check at each call site: a new `from_value` call
+/// added later gets the guard by using this, and the reviewer's question becomes
+/// "why is this one not using `js_to_json`?" instead of "is a check missing?".
+fn js_to_json(val: JsValue) -> Result<serde_json::Value, JsValue> {
+    // Measured on the *JavaScript* value, before anything deserialises it.
+    //
+    // Checking the `serde_json::Value` afterwards — which is what this used to do
+    // — bounds what reaches the filter and update parsers, but leaves two
+    // recursions on either side of the guard, neither of them ours:
+    //
+    //   building   `serde_wasm_bindgen::from_value` walks a nested JS object by
+    //              recursing into it, and imposes no depth limit, so a deep
+    //              enough input overflows before the check is ever reached.
+    //   dropping   `serde_json::Value` has a recursive `Drop`, so *returning the
+    //              error* could overflow instead. Measured on an 8 MiB stack: a
+    //              30,000-deep value builds, checks and drops cleanly; 50,000
+    //              survives construction and the check, then dies in the drop.
+    //
+    // Rejecting here closes both. `from_value` is only ever handed something
+    // within the ceiling, so its recursion is bounded at 64 frames, and the value
+    // it produces is shallow enough to drop safely.
+    check_js_depth(&val)?;
+
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // Still checked on the Rust side: `check_js_depth` and the deserialiser could
+    // in principle disagree about what counts as a level, and this is the cheap
+    // assertion that they did not.
+    taladb_core::json_depth::check_json_depth(&json).map_err(err_to_js)?;
+    Ok(json)
+}
+
+/// Reject a JS value nested deeper than the engine's ceiling, without recursing.
+///
+/// An explicit stack, for the same reason the core's checker uses one: a
+/// recursive walker would overflow on exactly the input it exists to reject.
+///
+/// Cycles are handled by the depth limit rather than by tracking visited nodes —
+/// a cycle necessarily revisits a node at a greater depth on every lap, so it
+/// trips the ceiling within 64 of them.
+fn check_js_depth(root: &JsValue) -> Result<(), JsValue> {
+    use taladb_core::json_depth::MAX_JSON_DEPTH;
+
+    // (value, depth-of-that-value). Depth 1 is the root.
+    let mut stack: Vec<(JsValue, usize)> = vec![(root.clone(), 1)];
+
+    while let Some((value, depth)) = stack.pop() {
+        if depth > MAX_JSON_DEPTH {
+            return Err(JsValue::from_str(&format!(
+                "JSON nested deeper than {MAX_JSON_DEPTH} levels"
+            )));
+        }
+        // `typeof null` is "object", so this has to come first.
+        if value.is_null() || value.is_undefined() {
+            continue;
+        }
+        if js_sys::Array::is_array(&value) {
+            let array = js_sys::Array::from(&value);
+            for i in 0..array.length() {
+                stack.push((array.get(i), depth + 1));
+            }
+        } else if value.is_object() {
+            // Own enumerable values only — the same set `from_value` will walk.
+            let values = js_sys::Object::values(value.unchecked_ref::<js_sys::Object>());
+            for i in 0..values.length() {
+                stack.push((values.get(i), depth + 1));
+            }
+        }
+        // Anything else is a scalar and ends the branch.
+    }
+    Ok(())
+}
+
 /// Convert a JS object like { name: "Alice", age: 30 } to Vec<(String, Value)>.
 fn js_object_to_fields(val: JsValue) -> Result<Vec<(String, Value)>, JsValue> {
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     match json {
         serde_json::Value::Object(map) => Ok(map
             .into_iter()
@@ -544,7 +622,7 @@ fn js_to_filter(val: JsValue) -> Result<Filter, JsValue> {
     if val.is_null() || val.is_undefined() {
         return Ok(Filter::All);
     }
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     json_to_filter(&json).ok_or_else(|| JsValue::from_str("invalid filter"))
 }
 
@@ -634,7 +712,7 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
 /// Supports: { $set: {...} }, { $unset: {...} }, { $inc: {...} },
 ///           { $push: { field: val } }, { $pull: { field: val } }
 fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
-    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json = js_to_json(val)?;
     let obj = json
         .as_object()
         .ok_or_else(|| JsValue::from_str("update must be an object"))?;
@@ -736,7 +814,14 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::*;
 
-    wasm_bindgen_test_configure!(run_in_browser);
+    // Not `run_in_browser`. Every test in this crate passes under node — none of
+    // them touch the DOM, OPFS or a worker — and requiring a browser meant
+    // requiring a webdriver, which is why nothing in CI has ever run them. There
+    // were twelve such tests sitting here looking like coverage.
+    //
+    // If a test is added that genuinely needs browser APIs, put it in its own
+    // module with its own `wasm_bindgen_test_configure!(run_in_browser)` rather
+    // than reinstating it here, so it does not take the rest with it.
 
     #[wasm_bindgen_test]
     fn in_memory_insert_find() {
@@ -753,5 +838,94 @@ mod tests {
         let results = col.find(JsValue::NULL).unwrap();
         let arr = js_sys::Array::from(&results);
         assert_eq!(arr.length(), 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Depth guard on the JavaScript side
+//
+// Deliberately not `run_in_browser`: this walks a plain object graph and touches
+// no DOM, OPFS or worker API, so it runs under node. That matters — the browser
+// tests in this crate need a webdriver, and nothing in CI currently runs them, so
+// a test that insists on a browser is a test that does not execute.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod js_depth_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Build exactly `depth` levels of nesting, without recursing.
+    ///
+    /// `1..depth`, not `0..depth`: the innermost `null` is itself a level, so
+    /// `depth` levels means `depth - 1` arrays around it. Matching the core's
+    /// `nest_arrays` helper exactly is the point — these two tests assert the same
+    /// boundary from opposite sides of the binding, and they are only comparable
+    /// if "depth" counts the same thing on both. Running the test is what caught
+    /// this; it compiled happily while asserting the wrong boundary.
+    fn nest(depth: usize) -> JsValue {
+        let mut v = JsValue::NULL;
+        for _ in 1..depth {
+            let a = js_sys::Array::new();
+            a.push(&v);
+            v = a.into();
+        }
+        v
+    }
+
+    #[wasm_bindgen_test]
+    fn ordinary_shapes_are_accepted() {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"status".into(), &"active".into()).unwrap();
+        let tags = js_sys::Array::new();
+        tags.push(&"a".into());
+        tags.push(&"b".into());
+        js_sys::Reflect::set(&obj, &"tags".into(), &tags).unwrap();
+
+        assert!(check_js_depth(&obj.into()).is_ok());
+        assert!(check_js_depth(&JsValue::NULL).is_ok());
+        assert!(check_js_depth(&JsValue::UNDEFINED).is_ok());
+        assert!(check_js_depth(&JsValue::from_f64(1.0)).is_ok());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_boundary_matches_the_rust_side() {
+        use taladb_core::json_depth::MAX_JSON_DEPTH;
+        assert!(check_js_depth(&nest(MAX_JSON_DEPTH)).is_ok());
+        assert!(check_js_depth(&nest(MAX_JSON_DEPTH + 1)).is_err());
+    }
+
+    /// The whole point of doing this before `from_value`: a value deep enough to
+    /// overflow the deserialiser must be rejected without ever reaching it, and
+    /// without the check itself recursing.
+    #[wasm_bindgen_test]
+    fn a_payload_deep_enough_to_overflow_the_deserialiser_is_refused() {
+        let bomb = nest(100_000);
+        assert!(
+            check_js_depth(&bomb).is_err(),
+            "a 100k-deep value must be rejected by the iterative walk"
+        );
+    }
+
+    /// A cycle would spin forever in a naive walker. The depth ceiling ends it,
+    /// which is why no visited-set is needed.
+    #[wasm_bindgen_test]
+    fn a_cyclic_object_terminates() {
+        let a = js_sys::Array::new();
+        let b = js_sys::Array::new();
+        a.push(&b);
+        b.push(&a);
+        assert!(
+            check_js_depth(&a.into()).is_err(),
+            "a cycle must be rejected by the depth ceiling, not loop"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn wide_is_not_deep() {
+        let wide = js_sys::Array::new();
+        for i in 0..5_000 {
+            wide.push(&JsValue::from_f64(f64::from(i)));
+        }
+        assert!(check_js_depth(&wide.into()).is_ok());
     }
 }

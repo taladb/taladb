@@ -16,45 +16,87 @@ categories = ["database-implementations", "wasm", "data-structures"]
 workspace = true
 
 [dependencies]
-redb       = "2.1"
-postcard   = { version = "1.0", features = ["alloc"] }
+redb       = "4.2"
+# redb 2, alongside redb 4, purely to open databases written before the bump.
+# redb 4 refuses a v2 file outright and has no upgrade path of its own; redb 2
+# reads *both* v2 and v3 and can rewrite one into the other in place, so it is the
+# only version that can perform the conversion. Two majors of redb link into one
+# binary without conflict — they are distinct crates to cargo.
+#
+# Optional, and gated by `legacy-migration`, because in the browser it is a second
+# copy of redb in the bundle.
+redb2      = { package = "redb", version = "2.6", optional = true }
+# `default-features = false` drops postcard's default `heapless-cas` feature.
+# Only `to_allocvec` and `from_bytes` are used here — both `alloc` APIs — while
+# the default pulls in heapless 0.7 and, through it, the unmaintained
+# `atomic-polyfill` (RUSTSEC-2023-0089). Nothing in this workspace uses heapless,
+# so it was dependency weight in every build and an advisory in `cargo audit`.
+postcard   = { version = "1.0", default-features = false, features = ["alloc"] }
 serde      = { version = "1.0", features = ["derive"] }
 ulid       = { version = "1.1", features = ["serde"] }
-thiserror  = "1.0"
+thiserror  = "2.0"
 tracing    = "0.1"
 regex      = { version = "1.11", default-features = false, features = ["std", "unicode-perl"] }
 # Encryption optional deps — only pulled in when `encryption` feature is enabled.
-aes-gcm          = { version = "0.10", optional = true }
-rand             = { version = "0.8",  optional = true }
-pbkdf2           = { version = "0.12", optional = true }
-hmac             = { version = "0.12", optional = true }
-sha2             = { version = "0.10", optional = true }
+aes-gcm          = { version = "0.11", optional = true }
+pbkdf2           = { version = "0.13", optional = true }
+hmac             = { version = "0.13", optional = true }
+sha2             = { version = "0.11", optional = true }
 zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
 # HNSW approximate nearest-neighbor index — opt-in via `vector-hnsw` feature.
 # Pure Rust, WASM-compatible, MIT license.
 instant-distance = { version = "0.6", optional = true }
 # Config parsing — JSON always; YAML only behind `config-yaml`.
 serde_json = { version = "1.0", features = ["preserve_order"] }
-# serde_yaml drags in unsafe-libyaml. Browser and React Native builds receive
-# their config as a JSON string and never read a file off disk, so paying for a
-# YAML parser there is pure bundle weight — hence the feature gate.
-serde_yaml = { version = "0.9", optional = true }
+# `serde_yaml_ng`, not `serde_yaml`: the original was deprecated by its author and
+# is no longer maintained, so a YAML parsing bug would never be fixed upstream —
+# and this parses a file off disk. `serde_yaml_ng` is the maintained continuation
+# and is API-compatible, so the swap is one call site.
+#
+# (Not `serde_yml`, which crates.io now marks "DEPRECATED — unmaintained, a thin
+# compatibility shim". The fork landscape here is littered; `serde_yaml_ng` and
+# `serde_norway` are the two live ones.)
+#
+# Caveat worth knowing: this swaps the *wrapper* for a maintained one, but
+# `serde_yaml_ng` still depends on the original `unsafe-libyaml`, which was
+# deprecated alongside `serde_yaml`. So the unsafe parsing code in the tree is
+# unchanged. `serde_norway` is the alternative that also forked the parser
+# (`unsafe-libyaml-norway`); switching is the same one-line change if that ever
+# matters. It is judged not to today: this parses `taladb.config.yml`, a file the
+# application ships, not untrusted input, and `cargo audit` flags neither crate.
+#
+# Still optional: browser and React Native builds receive their config as a JSON
+# string and never read a file off disk, so a YAML parser there is pure bundle
+# weight — hence the feature gate.
+serde_yaml_ng = { version = "0.10", optional = true }
 # WASM-compatible SystemTime — re-exports std::time on native, uses js_sys::Date on wasm32.
 web-time = "1"
 # Random bytes — used for ULID generation. wasm_js feature enabled by taladb-web for WASM targets.
-getrandom = "0.3"
+getrandom = "0.4"
 # NOTE: endpoint validation deliberately does not use the `url` crate — it pulls
 # in `idna` and its Unicode tables, which is significant permanent weight in a
 # WASM bundle. See `config::split_http_endpoint`.
 
 [features]
-default      = ["config-yaml"]
-encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
+# `legacy-migration` is on by default so a native app that upgrades TalaDB does
+# not silently lose the ability to open its own databases. The browser binding
+# builds with `default-features = false` and opts back in only if it has shipped
+# before — see the feature's own comment.
+default      = ["config-yaml", "legacy-migration"]
+encryption   = ["dep:aes-gcm", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = ["dep:instant-distance"]
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
 # Native builds turn it off (`default-features = false`) to drop serde_yaml and
 # unsafe-libyaml from the bundle. JSON config works either way.
-config-yaml  = ["dep:serde_yaml"]
+config-yaml  = ["dep:serde_yaml_ng"]
+# Read and upgrade databases written before the redb 4 bump.
+#
+# On native this is unconditional — `RedbBackend::open` owns a real file and there
+# is no reason to make not-bricking-it opt-in. In the browser it costs a second
+# copy of redb in the wasm bundle, so it is a feature: an app shipping its first
+# TalaDB release has no v2 databases in the field and should not pay for the
+# reader. One that has been live needs it, or its users' data becomes unreachable.
+legacy-migration = ["dep:redb2"]
 
 [[bench]]
 name = "engine"
@@ -64,3 +106,4 @@ harness = false
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3.10"
 zeroize  = { version = "1.7", features = ["derive"] }
+

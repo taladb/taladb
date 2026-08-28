@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Value};
+use crate::error::TalaDbError;
 
 /// MongoDB-inspired filter AST.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,9 +68,46 @@ fn any_element<F: Fn(&Value) -> bool>(value: &Value, pred: F) -> bool {
     }
 }
 
+/// Ceiling on a compiled user-supplied pattern, applied to both the NFA and the
+/// lazy DFA cache.
+///
+/// A pattern arrives from the caller, so its *compiled* size is caller-controlled
+/// too: `(?:[a-z0-9]{64}){64}` is a few dozen bytes of source and megabytes of
+/// automaton. The `regex` crate has no catastrophic backtracking, so this is not
+/// about exponential matching — it is about memory.
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// Compile a user-supplied pattern under [`REGEX_SIZE_LIMIT`].
+///
+/// Every regex in the engine goes through here so the limits cannot drift
+/// between the place a pattern is validated and the place it is executed. They
+/// had drifted: `aggregate::validate_regexes` used a bare `Regex::new`, whose
+/// default ceiling is 10 MiB, so a pattern between 1 and 10 MiB passed `$match`
+/// validation and then failed — or silently matched nothing — at execution.
+pub(crate) fn build_regex(pattern: &str) -> Result<regex::Regex, TalaDbError> {
+    regex::RegexBuilder::new(pattern)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .map_err(|e| TalaDbError::InvalidFilter(format!("regex: {e}")))
+}
+
+/// How a [`Filter`] evaluation resolves a `Regex` pattern to a compiled automaton.
+enum RegexSource<'a> {
+    /// Compile on demand. Correct anywhere, but recompiles per document, so it
+    /// belongs to one-off checks rather than a scan.
+    Compile,
+    /// Look the pattern up in a cache built by [`Filter::compile_regex_cache`].
+    Cached(&'a HashMap<String, regex::Regex>),
+}
+
 impl Filter {
-    /// Evaluate this filter against a document. Used as a post-filter after index scans.
-    pub fn matches(&self, doc: &Document) -> bool {
+    /// Evaluate the arms that cannot fail — every predicate that does not involve
+    /// a regex or a sub-filter. The composite and `Regex` arms are handled by
+    /// [`Filter::eval`] before it delegates here, so they are unreachable; each
+    /// returns `false` rather than panicking, since a panic in a query path is a
+    /// denial of service and a wrong `false` here is already impossible.
+    fn matches_leaf(&self, doc: &Document) -> bool {
         match self {
             Self::All => true,
 
@@ -149,11 +187,17 @@ impl Filter {
                 doc.contains_key(field) == *should_exist
             }
 
-            Self::And(filters) => filters.iter().all(|f| f.matches(doc)),
-
-            Self::Or(filters) => filters.iter().any(|f| f.matches(doc)),
-
-            Self::Not(inner) => !inner.matches(doc),
+            // Handled by `eval` before it delegates here, so these are
+            // unreachable. `false` rather than `unreachable!` because a panic in
+            // a query path is a denial of service, and this match is exhaustive
+            // with no catch-all — a new `Filter` variant fails to compile here
+            // until someone gives it an arm.
+            //
+            // What that does *not* catch: `eval` ends in a `leaf =>` catch-all,
+            // so a new *composite* variant would route here silently and get
+            // whatever arm was written for it. A variant holding sub-filters
+            // needs an arm in `eval` too, or its children never get evaluated.
+            Self::And(_) | Self::Or(_) | Self::Not(_) | Self::Regex(..) => false,
 
             // Post-filter: check all tokens appear in the field value
             Self::Contains(field, query) => {
@@ -171,25 +215,84 @@ impl Filter {
                     false
                 }
             }
-
-            // Regex post-filter — compiled on each invocation, always a full scan.
-            // Size limits guard against ReDoS via catastrophic backtracking or
-            // excessively large compiled automata from user-supplied patterns.
-            Self::Regex(field, pattern) => {
-                let Some(value) = doc.get(field) else {
-                    return false;
-                };
-                let Ok(re) = regex::RegexBuilder::new(pattern)
-                    // Limit the compiled NFA/DFA size to 1 MiB each.
-                    .size_limit(1 << 20)
-                    .dfa_size_limit(1 << 20)
-                    .build()
-                else {
-                    return false;
-                };
-                any_element(value, |e| matches!(e, Value::Str(t) if re.is_match(t)))
-            }
         }
+    }
+
+    /// The single evaluator behind both public entry points.
+    ///
+    /// `matches` and `matches_with_cache` used to be two full implementations of
+    /// this logic, and they had already drifted: on a pattern that exceeded the
+    /// size limit one returned `false` and the other returned `false` for a
+    /// different reason, and *neither* said so. Under `Not` a silent `false`
+    /// inverts to `true` — "matched nothing" becomes "matched everything" — so an
+    /// exclusion filter returned the whole collection. One implementation, one
+    /// failure mode, propagated.
+    fn eval(&self, doc: &Document, regexes: &RegexSource<'_>) -> Result<bool, TalaDbError> {
+        match self {
+            Self::And(filters) => {
+                for f in filters {
+                    if !f.eval(doc, regexes)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+
+            Self::Or(filters) => {
+                for f in filters {
+                    if f.eval(doc, regexes)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+
+            Self::Not(inner) => Ok(!inner.eval(doc, regexes)?),
+
+            Self::Regex(field, pattern) => {
+                // Resolve the pattern before looking at the document: a filter
+                // whose regex cannot be honoured is an error about the *query*,
+                // and must not depend on whether this particular document
+                // happens to carry the field.
+                let compiled;
+                let re = match regexes {
+                    RegexSource::Compile => {
+                        compiled = build_regex(pattern)?;
+                        &compiled
+                    }
+                    RegexSource::Cached(cache) => cache.get(pattern).ok_or_else(|| {
+                        // `compile_regex_cache` collects from this same tree, so
+                        // a miss means the cache belongs to a different filter.
+                        TalaDbError::InvalidFilter(format!(
+                            "internal: no compiled regex for pattern {pattern:?} —                              the cache was built from a different filter"
+                        ))
+                    })?,
+                };
+                let Some(value) = doc.get(field) else {
+                    return Ok(false);
+                };
+                Ok(any_element(
+                    value,
+                    |e| matches!(e, Value::Str(t) if re.is_match(t)),
+                ))
+            }
+
+            leaf => Ok(leaf.matches_leaf(doc)),
+        }
+    }
+
+    /// Evaluate this filter against a document, compiling any regex on the spot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TalaDbError::InvalidFilter`] if a `Regex` pattern is malformed or
+    /// compiles to an automaton larger than 1 MiB.
+    ///
+    /// Prefer [`Filter::compile_regex_cache`] + [`Filter::matches_with_cache`]
+    /// when testing more than one document: this recompiles every pattern per
+    /// call, which on a scan rebuilds the same automaton once per document.
+    pub fn matches(&self, doc: &Document) -> Result<bool, TalaDbError> {
+        self.eval(doc, &RegexSource::Compile)
     }
 
     /// Recursively collect all unique regex patterns in this filter tree.
@@ -217,52 +320,40 @@ impl Filter {
         }
     }
 
-    /// Pre-compile every regex pattern in this filter tree, with size limits
-    /// guarding against ReDoS from user-supplied patterns. Returns an error
-    /// for malformed patterns. Pass the result to [`Self::matches_with_cache`].
-    pub(crate) fn compile_regex_cache(
-        &self,
-    ) -> Result<HashMap<String, regex::Regex>, crate::error::TalaDbError> {
+    /// Pre-compile every regex pattern in this filter tree under
+    /// [`REGEX_SIZE_LIMIT`]. Pass the result to [`Self::matches_with_cache`].
+    ///
+    /// This is the validating step: a malformed or oversized pattern fails here,
+    /// once per query, instead of per document — which is why every query path
+    /// calls it before scanning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TalaDbError::InvalidFilter`] for a pattern that will not compile.
+    pub(crate) fn compile_regex_cache(&self) -> Result<HashMap<String, regex::Regex>, TalaDbError> {
         let patterns = self.collect_regex_patterns();
         let mut map = HashMap::with_capacity(patterns.len());
         for pat in patterns {
-            let re = regex::RegexBuilder::new(&pat)
-                .size_limit(1 << 20)
-                .dfa_size_limit(1 << 20)
-                .build()
-                .map_err(|e| crate::error::TalaDbError::InvalidFilter(format!("regex: {e}")))?;
+            let re = build_regex(&pat)?;
             map.insert(pat, re);
         }
         Ok(map)
     }
 
-    /// Evaluate this filter using pre-compiled regexes from `regex_cache`.
+    /// Evaluate this filter using regexes pre-compiled by
+    /// [`Self::compile_regex_cache`].
     ///
-    /// For Regex variants the cached `Regex` object is reused instead of
-    /// recompiling the pattern.  All other variants delegate to `matches`.
+    /// # Errors
+    ///
+    /// Returns [`TalaDbError::InvalidFilter`] if `regex_cache` is missing a
+    /// pattern this filter uses, which means it was built from a different
+    /// filter. Build it from the same tree and this cannot happen.
     pub fn matches_with_cache(
         &self,
         doc: &Document,
         regex_cache: &HashMap<String, regex::Regex>,
-    ) -> bool {
-        match self {
-            Self::Regex(field, pattern) => {
-                let Some(re) = regex_cache.get(pattern) else {
-                    return false;
-                };
-                doc.get(field).is_some_and(|v| {
-                    any_element(v, |e| matches!(e, Value::Str(t) if re.is_match(t)))
-                })
-            }
-            Self::And(filters) => filters
-                .iter()
-                .all(|f| f.matches_with_cache(doc, regex_cache)),
-            Self::Or(filters) => filters
-                .iter()
-                .any(|f| f.matches_with_cache(doc, regex_cache)),
-            Self::Not(inner) => !inner.matches_with_cache(doc, regex_cache),
-            other => other.matches(doc),
-        }
+    ) -> Result<bool, TalaDbError> {
+        self.eval(doc, &RegexSource::Cached(regex_cache))
     }
 
     /// Return the single indexed field this filter constrains, if any.
@@ -302,16 +393,36 @@ mod tests {
     #[test]
     fn basic_eq() {
         let d = doc(vec![("age", Value::Int(30))]);
-        assert!(Filter::Eq("age".into(), Value::Int(30)).matches(&d));
-        assert!(!Filter::Eq("age".into(), Value::Int(31)).matches(&d));
+        assert!(
+            Filter::Eq("age".into(), Value::Int(30))
+                .matches(&d)
+                .expect("regex-free filter")
+        );
+        assert!(
+            !Filter::Eq("age".into(), Value::Int(31))
+                .matches(&d)
+                .expect("regex-free filter")
+        );
     }
 
     #[test]
     fn range_ops() {
         let d = doc(vec![("score", Value::Float(7.5))]);
-        assert!(Filter::Gt("score".into(), Value::Float(7.0)).matches(&d));
-        assert!(!Filter::Gt("score".into(), Value::Float(8.0)).matches(&d));
-        assert!(Filter::Lte("score".into(), Value::Float(7.5)).matches(&d));
+        assert!(
+            Filter::Gt("score".into(), Value::Float(7.0))
+                .matches(&d)
+                .expect("regex-free filter")
+        );
+        assert!(
+            !Filter::Gt("score".into(), Value::Float(8.0))
+                .matches(&d)
+                .expect("regex-free filter")
+        );
+        assert!(
+            Filter::Lte("score".into(), Value::Float(7.5))
+                .matches(&d)
+                .expect("regex-free filter")
+        );
     }
 
     #[test]
@@ -321,19 +432,31 @@ mod tests {
             Filter::Eq("a".into(), Value::Int(1)),
             Filter::Eq("b".into(), Value::Int(2)),
         ]);
-        assert!(f.matches(&d));
+        assert!(f.matches(&d).expect("regex-free filter"));
         let f2 = Filter::Or(vec![
             Filter::Eq("a".into(), Value::Int(99)),
             Filter::Eq("b".into(), Value::Int(2)),
         ]);
-        assert!(f2.matches(&d));
+        assert!(f2.matches(&d).expect("regex-free filter"));
     }
 
     #[test]
     fn exists() {
         let d = doc(vec![("x", Value::Null)]);
-        assert!(Filter::Exists("x".into(), true).matches(&d));
-        assert!(!Filter::Exists("y".into(), true).matches(&d));
-        assert!(Filter::Exists("y".into(), false).matches(&d));
+        assert!(
+            Filter::Exists("x".into(), true)
+                .matches(&d)
+                .expect("regex-free filter")
+        );
+        assert!(
+            !Filter::Exists("y".into(), true)
+                .matches(&d)
+                .expect("regex-free filter")
+        );
+        assert!(
+            Filter::Exists("y".into(), false)
+                .matches(&d)
+                .expect("regex-free filter")
+        );
     }
 }
