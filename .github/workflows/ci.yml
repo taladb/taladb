@@ -153,6 +153,47 @@ jobs:
         run: cargo audit --deny warnings
 
   # ---------------------------------------------------------------------------
+  # MSRV — the floor downstream users must satisfy
+  #
+  # `rust-toolchain.toml` pins what *we* build with (currently well ahead of this);
+  # `rust-version` in Cargo.toml is a promise to consumers, and nothing was checking
+  # it. Adopting redb 4 forced it from 1.88 to 1.90 and the workspace build stayed
+  # green throughout, because the pinned toolchain compiles anything — the break was
+  # invisible until someone ran this by hand. Now it is not.
+  #
+  # A failure here means either a dependency raised its own floor, or new code used
+  # something newer than the declared minimum. Both are decisions, not accidents:
+  # raise `rust-version` deliberately (it is a breaking change) or pin the dependency
+  # back.
+  # ---------------------------------------------------------------------------
+  rust-msrv:
+    name: Rust — MSRV
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          msrv=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $msrv"
+
+      - name: Install the declared MSRV toolchain
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      # `check`, not `test`: dev-dependencies are free to require a newer compiler
+      # than the published crates do, and holding them to the consumer floor would
+      # be a promise nobody asked for.
+      - name: cargo check on the MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-features
+
+  # ---------------------------------------------------------------------------
   # Miri — undefined-behaviour check over the FFI's raw-pointer layer
   #
   # Scoped to the `miri_safe` module on purpose. Miri interprets rather than
@@ -535,6 +576,7 @@ jobs:
       - setup
       - rust-check
       - rust-audit
+      - rust-msrv
       - rust-miri
       - rust-fuzz
       - ts-check

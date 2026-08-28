@@ -16,7 +16,7 @@ categories = ["database-implementations", "wasm", "data-structures"]
 workspace = true
 
 [dependencies]
-redb       = "2.1"
+redb       = "4.2"
 # `default-features = false` drops postcard's default `heapless-cas` feature.
 # Only `to_allocvec` and `from_bytes` are used here — both `alloc` APIs — while
 # the default pulls in heapless 0.7 and, through it, the unmaintained
@@ -39,10 +39,27 @@ zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
 instant-distance = { version = "0.6", optional = true }
 # Config parsing — JSON always; YAML only behind `config-yaml`.
 serde_json = { version = "1.0", features = ["preserve_order"] }
-# serde_yaml drags in unsafe-libyaml. Browser and React Native builds receive
-# their config as a JSON string and never read a file off disk, so paying for a
-# YAML parser there is pure bundle weight — hence the feature gate.
-serde_yaml = { version = "0.9", optional = true }
+# `serde_yaml_ng`, not `serde_yaml`: the original was deprecated by its author and
+# is no longer maintained, so a YAML parsing bug would never be fixed upstream —
+# and this parses a file off disk. `serde_yaml_ng` is the maintained continuation
+# and is API-compatible, so the swap is one call site.
+#
+# (Not `serde_yml`, which crates.io now marks "DEPRECATED — unmaintained, a thin
+# compatibility shim". The fork landscape here is littered; `serde_yaml_ng` and
+# `serde_norway` are the two live ones.)
+#
+# Caveat worth knowing: this swaps the *wrapper* for a maintained one, but
+# `serde_yaml_ng` still depends on the original `unsafe-libyaml`, which was
+# deprecated alongside `serde_yaml`. So the unsafe parsing code in the tree is
+# unchanged. `serde_norway` is the alternative that also forked the parser
+# (`unsafe-libyaml-norway`); switching is the same one-line change if that ever
+# matters. It is judged not to today: this parses `taladb.config.yml`, a file the
+# application ships, not untrusted input, and `cargo audit` flags neither crate.
+#
+# Still optional: browser and React Native builds receive their config as a JSON
+# string and never read a file off disk, so a YAML parser there is pure bundle
+# weight — hence the feature gate.
+serde_yaml_ng = { version = "0.10", optional = true }
 # WASM-compatible SystemTime — re-exports std::time on native, uses js_sys::Date on wasm32.
 web-time = "1"
 # Random bytes — used for ULID generation. wasm_js feature enabled by taladb-web for WASM targets.
@@ -58,7 +75,7 @@ vector-hnsw  = ["dep:instant-distance"]
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
 # Native builds turn it off (`default-features = false`) to drop serde_yaml and
 # unsafe-libyaml from the bundle. JSON config works either way.
-config-yaml  = ["dep:serde_yaml"]
+config-yaml  = ["dep:serde_yaml_ng"]
 
 [[bench]]
 name = "engine"
@@ -68,3 +85,15 @@ harness = false
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3.10"
 zeroize  = { version = "1.7", features = ["derive"] }
+
+# redb 2, kept alongside redb 4 solely to migrate databases written before the
+# bump. redb 4 refuses a v2 file outright ("Manual upgrade required") and offers
+# no upgrade API, so the only way to not brick every existing database is to read
+# it with the version that wrote it and copy it forward. Two majors of redb link
+# into one binary without conflict — they are distinct crates to cargo.
+#
+# Native only: this exists for `RedbBackend::open`, which owns a real file it can
+# back up and atomically replace. The browser/OPFS path has no such filesystem
+# and is handled separately — see `migrate::detect_legacy_backend`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+redb2 = { package = "redb", version = "2.6" }

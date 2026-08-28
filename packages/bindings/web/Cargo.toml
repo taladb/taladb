@@ -16,10 +16,10 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# `default-features = false` drops serde_yaml + unsafe-libyaml: the browser
+# `default-features = false` drops the YAML parser entirely: the browser
 # receives its config as a JSON string and never reads a file off disk.
 taladb-core = { path = "../../core", default-features = false, features = ["encryption"] }
-redb = "2.1"
+redb = "4.2"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

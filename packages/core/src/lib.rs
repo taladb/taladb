@@ -66,6 +66,7 @@ pub mod error;
 pub mod fts;
 pub mod index;
 pub mod json_depth;
+pub mod migrate;
 pub mod migration;
 pub mod query;
 pub mod time;

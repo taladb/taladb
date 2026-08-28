@@ -122,7 +122,17 @@ impl OpfsBackend {
         Ok(&self.opts)
     }
 
-    fn js_read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
+    /// Fill `out` from `offset`, or fail.
+    ///
+    /// redb 4 requires the buffer be filled completely — a short read is an
+    /// error, not a partial success — which removes the per-read `Vec` the redb
+    /// 2 signature forced and makes the validation below sharper: there is now
+    /// exactly one acceptable answer from JavaScript.
+    fn js_read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+        let len = out.len();
+        if len == 0 {
+            return Ok(());
+        }
         // `Uint8Array` lengths are `u32`. On wasm32 `usize` is 32 bits so this is
         // lossless, but the struct also compiles for the host, where it is not.
         let len_u32 =
@@ -153,33 +163,24 @@ impl OpfsBackend {
             .map_err(|e| io_err(&format!("opfs read: {e:?}")))?;
 
         // The byte count comes back from JavaScript, so it is validated rather
-        // than trusted. A well-behaved `FileSystemSyncAccessHandle` always
-        // returns `0..=len`; a polyfill or a shimmed handle need not, and each
-        // way of being wrong has a distinct, bad ending:
-        //
-        //   NaN / negative  → `as usize` saturates to 0, and redb silently sees
-        //                     a short read where it asked for a page.
-        //   huge            → `as usize` saturates near `usize::MAX` and
-        //                     `vec![0u8; n]` exhausts the wasm heap.
-        //   len < n < huge  → `subarray` clamps to the view's real length, and
-        //                     `copy_to` then panics on the length mismatch.
-        //
-        // A trap in the storage layer is the worst place to take one, so all
-        // three become an ordinary `io::Error`.
+        // than trusted. redb has asked for exactly `len` bytes and treats
+        // anything less as an error, so a short read must be reported here
+        // rather than papered over: a well-behaved
+        // `FileSystemSyncAccessHandle` returns `len`, and a polyfill or shimmed
+        // handle returning NaN, a negative, or an over-long count would
+        // otherwise become a silent truncation, a heap-exhausting allocation, or
+        // a `copy_to` length-mismatch panic. A trap in the storage layer is the
+        // worst place to take one.
         let raw = result
             .as_f64()
             .ok_or_else(|| io_err("opfs read: non-numeric return"))?;
-        if !raw.is_finite() || raw < 0.0 || raw > f64::from(len_u32) {
+        if raw != f64::from(len_u32) {
             return Err(io_err(&format!(
-                "opfs read: handle reported {raw} bytes for a {len}-byte request"
+                "opfs read: handle returned {raw} bytes for a {len}-byte read"
             )));
         }
-        // Now provably in `0..=len`, so neither cast can lose anything.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let n = raw as u32;
-        let mut out = vec![0u8; n as usize];
-        view.subarray(0, n).copy_to(&mut out);
-        Ok(out)
+        view.copy_to(out);
+        Ok(())
     }
 
     fn js_write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
@@ -215,8 +216,8 @@ impl redb::StorageBackend for OpfsBackend {
             .map_err(|e| io_err(&format!("opfs get_size: {e:?}")))
     }
 
-    fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, io::Error> {
-        self.js_read(offset, len)
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+        self.js_read(offset, out)
     }
 
     fn set_len(&self, new_len: u64) -> Result<(), io::Error> {
@@ -225,7 +226,9 @@ impl redb::StorageBackend for OpfsBackend {
             .map_err(|e| io_err(&format!("opfs truncate: {e:?}")))
     }
 
-    fn sync_data(&self, _eventual: bool) -> Result<(), io::Error> {
+    // redb 4 dropped the `eventual` argument; durability is chosen per commit
+    // through `Durability` rather than per sync. The body was already ignoring it.
+    fn sync_data(&self) -> Result<(), io::Error> {
         self.handle
             .flush()
             .map_err(|e| io_err(&format!("opfs flush: {e:?}")))

@@ -15,10 +15,19 @@ authors = ["taladb"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/taladb/taladb"
 homepage = "https://github.com/taladb/taladb"
-# Let-chains (`if let … && let …`) in edition 2024 stabilised in 1.88; the query
-# and collection paths use them throughout, so that is the real floor. Raising
-# this is a breaking change for downstream users — bump it deliberately.
-rust-version = "1.88"
+# Two things set this floor, and the higher one wins:
+#
+#   1.88  let-chains (`if let … && let …`) in edition 2024, which the query and
+#         collection paths use throughout.
+#   1.90  redb 4.2, which declares it. redb 4 is not optional — it is the only
+#         way onto the current on-disk format, and there is no 4.x below 1.89
+#         (4.0 and 4.1 want 1.89, 4.2 wants 1.90).
+#
+# Raised from 1.88 deliberately when adopting redb 4: this IS a breaking change
+# for downstream users, and the only way to avoid it would be to stay on redb 2.
+# Pinning redb to 4.1 would buy back exactly one release (1.89) and is not worth
+# holding the storage engine a version behind.
+rust-version = "1.90"
 
 # Lints are declared once here and inherited by every crate via
 # `[lints] workspace = true`, so a rule can't drift between the core engine and
