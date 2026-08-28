@@ -5,6 +5,179 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] - 2026-08-28
+
+A security and correctness pass over the Rust workspace, plus the move to redb 4.
+Ten findings from an audit of the engine, the FFI layer and the browser backend,
+each with a regression test confirmed to fail against the unfixed code.
+
+Two of them changed shape once tested rather than reasoned about, and the notes
+below say so where it matters — including one finding whose severity was
+overstated in the original report.
+
+### Breaking
+
+- **Minimum supported Rust version is now 1.90**, up from 1.88. redb 4.2 requires
+  it and no 4.x release accepts less than 1.89, so this is the cost of the
+  storage engine bump rather than a choice about language features.
+
+- **`Filter::matches` and `Filter::matches_with_cache` now return
+  `Result<bool, TalaDbError>`.** See the regex fix under *Fixed*. Callers using
+  the engine as a Rust library need a `?` or an explicit match; the JavaScript,
+  wasm and React Native bindings are unaffected, as they never called these
+  directly.
+
+- **`set_durability(true)` no longer persists on its own.** redb 4 removed the
+  durability level this mapped to, leaving only "immediate" and "none". Batched
+  writes now reach disk when `flush()` is called and not before — which is what
+  the API already documented, but redb 2 used to persist them eventually anyway.
+  Anything relying on that undocumented safety net needs an explicit `flush()`.
+
+### Storage format
+
+- **Upgraded to redb 4.2 (on-disk format version 3).** Existing databases are
+  **migrated automatically on open** and are not left behind:
+
+  - *Native* — the file is copied to `<name>.v2.bak`, converted in place, and
+    opened. The backup is kept because the conversion being crash-safe is not the
+    same as it being correct, and a database is not something a user can
+    regenerate.
+  - *Browser (OPFS)* — converted in place through the same file handle, with no
+    change to the JavaScript API. No backup is taken, because there is nowhere to
+    put one without a second OPFS file; export a snapshot first if the data is
+    irreplaceable.
+
+  The upgrade is one-time and a no-op afterwards. It is carried by the new
+  `legacy-migration` feature, on by default; see *Added*.
+
+### Fixed
+
+- **Two arithmetic-overflow panics on an unvalidated `top_k`.** A vector search
+  with an extreme `top_k` overflowed while sizing its working set, aborting the
+  process rather than returning an error.
+
+- **A panicking background job left React Native polling forever.** Completion
+  was signalled by the last statement of the worker closure, so a panic in the
+  engine skipped it: `taladb_job_poll` reported "still running" indefinitely and
+  the JavaScript side — which polls until done before it will collect a result —
+  span on `setImmediate` with no way to learn the job had died. Completion is now
+  signalled by a `Drop` guard, on every exit path including an unwind, and the
+  panic message is surfaced instead of an empty result.
+
+- **No `catch_unwind` on any of the 37 `extern "C"` entry points.** A panic
+  unwinding across the FFI boundary is undefined behaviour. All of them now
+  contain a panic and report it, except `taladb_last_error`, which is a
+  thread-local pointer read that cannot panic and whose guard would be circular —
+  it writes the slot it reads.
+
+- **A mistyped passphrase key silently opened an unencrypted database.** An
+  unrecognised key in the encryption config block was ignored, so
+  `passphrase`/`passPhrase` — or any typo — produced a working, readable,
+  completely unencrypted database with no warning. Unknown keys in that block are
+  now an error.
+
+- **A crafted snapshot could abort the process.** `restore_from_snapshot` passed a
+  table name straight from the buffer to redb, which documents "name must not be
+  empty" and enforces it with an assertion — so a 48-byte snapshot with an empty
+  name panicked inside the one function whose entire contract is to return an
+  error for untrusted bytes. Found by the snapshot fuzz target the first time it
+  was ever able to run (see *Tooling*).
+
+- **Index maintenance was quadratic in the length of an indexed array.** Key
+  de-duplication used a linear scan per element, so indexing a large array field
+  cost time proportional to its length squared. Now a hash set, with element
+  order unchanged: **16,000 elements went from 7.96 s to 0.107 s**.
+
+- **A regex that failed to compile could invert `$not` into "match everything".**
+  Two separate filter evaluators had drifted apart on how they handled a pattern
+  that would not build; one returned `false`, which `$not` turned into a filter
+  matching every document. Reachable only through the public `Filter::matches` —
+  every query path already validated the whole filter tree up front, so no
+  binding could hit it, and **the original report overstated this**. The two
+  evaluators are now one, which is also why they could disagree in the first
+  place, and the 1 MiB pattern ceiling is declared once instead of twice at
+  different values.
+
+- **The OPFS backend trusted the byte count JavaScript handed back.** A
+  non-numeric, negative or over-long return became a silent short read, a
+  heap-exhausting allocation, or a panic on a length mismatch. It is now validated
+  against the request. The `RefCell` borrow is also no longer held across the call
+  into JavaScript, where a re-entrant handle would have turned it into a panic.
+
+- **No depth limit on caller-supplied JSON.** Nested `$and`/`$or`/`$not` drove
+  unbounded recursion in the filter, update and document parsers — a stack
+  overflow, which aborts and cannot be caught. Nesting is now capped at 64 levels
+  by an iterative check (a recursive one would overflow on exactly the input it
+  exists to reject). In the browser the check runs on the JavaScript value
+  *before* deserialisation, which also bounds the deserialiser's own recursion and
+  the recursive drop on the error path. **The Node binding is not yet covered**:
+  napi converts at the function signature, before any TalaDB code runs.
+
+- **Unbounded OS-thread spawning in the React Native async API.** Every
+  `*_start` call spawned a thread with no ceiling, so a caller issuing a query per
+  animation frame spawned one per frame. Concurrency is now capped (twice the core
+  count, 4–16), released even when a job panics, and a start call past the cap
+  fails with a readable message rather than blocking the JavaScript thread.
+
+- **`unsafe impl Send`/`Sync` on the OPFS backend is now enforced by the target.**
+  The impls cover a `RefCell`, and their soundness argument is that wasm is
+  single-threaded — previously asserted in a comment that nothing checked. They
+  are now gated on `wasm32` without the `atomics` feature, and enabling wasm
+  threads is a compile error naming the reason.
+
+### Changed
+
+- **`serde_yaml` replaced with `serde_yaml_ng`.** The original was deprecated by
+  its author and would never receive a fix. Note that `serde_yaml_ng` still
+  depends on the unmaintained `unsafe-libyaml`, so this replaces the wrapper and
+  not the parser; `serde_norway` is the alternative that forked both. YAML config
+  parsing is unchanged.
+
+- **`reqwest` moved to `[dev-dependencies]` in the CLI.** Every use of it was
+  inside `#[cfg(test)]`, behind a comment claiming `taladb studio` proxied
+  requests through it, which it had stopped doing. It and its TLS stack are no
+  longer in the shipped binary's dependency graph.
+
+- Dependency tree reduced from 290 to 282 crates by the audit's dependency pass;
+  the redb 2 reader needed for the migration brings it to 283.
+
+### Added
+
+- **`legacy-migration` feature** (`taladb-core`, `taladb-web`), on by default. It
+  carries the redb 2 reader needed to open pre-0.11.2 databases. In the browser it
+  costs **506 KB of wasm** (2.68 MB → 3.17 MB), so an application with no existing
+  installs can build `--no-default-features` and reclaim all of it.
+
+- **`json_depth::check_json_depth`** and `MAX_JSON_DEPTH`, for callers that accept
+  untrusted JSON and want the same ceiling the bindings apply.
+
+- **`migrate::upgrade_legacy_backend`** for custom `StorageBackend`
+  implementations. It must only be called after an ordinary open has failed with a
+  legacy-format error — redb 2 panics on a database redb 4 wrote, rather than
+  declining it.
+
+### Tooling
+
+Three classes of test in this repository looked like coverage and were not
+running at all. All three now run in CI and gate the build.
+
+- **`cargo fuzz` had never built.** The fuzz crate was misconfigured as part of
+  the parent workspace, so every invocation failed before reaching a target. Fixed,
+  and the first run found the snapshot panic above. Three new targets drive the
+  JSON parsers — where untrusted structure actually enters — from a committed seed
+  corpus.
+
+- **Twelve `#[wasm_bindgen_test]` tests had never run.** They were configured to
+  require a browser, and no job ran them. None of them need one; all seventeen now
+  run under node.
+
+- **The declared MSRV was never checked.** The pinned toolchain compiles anything,
+  so the floor moving from 1.88 to 1.90 was invisible until checked by hand.
+
+- **Miri** now runs over the FFI's raw-pointer layer under both aliasing models.
+  It is scoped to that layer deliberately: redb is far too much work for an
+  interpreter, and a job that always times out is the same as no job.
+
 ## [0.11.1] - 2026-08-16
 
 Fixes from the first real application migration onto `@taladb/react/query`. All
