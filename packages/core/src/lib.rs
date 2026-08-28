@@ -471,6 +471,23 @@ impl Database {
         let table_count = read_u32(data, &mut cursor)? as usize;
         for _ in 0..table_count {
             let name_len = read_u32(data, &mut cursor)? as usize;
+            // redb documents "name must not be empty" as an invariant of
+            // `TableDefinition::new` and enforces it with an `assert!`, so an
+            // empty name reaches it as a *panic* — inside a function whose entire
+            // contract is to return `Err(InvalidSnapshot)` for bad input, and
+            // which exists to be pointed at bytes from disk or the network. The
+            // export side never writes one, so this only ever means a corrupt or
+            // crafted snapshot.
+            //
+            // No upper bound is needed alongside it: `read_slice` bounds `len`
+            // against the buffer and returns a borrowed slice, so an absurd
+            // `name_len` already fails without allocating. A length cap here
+            // could only start rejecting valid snapshots — internal table names
+            // are built from collection and field names and have no fixed
+            // ceiling of their own.
+            if name_len == 0 {
+                return Err(TalaDbError::InvalidSnapshot);
+            }
             let name = std::str::from_utf8(read_slice(data, &mut cursor, name_len)?)
                 .map_err(|_| TalaDbError::InvalidSnapshot)?
                 .to_string();
