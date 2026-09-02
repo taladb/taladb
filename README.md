@@ -2,8 +2,8 @@
 
 <img src=".github/assets/tala-db-banner.png" alt="TalaDB" width="800" />
 
-**The embedded vector database for on-device AI.**<br/>
-Documents + similarity search built in Rust — browser, Node.js, and React Native. Runs where your model runs. No cloud. No compromise.
+**The embedded vector and document database for on-device AI.**<br/>
+Store documents, run structured queries, and search vectors in one Rust database — across the browser, Node.js, and React Native. No cloud required.
 
 [![npm](https://img.shields.io/npm/v/taladb?label=npm)](https://www.npmjs.com/package/taladb)
 [![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/taladb/taladb)
@@ -22,7 +22,7 @@ Documents + similarity search built in Rust — browser, Node.js, and React Nati
 
 AI inference is moving onto the device — transformers.js and ONNX Runtime Web in the browser, Core ML and ExecuTorch on mobile. The model runs locally, but the *retrieval* layer usually doesn't: embeddings get shipped to a hosted vector database, which puts back the latency, the per-query cost, and the privacy exposure that running locally was supposed to remove.
 
-TalaDB is the other half. Structured queries, vector similarity search, and offline-first storage in a single embedded database that runs entirely on the user's device — the same Rust core in the browser, React Native, and Node.js, behind one TypeScript API.
+TalaDB combines a document database and a vector database in one embedded engine. Store JSON-like documents, query them with familiar filters, and run vector similarity search entirely on the user's device — with the same Rust core and TypeScript API across the browser, React Native, and Node.js.
 
 ## Why TalaDB?
 
@@ -376,6 +376,6 @@ additional terms or conditions.
 
 <div align="center">
 
-Documents + vectors, on-device. No cloud. · [taladb.dev](https://taladb.dev)
+One database for documents + vectors, on-device. · [taladb.dev](https://taladb.dev)
 
 </div>
