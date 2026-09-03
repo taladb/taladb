@@ -1,9 +1,11 @@
 ---
 title: Features
-description: Vector similarity search, ULID document IDs, MongoDB-like queries, aggregation pipelines, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, change webhooks, and more.
+description: Document storage and vector similarity search in one embedded database, with MongoDB-like queries, aggregation pipelines, secondary indexes, ACID transactions, full-text search, live queries, encryption, and more.
 ---
 
 # Features
+
+TalaDB combines a full document database with built-in vector search. Documents, metadata, and embeddings share one embedded engine, one transactional model, and one TypeScript API across the browser, Node.js, and React Native.
 
 ## Vector index and similarity search
 

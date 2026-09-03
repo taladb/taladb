@@ -1,7 +1,7 @@
 ---
 layout: home
-title: TalaDB — The Embedded Vector Database for On-Device AI
-description: The embedded vector database for on-device AI. Documents + similarity search built in Rust — browser (WASM + OPFS), Node.js, and React Native. Runs where your model runs. No cloud. No compromise.
+title: TalaDB — The Embedded Vector and Document Database for On-Device AI
+description: The embedded vector and document database for on-device AI. Store documents, run structured queries, and search vectors in one Rust database — across the browser, Node.js, and React Native. No cloud required.
 ---
 
 <HomeHero />

@@ -9,15 +9,14 @@
         </div>
 
         <h1 class="hero-headline">
-          The embedded vector database<br />
-          for <span class="hero-accent">on-device</span> AI
+          The embedded vector and document<br />
+          database for <span class="hero-accent">on-device</span> AI
         </h1>
 
         <p class="hero-sub">
-          Your model already runs on the device. Your vector store probably
-          doesn't — so every query still pays for a network round-trip. TalaDB
-          puts documents, similarity search, and sync in one embedded database
-          built in Rust, running on device across browser, Node.js, and React Native.
+          Store JSON-like documents, run structured queries, and search vectors
+          in one Rust engine. TalaDB runs entirely on-device across the browser,
+          Node.js, and React Native — no database server or cloud API required.
         </p>
 
         <div class="hero-actions">

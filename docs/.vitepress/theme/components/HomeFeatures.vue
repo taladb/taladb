@@ -4,7 +4,7 @@
       <div class="section-header">
         <h2 class="section-title">Everything you need. Nothing you don't.</h2>
         <p class="section-sub">
-          A complete embedded database with vector search built in — browser, Node.js, and React Native.
+          A vector and document database in one embedded engine — browser, Node.js, and React Native.
         </p>
       </div>
 

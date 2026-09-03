@@ -5,7 +5,7 @@ description: Vector indexes, full-text and hybrid search, documents, collections
 
 # Core Concepts
 
-TalaDB is an embedded **vector database for on-device AI**: you store embeddings next to your data and retrieve them with vector similarity, BM25 full-text, or the two fused (hybrid search) — all on the device. Those retrieval concepts are the heart of TalaDB and come first below. They build on a small foundation — **documents** grouped into **collections** — so we cover that first, then the search engine, then the supporting query, index, and durability machinery.
+TalaDB is an embedded **vector and document database for on-device AI**. Store JSON-like **documents** in **collections**, query and index their fields, and keep vector embeddings beside their metadata. The same engine retrieves data with structured filters, vector similarity, BM25 full-text search, or fused hybrid search — all on the device. We cover the document model first, followed by search and the supporting query, index, and durability machinery.
 
 ## Documents
 

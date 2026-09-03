@@ -2,7 +2,7 @@ import { defineConfig, type HeadConfig } from "vitepress";
 
 const title = "TalaDB";
 const description =
-  "The embedded vector database for on-device AI. Documents + similarity search built in Rust — browser (WASM + OPFS), Node.js, and React Native. Runs where your model runs. No cloud. No compromise.";
+  "The embedded vector and document database for on-device AI. Store documents, run structured queries, and search vectors in one Rust database — across the browser, Node.js, and React Native. No cloud required.";
 const siteUrl = "https://taladb.dev";
 const ogImage = `${siteUrl}/tala-db-banner.png`;
 
@@ -84,7 +84,7 @@ export default defineConfig({
       {
         name: "keywords",
         content:
-          "local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb, vector database, on-device ai",
+          "local-first database, rust database, wasm database, react native database, embedded database, document database, vector database, nosql, offline-first, taladb, on-device ai",
       },
     ],
   ],

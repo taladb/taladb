@@ -1,6 +1,6 @@
 ---
 title: Introduction
-description: Learn what TalaDB is, how it works, and why it was built — the embedded vector database for on-device AI, powered by a Rust core that runs in the browser, Node.js, and React Native.
+description: Learn what TalaDB is, how it works, and why it was built — the embedded vector and document database for on-device AI, powered by a Rust core that runs in the browser, Node.js, and React Native.
 ---
 
 # Introduction
@@ -9,9 +9,9 @@ description: Learn what TalaDB is, how it works, and why it was built — the em
 
 AI inference is moving onto the device — transformers.js and ONNX Runtime Web in the browser, Core ML and native models on mobile. The model runs locally, but the *retrieval* layer usually doesn't: embeddings get shipped to a hosted vector database, which puts back the latency, the per-query cost, and the privacy exposure that running locally was supposed to remove.
 
-**TalaDB is the retrieval layer for on-device AI** — an embedded vector database, built in Rust, that runs entirely on the user's device across the browser, Node.js, and React Native. Store embeddings next to your data and search them with [vector similarity](/api/vector-search), [BM25 full-text](/api/search), or [hybrid search](/api/search#hybrid-search) (the two fused, RAG-style) — with no server, no API key, and no data leaving the device.
+**TalaDB is the embedded vector and document database for on-device AI.** Built in Rust, it runs entirely on the user's device across the browser, Node.js, and React Native. Store schemaless JSON-like documents in named **collections**, query them with a MongoDB-inspired filter DSL, and use secondary indexes, ACID transactions, and live queries — with no database server required.
 
-Underneath the search engine is a complete document database: schemaless JSON-like documents in named **collections**, a MongoDB-inspired filter DSL, secondary indexes, ACID transactions, and live queries. Vector indexes sit alongside regular fields, so a single query can rank by embedding similarity *and* filter by metadata — the filtered vector search cloud databases charge for, running on-device.
+Vector search is built into that same document model. Store embeddings alongside regular fields and search them with [vector similarity](/api/vector-search), [BM25 full-text](/api/search), or [hybrid search](/api/search#hybrid-search) (the two fused, RAG-style). A single query can rank by embedding similarity *and* filter by document metadata — with no API key and no data leaving the device.
 
 The result: everything an AI-powered app needs to store, query, and retrieve data lives in one embedded engine, on the device, behind one TypeScript API.
 

@@ -5,8 +5,9 @@ description: Use TalaDB in the browser with WebAssembly and OPFS persistent stor
 
 # Web (Browser / WASM)
 
-Run a full vector database in the browser tab. Pair TalaDB with an on-device
-embedding model (transformers.js, ONNX Runtime Web) and you have
+Run a full vector and document database in the browser tab. Store and query
+application data, then pair TalaDB with an on-device embedding model
+(transformers.js, ONNX Runtime Web) to add
 [semantic search](/api/vector-search), [BM25 full-text](/api/search), and
 [hybrid RAG retrieval](/api/search#hybrid-search) with no server, no API key,
 and no data leaving the user's machine.

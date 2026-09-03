@@ -5,7 +5,7 @@ description: Use TalaDB in React Native apps for on-device vector search, BM25 a
 
 # React Native
 
-Ship on-device AI on mobile: store embeddings from a local model and run [vector search](/api/vector-search), [BM25 full-text](/api/search), and [hybrid RAG retrieval](/api/search#hybrid-search) directly on the phone — private by default, and available offline.
+Ship a vector and document database inside your mobile app. Store application data and embeddings from a local model, then run structured queries, [vector search](/api/vector-search), [BM25 full-text](/api/search), and [hybrid RAG retrieval](/api/search#hybrid-search) directly on the phone — private by default and available offline.
 
 TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Search calls are synchronous via JSI.
 

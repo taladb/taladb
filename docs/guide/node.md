@@ -5,7 +5,7 @@ description: Use TalaDB in Node.js via a prebuilt native module. Fast Rust engin
 
 # Node.js
 
-TalaDB's Node.js integration uses a prebuilt native `.node` module via [napi-rs](https://napi.rs). The Rust engine runs natively — no WASM, no subprocess — with performance identical to embedding the library directly in Rust.
+TalaDB's Node.js integration uses a prebuilt native `.node` module via [napi-rs](https://napi.rs). The same Rust engine powers document queries and vector search natively — no WASM, no subprocess — with performance identical to embedding the library directly in Rust.
 
 ## Requirements
 
