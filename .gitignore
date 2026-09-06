@@ -25,3 +25,4 @@ docs/.vitepress/cache/
 # contradict docs/ the moment the work lands.
 PLAN-*.md
 .gstack/
+reviews/
