@@ -10,7 +10,7 @@ Browser WASM bindings for TalaDB — persistent local-first storage via WASM + O
 ## What it provides
 
 - Rust core compiled to WebAssembly via `wasm-bindgen`
-- Persistent storage using [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (`FileSystemSyncAccessHandle`) — runs on a dedicated SharedWorker so the main thread is never blocked
+- Persistent storage using [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (`FileSystemSyncAccessHandle`) — runs on a DedicatedWorker so the main thread is never blocked
 - In-memory fallback for environments without OPFS support
 - Bundle size target: < 400 KB gzipped
 
@@ -58,7 +58,7 @@ export default defineConfig({
 
 ### Web Worker (OPFS)
 
-TalaDB spawns a SharedWorker internally to own the OPFS file handle. No extra configuration is required — the worker script is bundled inside this package at `@taladb/web/worker/taladb.worker.js`.
+TalaDB spawns a DedicatedWorker internally to own the OPFS file handle. No extra configuration is required — the worker script is bundled inside this package at `@taladb/web/worker/taladb.worker.js`.
 
 ## Direct usage (advanced)
 

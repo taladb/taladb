@@ -289,6 +289,8 @@ int32_t taladb_job_poll(TalaDbJob *job);
 char *taladb_job_take_result(TalaDbJob *job);
 
 /** Detach the job and free the handle without waiting. */
+TalaDbJob *taladb_call_start(TalaDbHandle *handle, const char *op, const char *args_json);
+
 void taladb_job_cancel(TalaDbJob *job);
 
 /**

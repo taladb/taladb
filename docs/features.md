@@ -236,9 +236,9 @@ Document IDs and index keys are not encrypted (they must remain comparable for l
 
 ## OPFS-backed browser persistence
 
-In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: the first tab's worker holds an exclusive lock on the OPFS file; other tabs coordinate through a `BroadcastChannel`, which also powers instant cross-tab live-query updates.
+In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: one worker owns storage and every other tab routes operations to it over `BroadcastChannel`.
 
-The engine runs redb directly on the OPFS file and flushes every commit, so the browser is durable per commit — the same model as Node.js. Opt into batched commits with `durability: { flush_every_write: false }` plus an explicit `db.flush()` when you want throughput instead. When OPFS is unavailable (cross-origin iframes, older browsers), TalaDB falls back to an in-memory database seeded from an IndexedDB snapshot — that auxiliary snapshot is the one written on a short debounce — so data still survives page reloads.
+The engine runs redb directly on the OPFS file and flushes every commit, so the browser is durable per commit — the same model as Node.js. Opt into batched commits with `durability: { flush_every_write: false }` plus an explicit `db.flush()` when you want throughput instead. When the OPFS API is absent, the same single-owner protocol uses a size-limited IndexedDB snapshot backend. Immediate mode acknowledges only after IndexedDB commits; eventual mode batches persistence until its timer or `db.flush()`.
 
 ## Platform-detecting unified package
 

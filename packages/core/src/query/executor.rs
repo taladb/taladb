@@ -33,6 +33,43 @@ pub fn execute(
     execute_limited(plan, filter, txn, collection, deadline, None)
 }
 
+/// Resolve a filter into IDs without retaining decoded document bodies.
+pub(crate) fn matching_ids(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+) -> Result<HashSet<[u8; 16]>, TalaDbError> {
+    let matcher = Matcher::new(filter)?;
+    let mut ids = HashSet::new();
+    let table = docs_table_name(collection);
+    let mut accept = |bytes: &[u8]| -> Result<(), TalaDbError> {
+        let doc: Document = postcard::from_bytes(bytes)?;
+        if matcher.matches(&doc)? {
+            ids.insert(doc.id.to_bytes());
+        }
+        Ok(())
+    };
+    if matches!(plan, QueryPlan::FullScan) {
+        txn.scan(
+            &table,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            &mut |_, bytes| {
+                accept(bytes)?;
+                Ok(crate::engine::ScanFlow::Continue)
+            },
+        )?;
+    } else {
+        for id in collect_ulids(plan, txn, collection, None)? {
+            if let Some(bytes) = txn.get(&table, &id)? {
+                accept(&bytes)?;
+            }
+        }
+    }
+    Ok(ids)
+}
+
 /// [`execute`] that stops as soon as `limit` **matching** documents have been
 /// found.
 ///

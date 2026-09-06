@@ -346,6 +346,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Worker ownership and persistence regressions
+        run: node --test packages/bindings/web/tests/worker-owner.test.mjs
+
       - name: tsc --noEmit (taladb)
         run: node_modules/.bin/tsc -p packages/clients/taladb/tsconfig.json --noEmit
 
@@ -397,6 +400,21 @@ jobs:
 
       - name: Build WASM (release)
         run: wasm-pack build packages/bindings/web --target web --out-dir pkg --release
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter taladb build
+
+      - name: Browser integration — storage, ownership, and vectors
+        run: node packages/bindings/web/e2e/run.mjs 1 2 3 6
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4

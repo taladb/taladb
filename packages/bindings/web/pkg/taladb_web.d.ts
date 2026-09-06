@@ -32,7 +32,7 @@ export class CollectionWasm {
      * `dimensions`           - expected vector length.
      * `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
      * `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
-     * `hnsw_m`               - HNSW connectivity (default 16).
+     * `hnsw_m`               - HNSW connectivity (only 32 is supported).
      * `hnsw_ef_construction` - build quality (default 200).
      */
     createVectorIndex(field: string, dimensions: number, metric?: string | null, index_type?: string | null, hnsw_m?: number | null, hnsw_ef_construction?: number | null): void;
@@ -199,7 +199,7 @@ export class WorkerDB {
      *
      * - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
      * - `index_type`: `"flat"` (default) | `"hnsw"`
-     * - `hnsw_m`: HNSW connectivity (default 16, only used when `index_type = "hnsw"`)
+     * - `hnsw_m`: HNSW connectivity (only 32 is supported)
      * - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
      */
     createVectorIndex(collection: string, field: string, dimensions: number, metric_str?: string | null, index_type?: string | null, hnsw_m?: number | null, hnsw_ef_construction?: number | null): void;
@@ -232,7 +232,7 @@ export class WorkerDB {
      * Pass the returned bytes to `idbSaveSnapshot` to persist across page reloads.
      * On next open, pass the same bytes to `openWithSnapshot` to restore all data.
      */
-    exportSnapshot(): Uint8Array;
+    exportSnapshot(max_bytes?: number | null): Uint8Array;
     /**
      * Find documents. Returns a JSON array of document objects.
      */
@@ -303,11 +303,15 @@ export class WorkerDB {
     /**
      * Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
      *
-     * Call sequence in the SharedWorker:
+     * Call sequence in the DedicatedWorker:
      * ```js
      * const handle = await file_handle.createSyncAccessHandle();
      * const workerDb = WorkerDB.openWithOpfs(handle);
      * ```
+     *
+     * wasm32-only, like `openWithConfigAndOpfs` below — it takes a JS handle and
+     * hands `OpfsBackend` to redb, whose `Send + Sync` impls exist only on that
+     * target. This gate was missing while the sibling method had it.
      */
     static openWithOpfs(sync_handle: FileSystemSyncAccessHandle): WorkerDB;
     /**
@@ -489,7 +493,7 @@ export interface InitOutput {
     readonly workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly workerdb_exportSnapshot: (a: number) => [number, number, number, number];
+    readonly workerdb_exportSnapshot: (a: number, b: number) => [number, number, number, number];
     readonly workerdb_find: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly workerdb_findOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
@@ -514,11 +518,11 @@ export interface InitOutput {
     readonly workerdb_userVersion: (a: number) => [number, number, number];
     readonly workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
     readonly init: () => void;
-    readonly wasm_bindgen__closure__destroy__h4ecd198e6e5fb530: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h014c297fadd2a065: (a: number, b: number) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h20bda61557acb630: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h0dbbf48826ad16e8: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output_______: (a: number, b: number) => void;
+    readonly wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___: (a: number, b: number) => void;
+    readonly wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___wasm_bindgen_ecca2db5e46bf455___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___js_sys_6f10e10b025cbc___Function_fn_wasm_bindgen_ecca2db5e46bf455___JsValue_____wasm_bindgen_ecca2db5e46bf455___sys__Undefined___js_sys_6f10e10b025cbc___Function_fn_wasm_bindgen_ecca2db5e46bf455___JsValue_____wasm_bindgen_ecca2db5e46bf455___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___wasm_bindgen_ecca2db5e46bf455___JsValue______true_: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

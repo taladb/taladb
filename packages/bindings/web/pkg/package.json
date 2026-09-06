@@ -5,8 +5,8 @@
     "taladb"
   ],
   "description": "TalaDB browser WASM bindings (wasm-bindgen + OPFS)",
-  "version": "0.11.0",
-  "license": "Apache-2.0",
+  "version": "0.11.3",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/taladb/taladb"
@@ -14,7 +14,9 @@
   "files": [
     "taladb_web_bg.wasm",
     "taladb_web.js",
-    "taladb_web.d.ts"
+    "taladb_web.d.ts",
+    "LICENSE-APACHE",
+    "LICENSE-MIT"
   ],
   "main": "taladb_web.js",
   "homepage": "https://github.com/taladb/taladb",

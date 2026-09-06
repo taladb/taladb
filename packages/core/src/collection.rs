@@ -8,7 +8,7 @@ use crate::audit::{AuditOp, write_audit_entry};
 use crate::bm25::{Bm25Params, FtsStats};
 use crate::clamp_to_usize;
 use crate::document::{Document, Value};
-use crate::engine::StorageBackend;
+use crate::engine::{ReadTxn, StorageBackend, WriteView, bump_revision, revision};
 use crate::error::TalaDbError;
 use crate::fts::{
     FTS_STATS_KEY, FTS_VERSION, FtsDef, HybridQuery, HybridSearchResult, TextSearchResult,
@@ -39,6 +39,7 @@ const META_FTS_TABLE: &str = "meta::fts_indexes";
 
 #[derive(Clone)]
 pub(crate) struct CachedIndexes {
+    revision: u64,
     indexes: Arc<Vec<IndexDef>>,
     fts_indexes: Arc<Vec<FtsDef>>,
     vec_indexes: Arc<Vec<VectorDef>>,
@@ -457,28 +458,21 @@ impl Collection {
         cache.remove(&key);
     }
 
-    fn load_indexes_cached(&self) -> Result<CachedIndexes, TalaDbError> {
+    fn load_indexes_in(&self, rtxn: &dyn ReadTxn) -> Result<CachedIndexes, TalaDbError> {
+        let version = revision(rtxn, &format!("schema::{}", self.name))?;
+        if let Some(cached) = self
+            .index_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.name)
+            .filter(|c| c.revision == version)
         {
-            let guard = self
-                .index_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = guard.get(&self.name) {
-                return Ok(cached.clone());
-            }
+            return Ok(cached.clone());
         }
-        // Load outside the lock so a slow storage read does not block other
-        // collections; a racing loader just overwrites with identical data.
-        //
-        // One transaction for all four meta tables: this runs on the first
-        // touch of every collection, so it is squarely on the cold-start path,
-        // and four separate `begin_read`s bought nothing.
-        let rtxn = self.backend.begin_read()?;
-        let indexes = self.read_indexes(rtxn.as_ref())?;
-        let fts_indexes = self.read_fts_indexes(rtxn.as_ref())?;
-        let vec_indexes = self.read_vector_indexes(rtxn.as_ref())?;
-        let compound_indexes = self.read_compound_indexes(rtxn.as_ref())?;
-        drop(rtxn);
+        let indexes = self.read_indexes(rtxn)?;
+        let fts_indexes = self.read_fts_indexes(rtxn)?;
+        let vec_indexes = self.read_vector_indexes(rtxn)?;
+        let compound_indexes = self.read_compound_indexes(rtxn)?;
         let tables = IndexTables::build(
             &self.name,
             &indexes,
@@ -487,6 +481,7 @@ impl Collection {
             &compound_indexes,
         );
         let cached = CachedIndexes {
+            revision: version,
             indexes: Arc::new(indexes),
             fts_indexes: Arc::new(fts_indexes),
             vec_indexes: Arc::new(vec_indexes),
@@ -497,7 +492,9 @@ impl Collection {
             .index_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.insert(self.name.clone(), cached.clone());
+        if guard.get(&self.name).is_none_or(|c| c.revision <= version) {
+            guard.insert(self.name.clone(), cached.clone());
+        }
         Ok(cached)
     }
 
@@ -544,6 +541,7 @@ impl Collection {
             .collect();
         wtxn.apply_batch(&idx_table, &ops)?;
 
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -572,6 +570,7 @@ impl Collection {
 
         // Remove metadata
         wtxn.delete(META_INDEXES_TABLE, meta_key.as_bytes())?;
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -637,6 +636,7 @@ impl Collection {
         let stats_table = fts_stats_table_name(&self.name, field);
         wtxn.put(&stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
 
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -669,6 +669,7 @@ impl Collection {
             wtxn.apply_batch(&table, &ops)?;
         }
         wtxn.delete(META_FTS_TABLE, meta_key.as_bytes())?;
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -705,8 +706,21 @@ impl Collection {
         params: &Bm25Params,
         pre_filter: Option<Filter>,
     ) -> Result<Vec<TextSearchResult>, TalaDbError> {
+        let txn = self.backend.begin_read()?;
+        self.search_text_in(txn.as_ref(), field, query, top_k, params, pre_filter)
+    }
+
+    fn search_text_in(
+        &self,
+        rtxn: &dyn ReadTxn,
+        field: &str,
+        query: &str,
+        top_k: usize,
+        params: &Bm25Params,
+        pre_filter: Option<Filter>,
+    ) -> Result<Vec<TextSearchResult>, TalaDbError> {
         let def = self
-            .load_fts_indexes()?
+            .read_fts_indexes(rtxn)?
             .into_iter()
             .find(|d| d.field == field)
             .ok_or_else(|| TalaDbError::IndexNotFound(format!("fts:{}::{}", self.name, field)))?;
@@ -732,7 +746,7 @@ impl Collection {
         // Resolve the pre-filter up front so scoring skips candidates that
         // could never appear in the result.
         let id_filter: Option<HashSet<[u8; 16]>> = match pre_filter {
-            Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id.to_bytes()).collect()),
+            Some(filter) => Some(self.matching_ids_in(rtxn, &filter)?),
             None => None,
         };
         if let Some(ids) = &id_filter
@@ -741,7 +755,6 @@ impl Collection {
             return Ok(vec![]);
         }
 
-        let rtxn = self.backend.begin_read()?;
         let fts_table = fts_table_name(&self.name, field);
         let len_table = fts_len_table_name(&self.name, field);
         let stats_table = fts_stats_table_name(&self.name, field);
@@ -817,7 +830,8 @@ impl Collection {
         let mut out = Vec::with_capacity(ranked.len());
         for (id, score) in ranked {
             if let Some(bytes) = rtxn.get(&docs_table, &id)? {
-                let document: Document = postcard::from_bytes(&bytes)?;
+                let mut document: Document = postcard::from_bytes(&bytes)?;
+                self.decrypt_doc(&mut document)?;
                 out.push(TextSearchResult { document, score });
             }
         }
@@ -867,8 +881,10 @@ impl Collection {
         // "fetch everything", which is what saturating gives you.
         let pool = candidates.unwrap_or_else(|| top_k.saturating_mul(4).max(20));
 
-        let text_hits = self.search_text_with(text_field, text, pool, &bm25, filter.clone())?;
-        let vector_hits = self.find_nearest(vector_field, vector, pool, filter)?;
+        let txn = self.backend.begin_read()?;
+        let text_hits =
+            self.search_text_in(txn.as_ref(), text_field, text, pool, &bm25, filter.clone())?;
+        let vector_hits = self.find_nearest_in(txn.as_ref(), vector_field, vector, pool, filter)?;
 
         let mut fused: HashMap<[u8; 16], FusedEntry> = HashMap::new();
         let mut docs: HashMap<[u8; 16], Document> = HashMap::new();
@@ -995,6 +1011,7 @@ impl Collection {
             .collect();
         wtxn.apply_batch(&ctable, &ops)?;
 
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -1024,6 +1041,7 @@ impl Collection {
             .collect();
         wtxn.apply_batch(&ctable, &ops)?;
         wtxn.delete(META_COMPOUND_TABLE, meta_key.as_bytes())?;
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
@@ -1102,6 +1120,24 @@ impl Collection {
         metric: Option<VectorMetric>,
         hnsw: Option<HnswOptions>,
     ) -> Result<(), TalaDbError> {
+        if dimensions == 0 {
+            return Err(TalaDbError::InvalidOperation(
+                "vector dimensions must be positive".into(),
+            ));
+        }
+        #[cfg(not(feature = "vector-hnsw"))]
+        if hnsw.is_some() {
+            return Err(TalaDbError::InvalidOperation(
+                "HNSW support is not enabled in this build".into(),
+            ));
+        }
+        if let Some(opts) = &hnsw
+            && (opts.m != 32 || opts.ef_construction < 32)
+        {
+            return Err(TalaDbError::InvalidOperation(
+                "this HNSW implementation requires m = 32 and ef_construction >= 32".into(),
+            ));
+        }
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
@@ -1148,6 +1184,7 @@ impl Collection {
             if let Some(val) = doc.get(field)
                 && let Some(vec) = value_to_f32_vec(val)
                 && vec.len() == dimensions
+                && vec.iter().all(|v| v.is_finite())
             {
                 encoded.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
                 #[cfg(feature = "vector-hnsw")]
@@ -1161,7 +1198,11 @@ impl Collection {
             .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
             .collect();
         wtxn.apply_batch(&vtable, &ops)?;
+        let vector_revision = bump_revision(wtxn.as_mut(), &vtable)?;
+        let _ = vector_revision;
 
+        #[cfg(feature = "vector-hnsw")]
+        let mut built_graph = None;
         // Persist HNSW options and build the in-memory graph when requested
         if let Some(hnsw_opts) = hnsw {
             let hnsw_meta_key = format!("{}::{}", self.name, field);
@@ -1171,16 +1212,19 @@ impl Collection {
             #[cfg(feature = "vector-hnsw")]
             {
                 let graph = build_hnsw(&backfill, &resolved_metric, hnsw_opts.ef_construction)?;
-                let cache_key = format!("{}::{}", self.name, field);
-                let mut cache = self
-                    .hnsw_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cache.insert(cache_key, graph);
+                built_graph = Some(graph);
             }
         }
 
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
+        #[cfg(feature = "vector-hnsw")]
+        if let Some(graph) = built_graph {
+            self.hnsw_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(vec_meta_key(&self.name, field), (vector_revision, graph));
+        }
         self.invalidate_index_cache();
         self.evict_vector_cache(field);
         Ok(())
@@ -1211,6 +1255,8 @@ impl Collection {
             .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
             .collect();
         wtxn.apply_batch(&vtable, &ops)?;
+        let vector_revision = bump_revision(wtxn.as_mut(), &vtable)?;
+        let _ = vector_revision;
 
         // Remove HNSW metadata (if present) and evict from in-memory cache
         let hnsw_meta_key = format!("{}::{}", self.name, field);
@@ -1226,6 +1272,7 @@ impl Collection {
         }
 
         wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
+        bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
         self.invalidate_index_cache();
         self.evict_vector_cache(field);
@@ -1241,15 +1288,10 @@ impl Collection {
     /// scan when no HNSW graph is stored (e.g. the feature is disabled, or the
     /// graph has not been built yet).
     ///
-    /// **HNSW staleness:** the graph is built in memory at
-    /// `create_vector_index` / [`Self::upgrade_vector_index`] /
-    /// `Database::rebuild_hnsw_indexes` time and is *not* updated by later
-    /// inserts, updates, or deletes. Documents inserted after the last build
-    /// are invisible to HNSW search until the graph is rebuilt; deleted
-    /// documents are dropped from results (the search over-fetches to
-    /// compensate, so `top_k` is still honoured when possible). Rebuild after
-    /// bulk writes with [`Self::upgrade_vector_index`]. The flat (non-HNSW)
-    /// path is always exact and current.
+    /// HNSW graphs carry the persisted vector revision they were built from.
+    /// After an embedding changes, search falls back to exact scanning until
+    /// [`Self::upgrade_vector_index`] rebuilds the graph. Metadata-only writes
+    /// preserve the graph. Scores, filtering, and bodies share one read snapshot.
     ///
     /// If `pre_filter` is `Some`, only documents matching that filter are
     /// considered. This lets you combine metadata filtering with vector
@@ -1266,183 +1308,202 @@ impl Collection {
         top_k: usize,
         pre_filter: Option<Filter>,
     ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
-        // 1. Load the vector index definition
-        let defs = self.load_vector_indexes()?;
-        let def = defs
+        let txn = self.backend.begin_read()?;
+        self.find_nearest_in(txn.as_ref(), field, query, top_k, pre_filter)
+    }
+
+    fn matching_ids_in(
+        &self,
+        txn: &dyn ReadTxn,
+        filter: &Filter,
+    ) -> Result<HashSet<[u8; 16]>, TalaDbError> {
+        let cache = self.load_indexes_in(txn)?;
+        let plan = plan_full(
+            filter,
+            &cache.indexes,
+            &cache.fts_indexes,
+            &cache.compound_indexes,
+        );
+        crate::query::executor::matching_ids(&plan, filter, txn, &self.name)
+    }
+
+    fn find_nearest_in(
+        &self,
+        txn: &dyn ReadTxn,
+        field: &str,
+        query: &[f32],
+        top_k: usize,
+        pre_filter: Option<Filter>,
+    ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
+        use crate::vector::{Candidate, DEFAULT_VECTOR_CACHE_BYTES, VectorBlock};
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let cache = self.load_indexes_in(txn)?;
+        let def = cache
+            .vec_indexes
             .iter()
             .find(|d| d.field == field)
             .ok_or_else(|| TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field)))?;
-
-        // 2. Validate query dimensions
+        if def.dimensions == 0 {
+            return Err(TalaDbError::InvalidOperation(
+                "vector dimensions must be positive".into(),
+            ));
+        }
         if query.len() != def.dimensions {
             return Err(TalaDbError::VectorDimensionMismatch {
                 expected: def.dimensions,
                 got: query.len(),
             });
         }
-
-        // 3a. HNSW path — only when no pre-filter and a graph is in the cache.
+        if !query.iter().all(|v| v.is_finite()) {
+            return Err(TalaDbError::InvalidOperation(
+                "query vector must contain finite values".into(),
+            ));
+        }
+        if top_k == 0 {
+            return Ok(vec![]);
+        }
+        let table = vec_table_name(&self.name, field);
+        let generation = revision(txn, &table)?;
+        let cache_key = vec_meta_key(&self.name, field);
         #[cfg(feature = "vector-hnsw")]
         if pre_filter.is_none() {
-            let cache_key = format!("{}::{}", self.name, field);
-            let graph_opt = {
-                let cache = self
-                    .hnsw_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cache.get(&cache_key).cloned()
-            };
-            if let Some(graph) = graph_opt {
-                // The graph may contain ids deleted since the last rebuild —
-                // load_results drops those. Over-fetch so the caller still
-                // receives top_k results despite a moderate amount of churn.
-                //
-                // `saturating_add` for the same reason as the pool in
-                // `hybrid_search`: `top_k` is caller-supplied and unbounded, and
-                // the over-fetch margin pushes it past `usize::MAX` near the top
-                // of the range. Saturating already means "the whole graph".
-                let fetch_k = top_k.saturating_add((top_k / 5).max(8));
-                let scored = search_hnsw(&graph, query, &def.metric, fetch_k);
-                let mut results = self.load_results(scored)?;
-                results.truncate(top_k);
-                return Ok(results);
+            let graph = self
+                .hnsw_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&cache_key)
+                .filter(|(version, _)| *version == generation)
+                .map(|(_, graph)| Arc::clone(graph));
+            if let Some(graph) = graph {
+                return self.load_results_in(txn, search_hnsw(&graph, query, &def.metric, top_k));
             }
         }
-
-        // 3b. Flat (brute-force) path — served from the decoded-vector cache
-        //     when fresh, so repeated queries never re-read storage.
-        //
-        //     The generation is captured *before* the scan. If a write commits
-        //     during a cache-miss scan, it bumps the generation via
-        //     `watch::notify`, so the entry stored under the older generation
-        //     simply misses on the next read and is rebuilt — the flat path is
-        //     never served stale.
-        let generation = crate::watch::generation(&self.watch_registry);
-        let cache_key = format!("{}::{}", self.name, field);
-        let vectors: Arc<Vec<(ulid::Ulid, Vec<f32>)>> = {
-            let cached = {
-                let cache = self
-                    .vector_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cache
-                    .get(&cache_key)
-                    .filter(|c| c.generation == generation)
-                    .map(|c| Arc::clone(&c.vectors))
-            };
-            match cached {
-                Some(vecs) => vecs,
-                None => {
-                    // Miss — read and decode the whole vec table once. The lock
-                    // is released during storage IO; a concurrent miss just
-                    // rebuilds redundantly, which is correct.
-                    let vtable = vec_table_name(&self.name, field);
-                    let rtxn = self.backend.begin_read()?;
-                    let all_entries = rtxn.scan_all(&vtable)?;
-                    drop(rtxn);
-                    let mut decoded: Vec<(ulid::Ulid, Vec<f32>)> =
-                        Vec::with_capacity(all_entries.len());
-                    for (key_bytes, val_bytes) in &all_entries {
-                        let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
-                            Ok(a) => a,
-                            Err(_) => continue,
-                        };
-                        if let Some(v) = decode_f32_vec(val_bytes) {
-                            decoded.push((ulid::Ulid::from_bytes(arr), v));
+        let allowed = pre_filter
+            .as_ref()
+            .map(|f| self.matching_ids_in(txn, f))
+            .transpose()?;
+        if allowed.as_ref().is_some_and(HashSet::is_empty) {
+            return Ok(vec![]);
+        }
+        let norm = crate::vector::l2_norm(query);
+        let mut best: BinaryHeap<Reverse<Candidate>> = BinaryHeap::new();
+        let mut score = |id: Ulid, values: &[f32]| {
+            if values.len() != query.len() {
+                return;
+            }
+            let similarity = crate::vector::score_with_query_norm(&def.metric, query, norm, values);
+            if !similarity.is_finite() {
+                return;
+            }
+            let candidate = Candidate(id, similarity);
+            if best.len() < top_k {
+                best.push(Reverse(candidate));
+            } else if best.peek().is_some_and(|worst| candidate > worst.0) {
+                best.pop();
+                best.push(Reverse(candidate));
+            }
+        };
+        // Selective filters read only their vector IDs and never populate the full cache.
+        if let Some(ids) = allowed {
+            for id in ids {
+                if let Some(bytes) = txn.get(&table, &id)?
+                    && let Some(values) = decode_f32_vec(&bytes)
+                {
+                    score(Ulid::from_bytes(id), &values);
+                }
+            }
+        } else {
+            let cached = self
+                .vector_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&cache_key)
+                .filter(|c| c.generation == generation)
+                .map(|c| Arc::clone(&c.vectors));
+            if let Some(block) = cached {
+                for (id, values) in block
+                    .ids
+                    .iter()
+                    .zip(block.values.chunks_exact(block.dimensions))
+                {
+                    score(*id, values);
+                }
+            } else {
+                let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
+                let estimate =
+                    count.checked_mul(def.dimensions.saturating_mul(4).saturating_add(16));
+                let retain = estimate.is_some_and(|n| n <= DEFAULT_VECTOR_CACHE_BYTES);
+                let mut block = VectorBlock {
+                    dimensions: def.dimensions,
+                    ..Default::default()
+                };
+                if retain {
+                    block.ids.reserve_exact(count);
+                    block
+                        .values
+                        .reserve_exact(count.saturating_mul(def.dimensions));
+                }
+                txn.scan(
+                    &table,
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Unbounded,
+                    &mut |key, bytes| {
+                        if let Ok(id) = <[u8; 16]>::try_from(key)
+                            && let Some(values) = decode_f32_vec(bytes)
+                            && values.len() == def.dimensions
+                        {
+                            score(Ulid::from_bytes(id), &values);
+                            if retain {
+                                block.ids.push(Ulid::from_bytes(id));
+                                block.values.extend(values);
+                            }
                         }
-                    }
-                    let arc = Arc::new(decoded);
+                        Ok(crate::engine::ScanFlow::Continue)
+                    },
+                )?;
+                if retain && block.bytes() <= DEFAULT_VECTOR_CACHE_BYTES {
                     let mut cache = self
                         .vector_cache
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    cache.insert(
-                        cache_key,
-                        CachedVectors {
-                            generation,
-                            vectors: Arc::clone(&arc),
-                        },
-                    );
-                    arc
+                    let used: usize = cache.values().map(|c| c.vectors.bytes()).sum();
+                    if used.saturating_add(block.bytes()) > DEFAULT_VECTOR_CACHE_BYTES {
+                        cache.clear();
+                    }
+                    if cache
+                        .get(&cache_key)
+                        .is_none_or(|c| c.generation <= generation)
+                    {
+                        cache.insert(
+                            cache_key,
+                            CachedVectors {
+                                generation,
+                                vectors: Arc::new(block),
+                            },
+                        );
+                    }
                 }
             }
-        };
-
-        // 4. Resolve the pre-filter to a set of matching ids up front, so the
-        //    scoring loop skips candidates that can't appear in the result
-        //    (a 10%-selective filter skips scoring the other 90%).
-        let id_filter: Option<std::collections::HashSet<ulid::Ulid>> = match pre_filter {
-            Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id).collect()),
-            None => None,
-        };
-
-        // 5. Score the in-memory decoded vectors against the query.
-        //
-        //    The query's L2 norm is constant across every candidate, so it is
-        //    computed once here instead of being recomputed inside
-        //    `cosine_similarity` for each stored vector (one extra dot product
-        //    plus a sqrt per candidate, over the whole table).
-        let metric = &def.metric;
-        let query_norm = crate::vector::l2_norm(query);
-        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(vectors.len());
-        for (id, vec) in vectors.iter() {
-            if let Some(ids) = &id_filter
-                && !ids.contains(id)
-            {
-                continue;
-            }
-            // Skip entries whose dimension doesn't match the query. The scoring
-            // reductions walk both slices with `chunks_exact` and stop at the
-            // shorter, so a wrong-length vector would otherwise be *partially*
-            // scored and could rank into the top-k on a truncated dot product.
-            //
-            // The write path enforces `vec.len() == vdef.dimensions`, so this is
-            // unreachable from ordinary inserts — it guards the paths that
-            // bypass it: `restore_from_snapshot` (which writes raw table bytes)
-            // and on-disk corruption, where `decode_f32_vec` happily returns a
-            // short vector as long as the byte count is a multiple of four.
-            if vec.len() != query.len() {
-                continue;
-            }
-            scored.push((
-                *id,
-                crate::vector::score_with_query_norm(metric, query, query_norm, vec),
-            ));
         }
-
-        // 6. Select the top_k by score. `select_nth_unstable` partitions in
-        //    O(n) average instead of the O(n log n) of a full sort, then only
-        //    the k retained results are sorted.
-        // `top_k == 0` asks for nothing. Falling through to the partition below
-        // left `scored` untouched and returned the *whole* collection — the
-        // opposite of the request, and unbounded.
-        if top_k == 0 {
-            return Ok(Vec::new());
-        }
-        let k = top_k.min(scored.len());
-        if k > 0 && k < scored.len() {
-            scored.select_nth_unstable_by(k - 1, |a, b| {
-                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            scored.truncate(k);
-        }
-        scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        self.load_results(scored)
+        let mut ranked: Vec<_> = best.into_iter().map(|r| r.0).collect();
+        ranked.sort_unstable_by(|a, b| b.cmp(a));
+        self.load_results_in(txn, ranked.into_iter().map(|c| (c.0, c.1)).collect())
     }
 
     /// Rebuild the HNSW graph for a vector index from the current flat vector
     /// table.  Use this after bulk inserts or when the graph has become stale.
     ///
     /// The in-memory graph is **not** maintained incrementally: documents
-    /// written after the last build are invisible to HNSW search (and deleted
+    /// written after the last build trigger exact search (and deleted
     /// ones linger in the graph) until this is called again.
     ///
     /// Requires the `vector-hnsw` feature.  Returns `Ok(())` (no-op) when the
     /// feature is disabled or when no HNSW options exist for the given field.
     pub fn upgrade_vector_index(&self, field: &str) -> Result<(), TalaDbError> {
-        // Load current VectorDef to get metric & dimensions
-        let defs = self.load_vector_indexes()?;
+        // Metadata, vectors and graph version share one snapshot.
+        let rtxn = self.backend.begin_read()?;
+        let defs = self.read_vector_indexes(rtxn.as_ref())?;
         let def = defs
             .iter()
             .find(|d| d.field == field)
@@ -1451,9 +1512,8 @@ impl Collection {
 
         // Load HNSW options — if not present, this index is flat-only; nothing to do
         let hnsw_meta_key = format!("{}::{}", self.name, field);
-        let rtxn = self.backend.begin_read()?;
+
         let opts_bytes = rtxn.get(META_HNSW_TABLE, hnsw_meta_key.as_bytes())?;
-        drop(rtxn);
 
         let hnsw_opts: HnswOptions = match opts_bytes {
             Some(b) => postcard::from_bytes(&b)?,
@@ -1462,9 +1522,9 @@ impl Collection {
 
         // Read all vectors from the flat table
         let vtable = vec_table_name(&self.name, field);
-        let rtxn = self.backend.begin_read()?;
+        let vector_revision = revision(rtxn.as_ref(), &vtable)?;
+        let _ = vector_revision;
         let all_entries = rtxn.scan_all(&vtable)?;
-        drop(rtxn);
 
         let mut vectors: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
         for (key_bytes, val_bytes) in &all_entries {
@@ -1488,7 +1548,7 @@ impl Collection {
                 .hnsw_cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.insert(cache_key, graph);
+            cache.insert(cache_key, (vector_revision, graph));
         }
 
         // Suppress unused-variable warning when feature is disabled
@@ -1497,12 +1557,12 @@ impl Collection {
     }
 
     /// Load full documents for a set of `(Ulid, score)` pairs.
-    fn load_results(
+    fn load_results_in(
         &self,
+        rtxn: &dyn ReadTxn,
         scored: Vec<(ulid::Ulid, f32)>,
     ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
         let docs_table = docs_table_name(&self.name);
-        let rtxn = self.backend.begin_read()?;
         let mut results = Vec::with_capacity(scored.len());
         for (id, score) in scored {
             if let Some(bytes) = rtxn.get(&docs_table, &id.to_bytes())? {
@@ -1776,6 +1836,11 @@ impl Collection {
                             got: vec.len(),
                         });
                     }
+                    if vec.iter().any(|v| !v.is_finite()) {
+                        return Err(TalaDbError::InvalidOperation(
+                            "vector components must be finite f32 values".into(),
+                        ));
+                    }
                     puts.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
                 }
             }
@@ -1791,6 +1856,7 @@ impl Collection {
                 )
                 .collect();
             wtxn.apply_batch(vtable, &ops)?;
+            bump_revision(wtxn, vtable)?;
         }
 
         // --- compound indexes ---
@@ -1856,8 +1922,8 @@ impl Collection {
         // Index entries are written from the plaintext doc, so encrypted fields
         // are not indexable (intentional — see `with_field_encryption` docs).
         self.encrypt_doc(&mut doc)?;
-        let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         // The existence check belongs inside the exclusive write transaction.
         // A read transaction followed by a write transaction lets two callers
         // both observe "absent" and then overwrite each other sequentially.
@@ -1911,8 +1977,8 @@ impl Collection {
         for doc in &mut docs {
             self.encrypt_doc(doc)?;
         }
-        let cache = self.load_indexes_cached()?;
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         let docs_table = docs_table_name(&self.name);
         let supplied_keys: Vec<[u8; 16]> = supplied_ids.iter().map(Ulid::to_bytes).collect();
         let supplied_refs: Vec<&[u8]> = supplied_keys.iter().map(<[u8; 16]>::as_slice).collect();
@@ -1949,14 +2015,15 @@ impl Collection {
 
     #[tracing::instrument(skip(self, filter), fields(collection = %self.name))]
     pub fn find(&self, filter: Filter) -> Result<Vec<Document>, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         self.decrypt_docs(docs)
     }
@@ -1971,14 +2038,15 @@ impl Collection {
     /// index-backed plan, `_id` order for a scan), which is the same document
     /// the previous implementation returned.
     pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let docs = crate::query::executor::execute_limited(
             &qplan,
             &filter,
@@ -2005,14 +2073,15 @@ impl Collection {
         options: FindOptions,
     ) -> Result<Vec<Document>, TalaDbError> {
         let deadline = options.timeout.map(|d| std::time::Instant::now() + d);
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         // Without a sort the result is the plan's natural order, so `skip +
         // limit` documents are all that can ever be observed — stop the walk
         // there instead of decoding the rest and throwing them away. With a
@@ -2112,12 +2181,12 @@ impl Collection {
             return Ok(None);
         };
 
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         if !cache.indexes.iter().any(|i| i.field == spec.field) {
             return Ok(None);
         }
 
-        let rtxn = self.backend.begin_read()?;
         let mut entries = index_ordered_entries(rtxn.as_ref(), &self.name, &spec.field)?;
 
         // A document whose sort field is absent has no index entry, so the index
@@ -2182,14 +2251,15 @@ impl Collection {
         }
 
         let (initial_docs, rest_start) = if let Some(Stage::Match(filter)) = pipeline.first() {
-            let cache = self.load_indexes_cached()?;
+            let rtxn = self.backend.begin_read()?;
+            let cache = self.load_indexes_in(rtxn.as_ref())?;
             let plan = plan_full(
                 filter,
                 &cache.indexes,
                 &cache.fts_indexes,
                 &cache.compound_indexes,
             );
-            let rtxn = self.backend.begin_read()?;
+
             let docs = execute(&plan, filter, rtxn.as_ref(), &self.name, None)?;
             (docs, 1usize)
         } else {
@@ -2208,13 +2278,10 @@ impl Collection {
     }
 
     pub fn insert_with_id(&self, doc: Document) -> Result<Ulid, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
-        let mut wtxn = self.backend.begin_write()?;
-        let id = doc.id;
-        self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
-        wtxn.commit()?;
-        crate::watch::notify(&self.watch_registry);
-        Ok(id)
+        let mut fields = doc.fields;
+        fields.retain(|(key, _)| key != "_id");
+        fields.push(("_id".into(), Value::Str(doc.id.to_string())));
+        self.insert(fields)
     }
 
     /// Insert or replace a document preserving its ULID, in a single write
@@ -2229,10 +2296,10 @@ impl Collection {
         // documents flowing through sync (find → export → import → replace)
         // arrive here as plaintext and must be re-encrypted before storage.
         self.encrypt_doc(&mut doc)?;
-        let cache = self.load_indexes_cached()?;
         let docs_table = docs_table_name(&self.name);
         let id = doc.id;
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         // Read the previous version inside the write txn so old index entries
         // are computed from the bytes actually being replaced.
         let old_doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
@@ -2260,35 +2327,19 @@ impl Collection {
     }
 
     pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
-        let docs_table = docs_table_name(&self.name);
-        let rtxn = self.backend.begin_read()?;
-        let doc: Option<Document> = match rtxn.get(&docs_table, &id.to_bytes())? {
-            Some(bytes) => Some(postcard::from_bytes(&bytes)?),
-            None => None,
-        };
-        drop(rtxn);
-        match doc {
-            None => Ok(false),
-            Some(doc) => {
-                let mut wtxn = self.backend.begin_write()?;
-                self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
-                wtxn.commit()?;
-                crate::watch::notify(&self.watch_registry);
-                Ok(true)
-            }
-        }
+        self.delete_one(Filter::Eq("_id".into(), Value::Str(id.to_string())))
     }
 
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
@@ -2299,6 +2350,7 @@ impl Collection {
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         for candidate in candidates {
             let stored_old: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
@@ -2340,14 +2392,15 @@ impl Collection {
     }
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
@@ -2358,6 +2411,7 @@ impl Collection {
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         // Re-read every candidate in one batched pass. Candidate ids are
         // distinct (index keys embed the ULID, and the Or/In plans deduplicate),
         // so reading them all before writing any is equivalent to interleaving —
@@ -2401,14 +2455,15 @@ impl Collection {
     }
 
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
@@ -2416,6 +2471,7 @@ impl Collection {
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         for candidate in candidates {
             let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
@@ -2438,14 +2494,15 @@ impl Collection {
     }
 
     pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
-        let cache = self.load_indexes_cached()?;
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
+
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
@@ -2457,6 +2514,7 @@ impl Collection {
         let docs_table = docs_table_name(&self.name);
         let mut deleted: Vec<Document> = Vec::with_capacity(candidates.len());
         let mut wtxn = self.backend.begin_write()?;
+        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         for candidate in &candidates {
             let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
@@ -2497,14 +2555,15 @@ impl Collection {
         // only the match count matters, not field contents. When the plan's
         // index range exactly reproduces the filter, the index entries answer
         // the question and no document is decoded at all.
-        let cache = self.load_indexes_cached()?;
+
+        let rtxn = self.backend.begin_read()?;
+        let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
             &filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        let rtxn = self.backend.begin_read()?;
         crate::query::executor::count_matching(&qplan, &filter, rtxn.as_ref(), &self.name)
     }
 
@@ -2584,6 +2643,7 @@ impl Collection {
         for vtable in &tables.vectors {
             let ops: Vec<KvOp<'_>> = ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(vtable, &ops)?;
+            bump_revision(wtxn, vtable)?;
         }
 
         for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {

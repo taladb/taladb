@@ -54,7 +54,7 @@ export const workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: nu
 export const workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const workerdb_dropIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const workerdb_dropVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-export const workerdb_exportSnapshot: (a: number) => [number, number, number, number];
+export const workerdb_exportSnapshot: (a: number, b: number) => [number, number, number, number];
 export const workerdb_find: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const workerdb_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
 export const workerdb_findOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
@@ -79,11 +79,11 @@ export const workerdb_upsertManyWithIds: (a: number, b: number, c: number, d: nu
 export const workerdb_userVersion: (a: number) => [number, number, number];
 export const workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
 export const init: () => void;
-export const wasm_bindgen__closure__destroy__h4ecd198e6e5fb530: (a: number, b: number) => void;
-export const wasm_bindgen__closure__destroy__h014c297fadd2a065: (a: number, b: number) => void;
-export const wasm_bindgen__convert__closures_____invoke__h20bda61557acb630: (a: number, b: number, c: any) => [number, number];
-export const wasm_bindgen__convert__closures_____invoke__h0dbbf48826ad16e8: (a: number, b: number, c: any, d: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__hbf94730c3811ffd3: (a: number, b: number, c: any) => void;
+export const wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output_______: (a: number, b: number) => void;
+export const wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___: (a: number, b: number) => void;
+export const wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___wasm_bindgen_ecca2db5e46bf455___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___true_: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___js_sys_6f10e10b025cbc___Function_fn_wasm_bindgen_ecca2db5e46bf455___JsValue_____wasm_bindgen_ecca2db5e46bf455___sys__Undefined___js_sys_6f10e10b025cbc___Function_fn_wasm_bindgen_ecca2db5e46bf455___JsValue_____wasm_bindgen_ecca2db5e46bf455___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+export const wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___wasm_bindgen_ecca2db5e46bf455___JsValue______true_: (a: number, b: number, c: any) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;

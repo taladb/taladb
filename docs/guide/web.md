@@ -428,65 +428,46 @@ const filtered = await articles.findNearest('embedding', queryVec, 5, {
 TalaDB uses the [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
 to coordinate database access across tabs sharing the same origin.
 
-**Primary tab** — the first tab to open a given database acquires an exclusive
-lock on the OPFS file. All writes go directly to the persistent file.
+One DedicatedWorker owns the database under an exclusive Web Lock. Other tabs
+send **all reads and writes**, index changes, version changes, and flushes to
+that worker over BroadcastChannel. They keep no in-memory database replica.
+An awaited operation returns the owner's result, including duplicate-ID and
+persistence errors. Reads issued after an awaited write see that write.
 
-**Secondary tabs** — additional tabs open an in-memory copy seeded from an
-IndexedDB snapshot. They stay read-consistent within ~500 ms of any primary-tab
-write via BroadcastChannel.
+When the owner closes, a waiting worker acquires the lock and opens committed
+storage. Requests carry an owner epoch. Outstanding requests can reject with an
+unknown outcome if the owner disappears after committing but before replying;
+the worker does not replay them. Applications should reconcile by document ID
+before retrying non-idempotent updates such as `$inc`.
 
-```
-Tab A (primary, OPFS)          Tab B (secondary, in-memory)
-      │                                    │
-      │─── taladb:changed ────────────────→│  Tab B reloads snapshot
-```
+OPFS writes update the file directly; they do not export the database to IDB.
+When OPFS APIs are absent, the single owner uses a **32 MiB limited snapshot
+backend in IndexedDB**. Default durability acknowledges writes only after the
+IDB transaction completes. With `flush_every_write: false`, writes are eventual;
+`await db.flush()` is the durability barrier. Quota, read, and flush errors are
+reported. An OPFS permission or file-open failure rejects opening the database
+rather than selecting a different store.
 
-Writes made on a secondary tab are forwarded to the primary tab over the same
-BroadcastChannel and applied there, so the OPFS file stays authoritative — no
-extra code required.
+Web Locks are required for persistent browser access. Additional tabs require
+BroadcastChannel and identical database configurations. Encrypted databases
+remain single-tab. Database names must be nonempty and cannot contain `/`, `\`,
+or `:`. Close all tabs using an older worker before upgrading: the old snapshot
+protocol is not compatible with owner RPC.
 
-```
-Tab A (primary, OPFS)          Tab B (secondary, in-memory)
-      │                                    │
-      │←── taladb:tab-write ───────────────┤  forwarded write
-      │    apply + write to OPFS           │
-      │─── taladb:changed ────────────────→│  Tab B reloads snapshot
-```
-
-Inserts are forwarded as whole documents carrying their `_id`s, so an id your
-code already holds stays valid after the hand-off. Filter-based updates and
-deletes forward the filter and update instead, and the primary re-evaluates them
-against authoritative data. Concurrent edits resolve by arrival order at the
-primary — two tabs on one device share a clock, so there is no skew to arbitrate.
-
-For bulk write workloads across many tabs, prefer routing mutations through the
-primary tab. Forwarding adds one BroadcastChannel round-trip per write.
-
-### `isPrimary()`
-
-Ask whether this tab's writes land authoritatively:
+### Ownership and storage status
 
 ```ts
-if (await db.isPrimary?.() ?? true) {
-  await drainOutbox();
-}
+const status = await db.storageInfo?.()
+// { storage: 'opfs' | 'indexeddb', durableWrites, maxSnapshotBytes,
+//   storageError, hnsw: false, owner }
+const ownsStorage = await db.isPrimary?.()
 ```
 
-Use it for work that must not run in more than one tab at once, or that depends
-on reading its own writes straight back — a background queue drainer, a
-scheduled cleanup pass, an outbound sync loop. On a secondary tab both
-assumptions fail: other tabs' writes arrive up to ~500 ms late, and its own
-writes only become visible to everyone once the primary has applied them. A
-drainer running there will re-send work it has already sent.
-
-Primary status changes during a session — closing the owning tab promotes
-another — so **re-check it rather than caching the answer**. A per-cycle check
-at the top of a loop is enough.
-
-It returns `true` on Node.js and React Native, where a single process owns the
-database, and on the in-memory Safari fallback, where each tab holds its own
-isolated database and forwards nothing. It may be absent on older `@taladb/web`
-builds, so treat absence as `true`.
+`isPrimary()` reports which tab currently owns storage; every tab receives
+authoritative query results. Ownership may change immediately after this check,
+so it is not an application-level lock for an outbox drainer or a scheduled job.
+Use a separate Web Lock for exclusive application work. Database migrations
+provided to `openDB` already use a separate lock to serialize migration runners.
 
 ## Change webhook
 

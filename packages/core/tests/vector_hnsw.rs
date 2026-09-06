@@ -62,7 +62,7 @@ fn hnsw_create_and_search() {
         4,
         Some(VectorMetric::Cosine),
         Some(HnswOptions {
-            m: 8,
+            m: 32,
             ef_construction: 50,
         }),
     )
@@ -126,7 +126,7 @@ fn rebuild_hnsw_indexes_on_open() {
             4,
             Some(VectorMetric::Euclidean),
             Some(HnswOptions {
-                m: 4,
+                m: 32,
                 ef_construction: 40,
             }),
         )
@@ -304,7 +304,7 @@ fn a_huge_top_k_saturates_the_hnsw_over_fetch() {
         4,
         Some(VectorMetric::Cosine),
         Some(HnswOptions {
-            m: 8,
+            m: 32,
             ef_construction: 50,
         }),
     )

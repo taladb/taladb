@@ -4,8 +4,16 @@ const only = process.argv.slice(2);
 const want = (p) => only.length === 0 || only.includes(p);
 
 const server = await startServer();
-const { browser, dispose } = await launch();
+let launched;
+try {
+  launched = await launch();
+} catch (error) {
+  server.kill();
+  throw error;
+}
+const { browser, dispose } = launched;
 const all = [];
+let fatal = false;
 
 try {
   if (want('1')) {
@@ -83,9 +91,12 @@ try {
     all.push(...r.results);
     await page.close();
   }
+} catch (error) {
+  fatal = true;
+  console.error('Browser harness failed:', error);
 } finally {
   const failures = summarize(all);
   await dispose();
   server.kill();
-  process.exit(failures ? 1 : 0);
+  process.exit(fatal || failures || all.length === 0 ? 1 : 0);
 }

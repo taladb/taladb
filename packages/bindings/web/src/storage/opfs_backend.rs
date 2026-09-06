@@ -1,7 +1,7 @@
 //! OPFS redb StorageBackend — uses `FileSystemSyncAccessHandle` for byte-level I/O.
 //!
 //! `FileSystemSyncAccessHandle` provides **synchronous** read/write/truncate/flush
-//! operations and is only available in **dedicated** or **shared** worker threads.
+//! operations and is only available in **dedicated** worker threads.
 //! It is the correct primitive for running redb on top of OPFS: no async, no
 //! round-trips to the main thread, byte-addressable random I/O.
 //!

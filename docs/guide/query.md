@@ -905,13 +905,14 @@ disagrees:
 
 ## Multi-tab
 
-The queue drains on the **primary tab** only — the one that owns the storage.
-This is a correctness requirement, not an optimisation: a secondary tab reads a
-pending set that lags by up to half a second, and its own bookkeeping is itself
-a forwarded write applied later, so it would re-send what it just sent.
+The queue starts drains on the **storage-owning tab** only. Every tab reads the
+same authoritative state through the owner, but this gate avoids multiple tabs
+performing the same network work at once.
 
-Nothing is required of you. See [`isPrimary()`](/guide/web#isprimary) if you
-have your own background work with the same constraint.
+Ownership can change during a drain, so remote handlers must still use stable
+operation IDs and treat retries idempotently. See
+[`isPrimary()`](/guide/web#ownership-and-storage-status) if you have your own
+background work; use a separate Web Lock when the whole task must be exclusive.
 
 ---
 

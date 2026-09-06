@@ -544,19 +544,18 @@ function detectPlatform(): Platform {
 }
 
 // ============================================================
-// Browser adapter — SharedWorker + OPFS via FileSystemSyncAccessHandle
+// Browser adapter — storage-owning DedicatedWorker + OPFS
 // ============================================================
 
 /**
- * Thin proxy that forwards every DB operation to the SharedWorker
+ * Thin proxy that forwards every DB operation to this tab's DedicatedWorker
  * via a typed message protocol and awaits the response.
  *
- * The SharedWorker (taladb.worker.js) owns the OPFS file handle and the
- * WASM + redb instance. Multiple tabs share the same worker instance so
- * there is always exactly one writer.
+ * One worker owns the OPFS file and WASM/redb instance under a Web Lock.
+ * Other workers route their requests to it through BroadcastChannel.
  */
-// WorkerProxy works with both MessagePort (SharedWorker) and Worker.
-// Worker does not have a .start() method; MessagePort requires it.
+// The optional start method keeps this proxy compatible with MessagePort in
+// downstream wrappers, although TalaDB itself passes a DedicatedWorker.
 type WorkerLike = Pick<Worker, 'postMessage'> & { onmessage: ((e: MessageEvent) => void) | null; start?: () => void };
 
 class WorkerProxy {
@@ -648,7 +647,7 @@ function makePoller<T extends Document>(
 }
 
 /**
- * In-memory fallback for browsers that don't support SharedWorker (e.g. Safari iOS).
+ * Legacy in-memory adapter retained for direct consumers of this module.
  * Data is not persisted across page reloads; all writes live in WASM memory only.
  */
 async function createInMemoryBrowserDB(
@@ -961,8 +960,8 @@ async function createBrowserDB(
     // otherwise an initially-empty collection never fires the callback and
     // useFind stays in loading state forever.
     let lastJson = '';
-    // -1 (never a real generation) forces the first tick to run the query.
-    let lastGeneration = -1;
+    // The owner's epoch changes on failover even if its counter repeats.
+    let lastGeneration: string | number | null = null;
     // Older workers lack the writeGeneration op; one failure disables the
     // fast path for this subscription and we fall back to always querying.
     let generationSupported = true;
@@ -982,7 +981,7 @@ async function createBrowserDB(
         let unchanged = false;
         if (generationSupported) {
           try {
-            const gen = await proxy.send<number>('writeGeneration', { collection });
+            const gen = await proxy.send<string | number>('writeGeneration', { collection });
             if (gen === lastGeneration) unchanged = true;
             else lastGeneration = gen;
           } catch {
@@ -1029,6 +1028,7 @@ async function createBrowserDB(
     compact: () => proxy.send<void>('compact'),
     flush: async () => { await proxy.send<void>('flush'); },
     isPrimary: () => proxy.send<boolean>('isPrimary'),
+    storageInfo: () => proxy.send<Awaited<ReturnType<NonNullable<TalaDB['storageInfo']>>>>('capabilities'),
     close: async () => {
       channel?.close();
       try {
@@ -1044,14 +1044,16 @@ async function createBrowserDB(
   if (migrations?.length) {
     // Version accessors run inside the worker, alongside the engine, so the
     // migration bodies (which write through the same worker) stay consistent.
-    await runMigrations(
-      handle,
-      async () => proxy.send<number>('userVersion'),
-      async (v) => {
-        await proxy.send<null>('setUserVersion', { version: v });
-      },
-      migrations,
-    );
+    await navigator.locks.request(`taladb:migrations:${dbName}`, async () => {
+      await runMigrations(
+        handle,
+        async () => proxy.send<number>('userVersion'),
+        async (v) => {
+          await proxy.send<null>('setUserVersion', { version: v });
+        },
+        migrations,
+      );
+    });
   }
   return handle satisfies TalaDB;
 }
@@ -1187,6 +1189,11 @@ async function createNodeDB(
 // The JSI HostObject is a flat API: every method takes the collection name as
 // its first argument. There is no intermediate collection(name) sub-object.
 interface NativeDB {
+  callAsync?(op: string, args: unknown[]): Promise<any>;
+  findAsync?(collection: string, filter: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+  findNearestAsync?(collection: string, field: string, query: number[], topK: number, filter?: Record<string, unknown> | null): Promise<{ document: Record<string, unknown>; score: number }[]>;
+  listIndexes?(collection: string): CollectionIndexInfo;
+
   insert(collection: string, doc: Record<string, unknown>): string;
   insertMany(collection: string, docs: Record<string, unknown>[]): string[];
   find(collection: string, filter: Record<string, unknown>): Record<string, unknown>[];
@@ -1240,78 +1247,101 @@ async function createNativeDB(
     );
   }
   const native: NativeDB = maybeNative;
+  let nativeQueue: Promise<unknown> = Promise.resolve();
+  let queued = 0;
+  let closed = false;
+  // One ordered queue prevents close/DDL from overtaking an awaited write.
+  const call = (op: string, ...args: unknown[]): Promise<any> => {
+    if (queued >= 128) return Promise.reject(new Error('TalaDB native request queue is full'));
+    queued++;
+    const result = nativeQueue.then(async () => {
+      if (closed) throw new Error('TalaDB database is closed');
+      if (op === 'close') { closed = true; native.close(); return; }
+      if (op === 'findNearest' && native.findNearestAsync) {
+        return (native.findNearestAsync as (...a: unknown[]) => Promise<unknown>)(...args);
+      }
+      if (native.callAsync) return native.callAsync(op, args);
+      if (op === 'find' && native.findAsync) {
+        return (native.findAsync as (...a: unknown[]) => Promise<unknown>)(...args);
+      }
+      const method = (native as unknown as Record<string, (...a: unknown[]) => unknown>)[op];
+      if (!method) throw new Error(`${op} requires a newer @taladb/react-native binary; rebuild the native module`);
+      return method(...args);
+    });
+    nativeQueue = result.catch(() => {}).finally(() => { queued--; });
+    return result;
+  };
+
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const wrapped: Collection<T> = {
-      insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
-      insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
-      find: async (filter?) => native.find(name, filter ?? {}) as T[],
-      findOne: async (filter) => native.findOne(name, filter ?? {}) as T | null,
-      updateOne: async (filter, update) => native.updateOne(name, filter, update),
-      updateMany: async (filter, update) => native.updateMany(name, filter, update),
-      deleteOne: async (filter) => native.deleteOne(name, filter),
-      deleteMany: async (filter) => native.deleteMany(name, filter),
-      count: async (filter?) => native.count(name, filter ?? {}),
+      insert: async (doc) => await call('insert', name, doc as Record<string, unknown>),
+      insertMany: async (docs) => await call('insertMany', name, docs as Record<string, unknown>[]),
+      find: async (filter?) => await call('find', name, filter ?? {}) as T[],
+      findOne: async (filter) => await call('findOne', name, filter ?? {}) as T | null,
+      updateOne: async (filter, update) => await call('updateOne', name, filter, update),
+      updateMany: async (filter, update) => await call('updateMany', name, filter, update),
+      deleteOne: async (filter) => await call('deleteOne', name, filter),
+      deleteMany: async (filter) => await call('deleteMany', name, filter),
+      count: async (filter?) => await call('count', name, filter ?? {}),
       aggregate: async <R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]> =>
-        native.aggregate(name, pipeline as unknown[]) as R[],
-      createIndex: async (field) => native.createIndex(name, field),
-      dropIndex: async (field) => native.dropIndex(name, field),
-      createCompoundIndex: async (fields) => native.createCompoundIndex(name, fields as string[]),
-      dropCompoundIndex: async (fields) => native.dropCompoundIndex(name, fields as string[]),
-      createFtsIndex: async (field) => native.createFtsIndex(name, field),
-      dropFtsIndex: async (field) => native.dropFtsIndex(name, field),
+        await call('aggregate', name, pipeline as unknown[]) as R[],
+      createIndex: async (field) => await call('createIndex', name, field),
+      dropIndex: async (field) => await call('dropIndex', name, field),
+      createCompoundIndex: async (fields) => await call('createCompoundIndex', name, fields as string[]),
+      dropCompoundIndex: async (fields) => await call('dropCompoundIndex', name, fields as string[]),
+      createFtsIndex: async (field) => await call('createFtsIndex', name, field),
+      dropFtsIndex: async (field) => await call('dropFtsIndex', name, field),
       createVectorIndex: async (field, options) => {
         const opts: Record<string, unknown> = {};
         if (options.metric) opts.metric = options.metric;
-        if (options.hnswM || options.hnswEfConstruction) {
-          opts.hnsw = { m: options.hnswM, efConstruction: options.hnswEfConstruction };
+        if (options.indexType === 'hnsw') {
+          opts.hnsw = { m: options.hnswM ?? 32, ef_construction: options.hnswEfConstruction ?? 200 };
         }
-        return native.createVectorIndex(name, field, options.dimensions, opts);
+        return await call('createVectorIndex', name, field, options.dimensions, opts);
       },
-      dropVectorIndex: async (field) => native.dropVectorIndex(name, field),
-      upgradeVectorIndex: async (field) => native.upgradeVectorIndex(name, field),
-      // The JSI HostObject does not expose index introspection yet; return a
-      // correctly-shaped empty result rather than `{}` cast to the interface.
-      listIndexes: async (): Promise<CollectionIndexInfo> => ({ btree: [], fts: [], vector: [] }),
+      dropVectorIndex: async (field) => await call('dropVectorIndex', name, field),
+      upgradeVectorIndex: async (field) => await call('upgradeVectorIndex', name, field),
+      listIndexes: async (): Promise<CollectionIndexInfo> => call('listIndexes', name),
       findNearest: async (field, vector, topK, filter?) => {
-        const raw = native.findNearest(name, field, vector, topK, filter ?? null);
+        const raw = await call('findNearest', name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
       },
       searchText: async (field, query, topK, filter?, options?) => {
-        if (!native.searchText) {
+        if (!native.callAsync && !native.searchText) {
           throw new Error('searchText requires @taladb/react-native ≥ 0.10 — rebuild the native module');
         }
-        return native.searchText(name, field, query, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number }[];
+        return await call('searchText', name, field, query, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number }[];
       },
       hybridSearch: async (text, vector, topK, filter?, options?) => {
-        if (!native.hybridSearch) {
+        if (!native.callAsync && !native.hybridSearch) {
           throw new Error('hybridSearch requires @taladb/react-native ≥ 0.10 — rebuild the native module');
         }
-        return native.hybridSearch(name, text.textField, text.text, vector.vectorField, vector.vector, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
+        return await call('hybridSearch', name, text.textField, text.text, vector.vectorField, vector.vector, topK, (filter ?? null) as Record<string, unknown> | null, (options ?? null) as Record<string, unknown> | null) as { document: T; score: number; textRank: number | null; vectorRank: number | null }[];
       },
       subscribe: (filter, callback, onError) =>
-        makePoller(async () => native.find(name, filter ?? {}) as T[], callback, onError),
+        makePoller(async () => await call('find', name, filter ?? {}) as T[], callback, onError),
       subscribeAggregate: <R extends Document = Document>(
         pipeline: AggregatePipeline<T>,
         callback: (docs: R[]) => void,
         onError?: (error: unknown) => void,
-      ) => makePoller(async () => native.aggregate(name, pipeline as unknown[]) as R[], callback, onError),
+      ) => makePoller(async () => await call('aggregate', name, pipeline as unknown[]) as R[], callback, onError),
     };
     return decorateCollection(wrapped, name, opts, webhook);
   }
 
   const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
-    compact: async () => native.compact(),
-    close: async () => native.close(),
-    flush: native.flush ? async () => { native.flush!(); } : undefined,
+    compact: async () => await call('compact'),
+    close: async () => await call('close'),
+    flush: native.callAsync || native.flush ? async () => { await call('flush'); } : undefined,
     // One process owns the file — there is no other tab to defer to.
     isPrimary: async () => true,
   };
   if (migrations?.length) {
     // Feature-detected: the JSI HostObject exposes these once the native glue
     // ships. Until then, fail loudly rather than silently skip migrations.
-    if (typeof native.userVersion !== 'function' || typeof native.setUserVersion !== 'function') {
+    if (!native.callAsync && (typeof native.userVersion !== 'function' || typeof native.setUserVersion !== 'function')) {
       throw new Error(
         'openDB({ migrations }) is not available on this @taladb/react-native binary yet ' +
           '(the JSI HostObject does not expose userVersion/setUserVersion). Update the native module.',
@@ -1319,8 +1349,8 @@ async function createNativeDB(
     }
     await runMigrations(
       handle,
-      async () => native.userVersion!(),
-      async (v) => native.setUserVersion!(v),
+      async () => call('userVersion'),
+      async (v) => call('setUserVersion', v),
       migrations,
     );
   }

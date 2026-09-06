@@ -19,7 +19,7 @@ export interface VectorIndexOptions {
    * Requires the `vector-hnsw` feature to be compiled in.
    */
   indexType?: 'flat' | 'hnsw';
-  /** HNSW connectivity parameter M (default 16). Higher = better recall, more memory. */
+  /** HNSW connectivity parameter M. This implementation supports only 32 (the default). */
   hnswM?: number;
   /** HNSW build-time quality parameter ef_construction (default 200). */
   hnswEfConstruction?: number;
@@ -635,33 +635,17 @@ export interface TalaDB {
    */
   flush?(): Promise<void>;
   /**
-   * Whether this tab's writes land authoritatively, without being forwarded to
-   * another tab.
-   *
-   * **Browser only.** The first tab to open a database becomes the primary and
-   * owns the storage; later tabs run an in-memory copy and forward their writes
-   * to it over BroadcastChannel. Both the OPFS owner and — where OPFS is
-   * unavailable — the tab that publishes the IndexedDB snapshot report `true`.
-   *
-   * Use it for work that must not run in more than one tab at a time, or that
-   * depends on reading its own writes back immediately: a background queue
-   * drainer, a scheduled cleanup pass, an outbound sync loop. A secondary tab
-   * sees other tabs' writes up to ~500 ms late, and its own writes only once
-   * the primary has applied them.
-   *
-   * Primary status changes during a session — closing the owning tab promotes
-   * another — so re-check it rather than caching the answer.
-   *
-   * Always `true` on Node.js and React Native, where a single process owns the
-   * database. May be absent on older `@taladb/web` builds — treat absence as
-   * `true`.
-   *
-   * @example
-   * if (await db.isPrimary?.() ?? true) {
-   *   await drainOutbox();
-   * }
+   * Whether this browser tab owns the database storage. All tabs execute reads
+   * and writes through that owner and await its result. Ownership can change
+   * after the owning tab closes. Node.js and React Native return true.
    */
   isPrimary?(): Promise<boolean>;
+  /** Actual browser storage/durability capabilities, including fallback errors. */
+  storageInfo?(): Promise<{
+    storage: 'opfs' | 'indexeddb'; durableWrites: boolean; maxSnapshotBytes: number | null;
+    storageError: string | null; hnsw: boolean; owner: boolean;
+  }>;
+
   /**
    * Change-webhook delivery counters, when the webhook is enabled. All zero
    * (and `pending: 0`) when it is not.

@@ -21,7 +21,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
 
 use crate::document::{Document, Value};
 
@@ -29,23 +28,50 @@ use crate::document::{Document, Value};
 // Decoded-vector cache (flat search)
 // ---------------------------------------------------------------------------
 //
-// The flat search path reads the entire `vec::` table from storage and decodes
-// every f32 vector on *each* query. This cache keeps the decoded vectors in
-// memory so repeated queries are memory-bound rather than storage-bound — the
-// common case for retrieval workloads (many searches, occasional writes).
+// The flat search path streams the `vec::` table and keeps only top-k scoring
+// state. When the table fits the byte budget, this cache retains one contiguous
+// decoded block so repeated queries are memory-bound rather than storage-bound.
 //
-// Each entry is tagged with the collection's write generation (see
-// `crate::watch`). A read serves the cache only when the stored generation
-// still matches the collection's current one; any committed write bumps the
-// generation via `watch::notify`, so the flat path stays exact. Unlike the
-// HNSW graph cache, this must never be served stale — flat search is the
-// always-current, exact path.
+// Each entry is tagged with the persisted vector-table revision read in the
+// query's transaction. Embedding mutations bump it in the same write transaction;
+// unrelated metadata writes preserve it. Flat and HNSW caches both reject stale
+// revisions, including when another database handle performed the write.
 
-/// Decoded vectors for one `collection::field`, tagged with the write
-/// generation they were built at.
+/// Decoded vectors for one `collection::field`, tagged with its vector revision.
 pub struct CachedVectors {
     pub generation: u64,
-    pub vectors: Arc<Vec<(Ulid, Vec<f32>)>>,
+    pub vectors: Arc<VectorBlock>,
+}
+
+/// Contiguous decoded vectors; IDs and values avoid one allocation per vector.
+#[derive(Default)]
+pub struct VectorBlock {
+    pub ids: Vec<ulid::Ulid>,
+    pub values: Vec<f32>,
+    pub dimensions: usize,
+}
+impl VectorBlock {
+    pub fn bytes(&self) -> usize {
+        self.ids.capacity() * std::mem::size_of::<ulid::Ulid>() + self.values.capacity() * 4
+    }
+}
+/// Maximum retained decoded vector bytes per database. Oversized indexes stream.
+pub const DEFAULT_VECTOR_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(PartialEq)]
+pub(crate) struct Candidate(pub ulid::Ulid, pub f32);
+impl Eq for Candidate {}
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.1
+            .total_cmp(&other.1)
+            .then_with(|| other.0.cmp(&self.0))
+    }
 }
 
 pub type VectorCacheMap = HashMap<String, CachedVectors>;
@@ -112,8 +138,7 @@ pub struct VectorDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HnswOptions {
     /// Number of bi-directional links per node (connectivity).
-    /// Higher values improve recall but increase memory and build time.
-    /// Typical range: 8–48. Default: 16.
+    /// The current graph implementation supports only 32; other values are rejected.
     pub m: u32,
     /// Build-time quality parameter (ef during construction).
     /// Higher values produce a better graph at the cost of slower builds.
@@ -124,7 +149,7 @@ pub struct HnswOptions {
 impl Default for HnswOptions {
     fn default() -> Self {
         Self {
-            m: 16,
+            m: 32,
             ef_construction: 200,
         }
     }
@@ -154,7 +179,6 @@ impl Default for HnswOptions {
 
 #[cfg(feature = "vector-hnsw")]
 mod hnsw_impl {
-    use std::cell::Cell;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -172,31 +196,13 @@ mod hnsw_impl {
     pub type HnswGraph = HnswMap<HnswPoint, ()>;
 
     /// Graph entry keyed by `"{collection}::{field}"`.
-    pub(super) type HnswCacheMap = HashMap<String, Arc<HnswGraph>>;
+    pub(super) type HnswCacheMap = HashMap<String, (u64, Arc<HnswGraph>)>;
     /// Thread-safe, reference-counted cache shared by all Collection handles
     /// belonging to the same Database.
     pub type SharedHnswCache = Arc<Mutex<HnswCacheMap>>;
 
     pub fn new_shared_cache() -> SharedHnswCache {
         Arc::new(Mutex::new(HashMap::new()))
-    }
-
-    // ------------------------------------------------------------------
-    // Thread-local metric dispatch (set before every build/search)
-    // ------------------------------------------------------------------
-
-    thread_local! {
-        /// 0 = Cosine, 1 = Dot, 2 = Euclidean
-        static ACTIVE_METRIC: Cell<u8> = const { Cell::new(0) };
-    }
-
-    pub(super) fn set_metric(metric: &VectorMetric) {
-        let code: u8 = match metric {
-            VectorMetric::Cosine => 0,
-            VectorMetric::Dot => 1,
-            VectorMetric::Euclidean => 2,
-        };
-        ACTIVE_METRIC.with(|m| m.set(code));
     }
 
     pub(super) fn distance_to_similarity(metric: &VectorMetric, distance: f32) -> f32 {
@@ -215,13 +221,14 @@ mod hnsw_impl {
     pub struct HnswPoint {
         pub id_bytes: [u8; 16],
         pub vec: Vec<f32>,
+        pub metric: VectorMetric,
     }
 
     impl HnswTrait for HnswPoint {
         fn distance(&self, other: &Self) -> f32 {
-            ACTIVE_METRIC.with(|m| match m.get() {
-                0 => 1.0 - cosine_similarity(&self.vec, &other.vec),
-                1 => -dot_similarity(&self.vec, &other.vec),
+            match self.metric {
+                VectorMetric::Cosine => 1.0 - cosine_similarity(&self.vec, &other.vec),
+                VectorMetric::Dot => -dot_similarity(&self.vec, &other.vec),
                 _ => self
                     .vec
                     .iter()
@@ -229,8 +236,29 @@ mod hnsw_impl {
                     .map(|(a, b)| (a - b).powi(2))
                     .sum::<f32>()
                     .sqrt(),
-            })
+            }
         }
+    }
+
+    #[test]
+    fn euclidean_distance_is_carried_to_build_threads() {
+        // The old thread-local metric reverted to cosine on a new worker.
+        let point = HnswPoint {
+            id_bytes: [0; 16],
+            vec: vec![3.0, 4.0],
+            metric: VectorMetric::Euclidean,
+        };
+        let origin = HnswPoint {
+            id_bytes: [1; 16],
+            vec: vec![0.0, 0.0],
+            metric: VectorMetric::Euclidean,
+        };
+        assert_eq!(
+            std::thread::spawn(move || point.distance(&origin))
+                .join()
+                .unwrap(),
+            5.0
+        );
     }
 
     // ------------------------------------------------------------------
@@ -255,13 +283,13 @@ mod hnsw_impl {
                     .into(),
             ));
         }
-        set_metric(metric);
 
         let points: Vec<HnswPoint> = vectors
             .iter()
             .map(|(id, vec)| HnswPoint {
                 id_bytes: id.to_bytes(),
                 vec: vec.clone(),
+                metric: *metric,
             })
             .collect();
 
@@ -286,11 +314,10 @@ mod hnsw_impl {
         metric: &VectorMetric,
         top_k: usize,
     ) -> Vec<(Ulid, f32)> {
-        set_metric(metric);
-
         let query_point = HnswPoint {
             id_bytes: [0u8; 16],
             vec: query.to_vec(),
+            metric: *metric,
         };
         let mut search = Search::default();
 
