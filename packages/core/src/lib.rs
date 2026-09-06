@@ -391,8 +391,8 @@ impl Database {
     ///
     /// The snapshot can be stored anywhere (e.g. OPFS) and later passed to
     /// [`Database::restore_from_snapshot`] to recreate an identical in-memory
-    /// database.  Intended for the browser WASM snapshot-flush persistence
-    /// strategy; not suited for databases larger than ~50 MB.
+    /// database. Intended for explicit export/backup and the bounded IndexedDB
+    /// fallback; OPFS-backed databases write pages directly.
     ///
     /// Format: `TDBS` magic (4 B) + version u32 LE (4 B) + table count u32 LE,
     /// then for each table: name length u32 LE, name bytes, entry count u64 LE,
@@ -400,6 +400,14 @@ impl Database {
     /// value bytes.
     #[tracing::instrument(skip(self))]
     pub fn export_snapshot(&self) -> Result<Vec<u8>, TalaDbError> {
+        self.export_snapshot_with_limit(usize::MAX)
+    }
+
+    /// Export one consistent snapshot while limiting output allocation.
+    pub fn export_snapshot_with_limit(&self, max_bytes: usize) -> Result<Vec<u8>, TalaDbError> {
+        if max_bytes < 12 {
+            return Err(TalaDbError::InvalidSnapshot);
+        }
         let txn = self.backend.begin_read()?;
         let table_names = txn.list_tables()?;
 
@@ -410,8 +418,8 @@ impl Database {
         // The table count is known from `list_tables` alone, so each table can
         // be scanned and written straight into `buf` instead of being collected
         // into an intermediate that holds the entire database alongside the
-        // output. Only one table is resident at a time now — this is the API
-        // the WASM persistence path calls, where peak heap is the constraint.
+        // output. This is the API the bounded IndexedDB fallback calls, where
+        // peak heap is the constraint.
         // Every length prefix is written through `len_prefix`, which fails
         // rather than saturating. A saturated prefix would claim `u32::MAX`
         // bytes while the real (shorter) bytes are still appended, so the
@@ -419,27 +427,43 @@ impl Database {
         // restores as corrupt instead of one that refuses to be written.
         buf.extend_from_slice(&len_prefix(table_names.len())?);
         for name in &table_names {
-            let pairs = txn.scan_all(name)?;
             let name_bytes = name.as_bytes();
-
-            // One growth up front for the whole table rather than one per
-            // `extend_from_slice`: 4 B key length + 4 B value length per entry,
-            // plus the table header.
-            let table_bytes: usize = pairs
-                .iter()
-                .map(|(key, val)| key.len() + val.len() + 8)
-                .sum();
-            buf.reserve(table_bytes + name_bytes.len() + 12);
-
+            if buf
+                .len()
+                .saturating_add(name_bytes.len())
+                .saturating_add(12)
+                > max_bytes
+            {
+                return Err(TalaDbError::Storage(
+                    "snapshot exceeds configured byte limit".into(),
+                ));
+            }
             buf.extend_from_slice(&len_prefix(name_bytes.len())?);
             buf.extend_from_slice(name_bytes);
-            buf.extend_from_slice(&(pairs.len() as u64).to_le_bytes());
-            for (key, val) in &pairs {
-                buf.extend_from_slice(&len_prefix(key.len())?);
-                buf.extend_from_slice(key);
-                buf.extend_from_slice(&len_prefix(val.len())?);
-                buf.extend_from_slice(val);
-            }
+            buf.extend_from_slice(&txn.count_entries(name)?.to_le_bytes());
+            txn.scan(
+                name,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded,
+                &mut |key, val| {
+                    if buf
+                        .len()
+                        .saturating_add(key.len())
+                        .saturating_add(val.len())
+                        .saturating_add(8)
+                        > max_bytes
+                    {
+                        return Err(TalaDbError::Storage(
+                            "snapshot exceeds configured byte limit".into(),
+                        ));
+                    }
+                    buf.extend_from_slice(&len_prefix(key.len())?);
+                    buf.extend_from_slice(key);
+                    buf.extend_from_slice(&len_prefix(val.len())?);
+                    buf.extend_from_slice(val);
+                    Ok(crate::engine::ScanFlow::Continue)
+                },
+            )?;
         }
         Ok(buf)
     }

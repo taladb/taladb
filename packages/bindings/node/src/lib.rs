@@ -290,7 +290,7 @@ fn parse_hnsw_opts(
 ) -> Option<HnswOptions> {
     match index_type.as_deref() {
         Some("hnsw") => Some(HnswOptions {
-            m: m.unwrap_or(16),
+            m: m.unwrap_or(32),
             ef_construction: ef_construction.unwrap_or(200),
         }),
         _ => None,
@@ -531,7 +531,7 @@ impl CollectionNode {
     ///
     /// - `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
     /// - `index_type` — optional: `"flat"` (default) or `"hnsw"`.
-    /// - `hnsw_m` — HNSW connectivity (default 16).
+    /// - `hnsw_m` — HNSW connectivity (only 32 is supported).
     /// - `hnsw_ef_construction` — build quality (default 200).
     #[napi(js_name = "createVectorIndex")]
     pub fn create_vector_index(

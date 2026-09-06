@@ -87,7 +87,7 @@ export declare class CollectionNode {
    *
    * - `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
    * - `index_type` — optional: `"flat"` (default) or `"hnsw"`.
-   * - `hnsw_m` — HNSW connectivity (default 16).
+   * - `hnsw_m` — HNSW connectivity (only 32 is supported).
    * - `hnsw_ef_construction` — build quality (default 200).
    */
   createVectorIndex(field: string, dimensions: number, metric?: string | undefined | null, indexType?: string | undefined | null, hnswM?: number | undefined | null, hnswEfConstruction?: number | undefined | null): void

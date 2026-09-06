@@ -14,7 +14,7 @@
 //! Why not SharedWorker / FileSystemSyncAccessHandle?
 //! ---------------------------------------------------
 //! `FileSystemSyncAccessHandle` must run on a dedicated worker thread, which
-//! requires a `SharedWorker` and `postMessage` round-trips. For most client
+//! requires a DedicatedWorker and `postMessage` round-trips. For most client
 //! apps the snapshot-flush approach (this file) is simpler and fast enough —
 //! a 1 MB snapshot flushes in < 5 ms on modern hardware.
 //!

@@ -55,6 +55,8 @@
 #![allow(clippy::missing_safety_doc)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod async_dispatch;
+
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -2059,6 +2061,38 @@ pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
     })
 }
 
+/// Start a bounded JSON operation on a background worker.
+///
+/// # Safety
+/// The handle must be live; both strings must be valid NUL-terminated UTF-8
+/// for this call. All arguments are copied before returning.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_call_start(
+    handle: *mut TalaDbHandle,
+    op: *const c_char,
+    args_json: *const c_char,
+) -> *mut TalaDbJob {
+    ffi_guard(std::ptr::null_mut(), move || {
+        clear_last_error();
+        let (Some(op), Some(args)) = (unsafe { cstr_to_string(op) }, unsafe {
+            cstr_to_string(args_json)
+        }) else {
+            return std::ptr::null_mut();
+        };
+        if args.len() > 32 * 1024 * 1024 {
+            set_last_error("native request exceeds 32 MiB; split the batch".into());
+            return std::ptr::null_mut();
+        }
+        spawn_job(handle, move |h| {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&args).map_err(|e| e.to_string())?;
+            taladb_core::json_depth::check_json_depth(&parsed).map_err(|e| e.to_string())?;
+            let args = parsed.as_array().ok_or("arguments must be an array")?;
+            async_dispatch::execute(h, &op, args).map(|v| v.to_string())
+        })
+    })
+}
+
 /// Start a `find_nearest` in a background thread. Returns a job handle, or
 /// NULL on immediate error (bad args). The Float32 query vector is copied
 /// into the thread before the call returns, so `query_ptr` may be freed
@@ -2325,6 +2359,50 @@ mod tests {
             "message must name the panic and carry its payload, got: {err}"
         );
 
+        unsafe { taladb_close(handle) };
+    }
+
+    #[test]
+    fn async_dispatch_commits_reports_indexes_and_rejects_bad_batches() {
+        let (handle, _dir) = open_temp_db();
+        let invoke = |op: &str, args: &str| -> Result<serde_json::Value, String> {
+            let op = cstr(op);
+            let args = cstr(args);
+            let job = unsafe { taladb_call_start(handle, op.as_ptr(), args.as_ptr()) };
+            assert!(!job.is_null());
+            // taladb_job_take_result joins, so this is also a lifetime test for
+            // the arguments copied from this stack before execution starts.
+            let out = unsafe { taladb_job_take_result(job) };
+            if out.is_null() {
+                return Err(last_error().unwrap());
+            }
+            let json = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+            unsafe { taladb_free_string(out) };
+            Ok(serde_json::from_str(&json).unwrap())
+        };
+        assert!(invoke("insertMany", r#"["docs",[{"title":"a"},7]]"#).is_err());
+        assert_eq!(invoke("count", r#"["docs",{}]"#).unwrap(), 0);
+        invoke("createIndex", r#"["docs","title"]"#).unwrap();
+        let id = invoke("insert", r#"["docs",{"title":"a","v":[1,0]}]"#).unwrap();
+        assert!(id.is_string());
+        assert_eq!(invoke("count", r#"["docs",{"title":"a"}]"#).unwrap(), 1);
+        assert_eq!(
+            invoke("listIndexes", r#"["docs"]"#).unwrap()["btree"],
+            serde_json::json!(["title"])
+        );
+        invoke(
+            "createVectorIndex",
+            r#"["docs","v",2,{"hnsw":{"m":32,"ef_construction":200}}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            invoke("listIndexes", r#"["docs"]"#).unwrap()["vector"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(invoke("unknown", r#"["docs"]"#).is_err());
         unsafe { taladb_close(handle) };
     }
 

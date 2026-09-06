@@ -1,5 +1,4 @@
-// Phase 3 — multi-tab. Tab A takes the OPFS lock; later tabs fall back to an
-// IndexedDB snapshot and forward their writes to A.
+// Phase 3 — multi-tab. Tab A owns storage; later tabs route operations to A.
 import { newTab, sleep } from './lib.mjs';
 
 const open = (page, dbName, opts = {}) =>
@@ -33,7 +32,7 @@ export async function run(browser, r) {
   const A = await newTab(browser, { label: 'A' });
   const B = await newTab(browser, { label: 'B' });
 
-  await r.test('tab A takes OPFS, tab B falls back to the IDB snapshot', async (r) => {
+  await r.test('tab A owns OPFS, tab B routes reads and writes to A', async (r) => {
     await open(A, 'mt.db');
     await A.evaluate(async () => {
       await window.c.insertMany([
@@ -78,7 +77,7 @@ export async function run(browser, r) {
       null,
       (x) => x === 1,
     );
-    r.eq(stillInB, 1, "B's write survives its next snapshot reload");
+    r.eq(stillInB, 1, "B reads its committed write");
   });
 
   await r.test("B's update/delete are re-evaluated by A", async (r) => {
@@ -87,8 +86,8 @@ export async function run(browser, r) {
       const deleted = await window.c.deleteOne({ t: 'from-A-2' });
       return { updated, deleted };
     });
-    r.eq(res.updated, 1, 'B reports the update it applied locally');
-    r.eq(res.deleted, true, 'B reports the delete it applied locally');
+    r.eq(res.updated, 1, "B reports the owner update result");
+    r.eq(res.deleted, true, "B reports the owner delete result");
     const a = await until(
       A,
       async () => ({
@@ -174,22 +173,46 @@ export async function run(browser, r) {
     await D.close();
   });
 
-  await r.test('writes racing the primary going away are not lost', async (r) => {
+  await r.test('unknown handover outcomes can be reconciled by stable document id', async (r) => {
     const P = await newTab(browser, { label: 'rA' });
     const Q = await newTab(browser, { label: 'rB' });
     await open(P, 'race.db');
     await P.evaluate(() => window.c.insert({ t: 'seed' }));
     await open(Q, 'race.db');
     await until(Q, () => window.c.count(), null, (x) => x === 1);
-    // Close the owner and write from the survivor in the same instant — the
-    // window where no tab owns the file.
-    await Promise.all([
+    // Close the owner and write from the survivor in the same instant. The
+    // request may commit before the reply is lost, so the worker deliberately
+    // rejects instead of replaying a potentially non-idempotent mutation.
+    const [, outcomes] = await Promise.all([
       P.evaluate(() => window.db.close()),
       Q.evaluate(async () => {
-        for (let i = 0; i < 5; i++) await window.c.insert({ t: `race-${i}` });
+        const rows = Array.from({ length: 5 }, (_, i) => ({
+          _id: window.taladb.deriveDocId('notes', `race-${i}`),
+          t: `race-${i}`,
+        }));
+        const outcomes = [];
+        for (const row of rows) {
+          try {
+            await window.c.insert(row);
+            outcomes.push('committed');
+          } catch (error) {
+            outcomes.push(String(error.message ?? error));
+          }
+        }
+        return outcomes;
       }),
     ]);
-    await sleep(2000);
+    await until(Q, () => window.db.isPrimary(), null, Boolean);
+    // Reconcile unknown outcomes against the new owner. Retrying only missing
+    // stable ids cannot duplicate a write that committed before handover.
+    await Q.evaluate(async () => {
+      for (let i = 0; i < 5; i++) {
+        const _id = window.taladb.deriveDocId('notes', `race-${i}`);
+        if (!(await window.c.findOne({ _id }))) {
+          await window.c.insert({ _id, t: `race-${i}` });
+        }
+      }
+    });
     await Q.evaluate(() => window.db.flush?.());
     const R = await newTab(browser, { label: 'rC' });
     await open(R, 'race.db');
@@ -199,7 +222,8 @@ export async function run(browser, r) {
       null,
       (x) => x === 5,
     );
-    r.eq(durable, 5, 'every write made during the handover is durable');
+    r.eq(durable, 5, 'all reconciled writes are durable');
+    r.note(`initial outcomes: ${outcomes.join(', ')}`);
     await P.close();
     await Q.close();
     await R.close();

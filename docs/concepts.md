@@ -207,7 +207,9 @@ Every read and write in TalaDB is wrapped in an ACID transaction at the storage 
 
 Because redb uses exclusive write locks, only one write transaction can be open at a time per database instance. Reads are non-blocking and can run concurrently with each other (but not with an open write).
 
-In the browser, all writes go through the SharedWorker, which serialises them naturally — the tab that owns the OPFS handle is the single writer.
+In the browser, every tab routes operations to the DedicatedWorker that holds
+the storage Web Lock. Its bounded queue serialises writes and returns the
+authoritative result to the caller.
 
 ## Migrations
 

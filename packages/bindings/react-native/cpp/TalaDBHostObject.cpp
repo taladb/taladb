@@ -1,6 +1,9 @@
 #include "TalaDBHostObject.h"
 
 #include <memory>
+#include <cmath>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -101,30 +104,45 @@ void TalaDBHostObject::extractF32Query(Runtime &rt, const Value &val,
         }
         size_t n = size / sizeof(float);
         out.resize(n);
-        std::memcpy(out.data(), ab.data(rt), size);
+        if (size != 0) std::memcpy(out.data(), ab.data(rt), size);
         return;
     }
 
     // Float32Array exposes `.buffer`, `.byteOffset`, `.byteLength`. We read
     // those directly and memcpy from the underlying ArrayBuffer — no JSON,
     // no per-element Value conversion.
-    if (obj.hasProperty(rt, "BYTES_PER_ELEMENT")) {
-        auto bpe = obj.getProperty(rt, "BYTES_PER_ELEMENT");
-        if (bpe.isNumber() && (int)bpe.getNumber() == 4) {
+    auto arrayBuffer = rt.global().getPropertyAsObject(rt, "ArrayBuffer");
+    auto isView = arrayBuffer.getPropertyAsFunction(rt, "isView").call(rt, obj);
+    if (isView.isBool() && isView.getBool()) {
+        auto float32 = rt.global().getPropertyAsFunction(rt, "Float32Array");
+        if (obj.instanceOf(rt, float32)) {
             auto buf      = obj.getPropertyAsObject(rt, "buffer");
             auto ab       = buf.getArrayBuffer(rt);
             auto offsetV  = obj.getProperty(rt, "byteOffset");
             auto lengthV  = obj.getProperty(rt, "byteLength");
-            size_t offset = offsetV.isNumber() ? (size_t)offsetV.getNumber() : 0;
-            size_t length = lengthV.isNumber() ? (size_t)lengthV.getNumber() : 0;
+            auto checkedSize = [&rt](const Value &v) -> size_t {
+                if (!v.isNumber()) throw JSError(rt, "invalid typed-array byte range");
+                double n = v.getNumber();
+                if (!std::isfinite(n) || n < 0 || std::floor(n) != n ||
+                    n >= static_cast<double>(std::numeric_limits<size_t>::max())) {
+                    throw JSError(rt, "invalid typed-array byte range");
+                }
+                return static_cast<size_t>(n);
+            };
+            size_t offset = checkedSize(offsetV);
+            size_t length = checkedSize(lengthV);
+            if (offset > ab.size(rt) || length > ab.size(rt) - offset) {
+                throw JSError(rt, "typed-array byte range exceeds its buffer");
+            }
             if (length % sizeof(float) != 0) {
                 throw JSError(rt, "typed-array byteLength is not a multiple of 4");
             }
             size_t n = length / sizeof(float);
             out.resize(n);
-            std::memcpy(out.data(), ab.data(rt) + offset, length);
+            if (length != 0) std::memcpy(out.data(), ab.data(rt) + offset, length);
             return;
         }
+        throw JSError(rt, "query typed array must be Float32Array");
     }
 
     // --- Fallback: number[] — per-element conversion (slow, but correct) ---
@@ -150,9 +168,8 @@ void TalaDBHostObject::extractF32Query(Runtime &rt, const Value &val,
 //
 // JSI on RN does not give us a thread-safe way to resolve a Promise from a
 // background OS thread. We poll the job handle from the JS thread using
-// `setImmediate`, which costs ~0.1 ms per tick — negligible next to a
-// hundred-millisecond vector search — and the DB work itself runs on the
-// background worker the FFI spawned.
+// a bounded timer. The DB work itself runs on the background worker the FFI
+// spawned; idle polling yields to rendering instead of spinning on setImmediate.
 // ---------------------------------------------------------------------------
 
 Value TalaDBHostObject::awaitJobAsPromise(Runtime &rt, TalaDbJob *job, bool parseAsJson) {
@@ -164,7 +181,10 @@ Value TalaDBHostObject::awaitJobAsPromise(Runtime &rt, TalaDbJob *job, bool pars
 
     // The job pointer is owned by the executor closure; we null it out on
     // consumption to prevent double-free.
-    auto jobBox = std::make_shared<TalaDbJob *>(job);
+    auto jobBox = std::shared_ptr<TalaDbJob *>(new TalaDbJob *(job), [](TalaDbJob **slot) {
+        if (*slot) taladb_job_cancel(*slot);
+        delete slot;
+    });
 
     auto executor = Function::createFromHostFunction(
         rt, PropNameID::forAscii(rt, "taladbJobExecutor"), 2,
@@ -175,14 +195,16 @@ Value TalaDBHostObject::awaitJobAsPromise(Runtime &rt, TalaDbJob *job, bool pars
             auto resolve = std::make_shared<Function>(args[0].getObject(rt).getFunction(rt));
             auto reject  = std::make_shared<Function>(args[1].getObject(rt).getFunction(rt));
 
-            // `setImmediate` is provided by React Native. Recurse until the
+            // `setTimeout` is provided by React Native. Reschedule until the
             // worker thread finishes, then take the result on the JS thread.
-            auto setImmediate = rt.global().getPropertyAsFunction(rt, "setImmediate");
-            auto setImmediateShared = std::make_shared<Function>(std::move(setImmediate));
+            auto timer = rt.global().getPropertyAsFunction(rt, "setTimeout");
+            auto timerShared = std::make_shared<Function>(std::move(timer));
 
-            // Capture a self-reference so the polling lambda can schedule itself.
+            // Only the pending JS tick owns the poller; the callable itself
+            // keeps a weak reference so completion releases all JSI captures.
             auto poller = std::make_shared<std::function<void(Runtime &)>>();
-            *poller = [jobBox, resolve, reject, setImmediateShared, poller, parseAsJson](Runtime &rt) {
+            std::weak_ptr<std::function<void(Runtime &)>> weakPoller = poller;
+            *poller = [jobBox, resolve, reject, timerShared, weakPoller, parseAsJson](Runtime &rt) {
                 TalaDbJob *j = *jobBox;
                 if (!j) {
                     return; // already consumed — defensive
@@ -190,13 +212,15 @@ Value TalaDBHostObject::awaitJobAsPromise(Runtime &rt, TalaDbJob *job, bool pars
                 int32_t state = taladb_job_poll(j);
                 if (state == 0) {
                     // Still running — reschedule.
+                    auto poller = weakPoller.lock();
+                    if (!poller) return;
                     auto tick = Function::createFromHostFunction(
                         rt, PropNameID::forAscii(rt, "taladbJobTick"), 0,
                         [poller](Runtime &rt, const Value &, const Value *, size_t) -> Value {
                             (*poller)(rt);
                             return Value::undefined();
                         });
-                    setImmediateShared->call(rt, tick);
+                    timerShared->call(rt, tick, 4.0);
                     return;
                 }
 
@@ -254,7 +278,7 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "createVectorIndex", "dropVectorIndex", "upgradeVectorIndex",
         "findNearest", "findNearestAsync",
         "searchText", "hybridSearch",
-        "findAsync",
+        "findAsync", "callAsync",
         "compact",
         "close",
     };
@@ -275,6 +299,15 @@ void TalaDBHostObject::set(Runtime &, const PropNameID &, const Value &) {}
 Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     auto name = propName.utf8(rt);
 
+    if (name == "callAsync") {
+        return Function::createFromHostFunction(rt, PropNameID::forAscii(rt, "callAsync"), 2,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, "callAsync requires an operation and argument array");
+                auto op = args[0].getString(rt).utf8(rt);
+                auto json = stringify(rt, args[1]);
+                return awaitJobAsPromise(rt, taladb_call_start(db_, op.c_str(), json.c_str()), true);
+            });
+    }
     // ------------------------------------------------------------------
     // insert(collection: string, doc: object): string
     // ------------------------------------------------------------------
@@ -642,7 +675,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
 
     // ------------------------------------------------------------------
     // findNearestAsync(...) → Promise<{ document, score }[]>
-    //   Runs on a background thread. JS thread polls via setImmediate.
+    //   Runs on a background thread. JS thread polls via a bounded timer.
     // ------------------------------------------------------------------
     if (name == "findNearestAsync") {
         return Function::createFromHostFunction(

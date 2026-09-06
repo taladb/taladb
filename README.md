@@ -41,7 +41,7 @@ The same Rust core powers all three runtimes:
 
 | Runtime | Package | Mechanism |
 |---|---|---|
-| Browser | `@taladb/web` | `wasm-bindgen` + OPFS via SharedWorker |
+| Browser | `@taladb/web` | `wasm-bindgen` + OPFS via DedicatedWorker |
 | Node.js | `@taladb/node` | `napi-rs` native module |
 | React Native | `@taladb/react-native` | JSI HostObject (C FFI via `cbindgen`) |
 
@@ -55,7 +55,7 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 - **Filtered similarity search** — narrow by metadata *before* ranking, in one call: the 5 most semantically similar *english-language support articles*, without two round-trips or a post-filter that silently drops your top-k
 - **MongoDB-like API** — familiar filter and update DSL, fully typed with TypeScript generics
 - **ACID transactions** — powered by [redb](https://github.com/cberner/redb), a pure-Rust B-tree storage engine
-- **Live queries** — subscribe to a filter and receive snapshots after every write, no polling
+- **Live queries** — subscribe to a filter and receive results after changes, with polling fallback
 
 \+ encryption at rest, schema migrations, snapshot export/import, CLI tools.
 

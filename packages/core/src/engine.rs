@@ -152,6 +152,56 @@ pub trait ReadTxn {
     }
 }
 
+/// Read the current writer's snapshot without opening a separate transaction.
+pub(crate) struct WriteView<'a>(pub &'a dyn WriteTxn);
+
+impl ReadTxn for WriteView<'_> {
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
+        self.0.get(table, key)
+    }
+    fn range(
+        &self,
+        table: &str,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+    ) -> Result<KvPairs, TalaDbError> {
+        self.0.range(table, start, end)
+    }
+    fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError> {
+        self.0.range(table, Bound::Unbounded, Bound::Unbounded)
+    }
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
+        self.0.list_tables()
+    }
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        Ok(self.scan_all(table)?.len() as u64)
+    }
+    fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
+        self.0.get_many(table, keys)
+    }
+}
+
+const REVISION_TABLE: &str = "meta::revisions";
+
+pub(crate) fn revision(txn: &dyn ReadTxn, key: &str) -> Result<u64, TalaDbError> {
+    match txn.get(REVISION_TABLE, key.as_bytes())? {
+        None => Ok(0),
+        Some(bytes) => {
+            Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
+                TalaDbError::Storage("invalid revision counter".into())
+            })?))
+        }
+    }
+}
+
+pub(crate) fn bump_revision(txn: &mut dyn WriteTxn, key: &str) -> Result<u64, TalaDbError> {
+    let next = revision(&WriteView(txn), key)?
+        .checked_add(1)
+        .ok_or_else(|| TalaDbError::Storage("revision counter exhausted".into()))?;
+    txn.put(REVISION_TABLE, key.as_bytes(), &next.to_le_bytes())?;
+    Ok(next)
+}
+
 // ---------------------------------------------------------------------------
 // redb backend
 // ---------------------------------------------------------------------------

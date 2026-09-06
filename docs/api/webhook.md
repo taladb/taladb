@@ -173,8 +173,7 @@ A compromised receiver cannot write to the device.
 
 Identical on all three. Delivery is implemented once in the `taladb` TypeScript
 client on top of `fetch`, above the platform bindings, so Node.js, the browser
-(both the SharedWorker and the in-memory fallback), and React Native run the same
-code and behave the same way.
+worker, and React Native run the same code and behave the same way.
 
 ## Cost on the write path
 

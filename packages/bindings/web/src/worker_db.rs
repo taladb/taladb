@@ -1,6 +1,6 @@
-//! WorkerDB — the WASM database handle that runs inside the SharedWorker.
+//! WorkerDB — the WASM database handle that runs inside the DedicatedWorker.
 //!
-//! The SharedWorker (taladb.worker.js) loads the WASM module, calls
+//! The storage-owning DedicatedWorker (taladb.worker.js) loads the WASM module, calls
 //! `WorkerDB::open_with_opfs(handle)` once, then dispatches every operation
 //! message to the synchronous methods below.
 //!
@@ -150,9 +150,9 @@ impl WorkerDB {
     /// Pass the returned bytes to `idbSaveSnapshot` to persist across page reloads.
     /// On next open, pass the same bytes to `openWithSnapshot` to restore all data.
     #[wasm_bindgen(js_name = exportSnapshot)]
-    pub fn export_snapshot(&self) -> Result<Vec<u8>, JsValue> {
+    pub fn export_snapshot(&self, max_bytes: Option<u32>) -> Result<Vec<u8>, JsValue> {
         self.db
-            .export_snapshot()
+            .export_snapshot_with_limit(max_bytes.map_or(usize::MAX, |n| n as usize))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -175,7 +175,7 @@ impl WorkerDB {
 
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
     ///
-    /// Call sequence in the SharedWorker:
+    /// Call sequence in the DedicatedWorker:
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const workerDb = WorkerDB.openWithOpfs(handle);
@@ -633,7 +633,7 @@ impl WorkerDB {
     ///
     /// - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
     /// - `index_type`: `"flat"` (default) | `"hnsw"`
-    /// - `hnsw_m`: HNSW connectivity (default 16, only used when `index_type = "hnsw"`)
+    /// - `hnsw_m`: HNSW connectivity (only 32 is supported)
     /// - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = createVectorIndex)]
@@ -808,7 +808,7 @@ fn parse_hnsw_opts(
 ) -> Option<HnswOptions> {
     match index_type.as_deref() {
         Some("hnsw") => Some(HnswOptions {
-            m: m.unwrap_or(16),
+            m: m.unwrap_or(32),
             ef_construction: ef_construction.unwrap_or(200),
         }),
         _ => None, // "flat" or absent → flat index
@@ -1177,7 +1177,7 @@ mod tests {
         original.insert("items", r#"{"name":"Alice"}"#).unwrap();
         original.insert("items", r#"{"name":"Bob"}"#).unwrap();
 
-        let snapshot = original.export_snapshot().unwrap();
+        let snapshot = original.export_snapshot(None).unwrap();
 
         let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
         let json = restored.find("items", "null").unwrap();
@@ -1195,7 +1195,7 @@ mod tests {
         original.insert("posts", r#"{"title":"Hello"}"#).unwrap();
         original.insert("posts", r#"{"title":"World"}"#).unwrap();
 
-        let snapshot = original.export_snapshot().unwrap();
+        let snapshot = original.export_snapshot(None).unwrap();
         let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
 
         let users: Vec<serde_json::Value> =
@@ -1211,7 +1211,7 @@ mod tests {
         let original = WorkerDB::open_with_snapshot(None).unwrap();
         let id = original.insert("col", r#"{"x":42}"#).unwrap();
 
-        let snapshot = original.export_snapshot().unwrap();
+        let snapshot = original.export_snapshot(None).unwrap();
         let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
 
         let json = restored.find("col", "null").unwrap();
@@ -1227,7 +1227,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn export_snapshot_of_empty_db_starts_with_magic_bytes() {
         let db = WorkerDB::open_with_snapshot(None).unwrap();
-        let bytes = db.export_snapshot().unwrap();
+        let bytes = db.export_snapshot(None).unwrap();
         // TalaDB snapshot magic: "TDBS"
         assert!(bytes.len() >= 4, "snapshot must be at least 4 bytes");
         assert_eq!(&bytes[..4], b"TDBS");
@@ -1236,10 +1236,10 @@ mod tests {
     #[wasm_bindgen_test]
     fn export_snapshot_grows_after_inserts() {
         let db = WorkerDB::open_with_snapshot(None).unwrap();
-        let empty_size = db.export_snapshot().unwrap().len();
+        let empty_size = db.export_snapshot(None).unwrap().len();
 
         db.insert("col", r#"{"payload":"aaaaaaaaaa"}"#).unwrap();
-        let after_insert = db.export_snapshot().unwrap().len();
+        let after_insert = db.export_snapshot(None).unwrap().len();
 
         assert!(
             after_insert > empty_size,
@@ -1252,8 +1252,8 @@ mod tests {
         let db = WorkerDB::open_with_snapshot(None).unwrap();
         db.insert("col", r#"{"k":"v"}"#).unwrap();
 
-        let snap1 = db.export_snapshot().unwrap();
-        let snap2 = db.export_snapshot().unwrap();
+        let snap1 = db.export_snapshot(None).unwrap();
+        let snap2 = db.export_snapshot(None).unwrap();
         assert_eq!(snap1, snap2);
     }
 
@@ -1266,12 +1266,12 @@ mod tests {
         // First generation
         let db1 = WorkerDB::open_with_snapshot(None).unwrap();
         db1.insert("items", r#"{"gen":1}"#).unwrap();
-        let snap1 = db1.export_snapshot().unwrap();
+        let snap1 = db1.export_snapshot(None).unwrap();
 
         // Second generation — restore from snap1, add more data
         let db2 = WorkerDB::open_with_snapshot(Some(snap1)).unwrap();
         db2.insert("items", r#"{"gen":2}"#).unwrap();
-        let snap2 = db2.export_snapshot().unwrap();
+        let snap2 = db2.export_snapshot(None).unwrap();
 
         // Third generation — must see both gen:1 and gen:2
         let db3 = WorkerDB::open_with_snapshot(Some(snap2)).unwrap();
@@ -1290,7 +1290,7 @@ mod tests {
         db.insert("users", r#"{"age":30,"name":"Alice"}"#).unwrap();
         db.insert("users", r#"{"age":25,"name":"Bob"}"#).unwrap();
 
-        let snap = db.export_snapshot().unwrap();
+        let snap = db.export_snapshot(None).unwrap();
         let restored = WorkerDB::open_with_snapshot(Some(snap)).unwrap();
 
         // Filter via the indexed field
@@ -1310,7 +1310,7 @@ mod tests {
         db.update_one("col", r#"{"k":"keep"}"#, r#"{"$set":{"k":"updated"}}"#)
             .unwrap();
 
-        let snap = db.export_snapshot().unwrap();
+        let snap = db.export_snapshot(None).unwrap();
         let restored = WorkerDB::open_with_snapshot(Some(snap)).unwrap();
 
         let json = restored.find("col", "null").unwrap();

@@ -261,7 +261,7 @@ impl CollectionWasm {
     /// `dimensions`           - expected vector length.
     /// `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
     /// `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
-    /// `hnsw_m`               - HNSW connectivity (default 16).
+    /// `hnsw_m`               - HNSW connectivity (only 32 is supported).
     /// `hnsw_ef_construction` - build quality (default 200).
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(

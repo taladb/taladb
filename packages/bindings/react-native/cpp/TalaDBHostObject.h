@@ -12,9 +12,9 @@ namespace taladb {
  * Installed into the JS runtime as a global:
  *   global.__TalaDB__ = <TalaDBHostObject instance>
  *
- * Every property access returns a JSI Function. All CRUD methods are
- * synchronous (the Rust core does no async I/O); `initialize` and `close`
- * are async only to conform to the TurboModule spec (they resolve immediately).
+ * Every property access returns a JSI Function. `callAsync` and vector search
+ * run Rust work on a bounded background executor and resolve a Promise from a
+ * short JS timer; legacy synchronous methods remain for binary compatibility.
  *
  * JSON is used at the C boundary:
  *   JS object  →  JSON.stringify  →  C string  →  Rust  →  C string  →  JSON.parse  →  JS object
@@ -62,7 +62,7 @@ private:
                                 const facebook::jsi::Value &val,
                                 std::vector<float> &out);
 
-    // Poll a TalaDbJob from the JS thread via setImmediate until done,
+    // Poll a TalaDbJob from the JS thread via a short setTimeout until done,
     // then resolve / reject a Promise with the result / error.
     static facebook::jsi::Value awaitJobAsPromise(facebook::jsi::Runtime &rt,
                                                   TalaDbJob *job,

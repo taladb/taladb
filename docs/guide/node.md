@@ -209,7 +209,7 @@ On Node.js, HNSW (approximate nearest-neighbour) is available for faster search 
 await docs.createVectorIndex('embedding', {
   dimensions: 384,
   indexType: 'hnsw',
-  hnswM: 16,              // graph connectivity — higher = better recall, more memory
+  hnswM: 32,              // only supported connectivity value
   hnswEfConstruction: 200, // build-time quality
 })
 
