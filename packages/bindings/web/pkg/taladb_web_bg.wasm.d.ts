@@ -26,6 +26,7 @@ export const collectionwasm_searchText: (a: number, b: number, c: number, d: num
 export const collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
 export const collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
 export const collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
+export const collectionwasm_vectorCommand: (a: number, b: number, c: number) => [number, number, number, number];
 export const idb_load_snapshot: (a: number, b: number) => any;
 export const idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
 export const is_opfs_available: () => any;
@@ -77,6 +78,7 @@ export const workerdb_updateOne: (a: number, b: number, c: number, d: number, e:
 export const workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const workerdb_upsertManyWithIds: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const workerdb_userVersion: (a: number) => [number, number, number];
+export const workerdb_vectorCommand: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
 export const init: () => void;
 export const wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output_______: (a: number, b: number) => void;

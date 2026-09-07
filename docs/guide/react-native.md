@@ -7,7 +7,7 @@ description: Use TalaDB in React Native apps for on-device vector search, BM25 a
 
 Ship a vector and document database inside your mobile app. Store application data and embeddings from a local model, then run structured queries, [vector search](/api/vector-search), [BM25 full-text](/api/search), and [hybrid RAG retrieval](/api/search#hybrid-search) directly on the phone — private by default and available offline.
 
-TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Search calls are synchronous via JSI.
+TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Large reads and vector searches are dispatched to a background thread so they do not block the JS thread.
 
 
 ## Requirements
@@ -66,6 +66,8 @@ const all = await users.find()
 ```
 
 That's it. The `taladb` package detects React Native automatically — the same code you write for the browser or Node.js works here too.
+
+Import `openDB` from `taladb`, not from `@taladb/react-native`. The latter is the low-level binding: it installs the native module and exposes the raw JSI surface synchronously, without migrations, live queries, or schema handling. Use it directly only when you specifically want synchronous calls on the JS thread.
 
 ## Change webhook
 
@@ -179,6 +181,8 @@ export default function App() {
 
 TalaDB supports on-device semantic search — store embeddings from a local ML model (Core ML, TensorFlow Lite) and search them without any server.
 
+The API is the same one you use on the browser and Node.js: promise-based, with heavy work dispatched to a background thread by the native module rather than blocking the JS thread.
+
 ```ts
 interface Article {
   _id?: string
@@ -190,7 +194,7 @@ interface Article {
 const articles = db.collection<Article>('articles')
 await articles.createVectorIndex('embedding', { dimensions: 384 })
 
-// Insert with embedding from your on-device model
+// Insert with an embedding from your on-device model
 const embedding = await myModel.embed(content)
 await articles.insert({ title, body: content, embedding })
 
@@ -207,6 +211,53 @@ const filtered = await articles.findNearest('embedding', queryVec, 5, {
   category: 'faq',
 })
 ```
+
+Passing a `Float32Array` as the query vector takes a zero-copy path across JSI.
+
+### Persistent approximate search on mobile
+
+React Native uses the same transactional HNSW implementation as browser and Node. Graph nodes and links live in the database; app restarts require no warm-up. Inserts, embedding updates and deletes maintain the index atomically.
+
+```ts
+await articles.createVectorIndex('embedding', {
+  dimensions: 384, indexType: 'hnsw', hnswM: 16, quantization: 'scalar',
+})
+const results = await articles.searchVectors('embedding', queryVector, 10,
+  { category: 'notes' }, { mode: 'ann', efSearch: 200, groupBy: 'parentId' })
+```
+
+Advanced vector operations use the native background executor. For a large rebuild or flat-to-HNSW promotion, use `rebuildVectorIndex` with `batchSize`, `onProgress` and `signal`; the default batch is 32 insertions and cancellation takes effect between batches. `beginVectorBuild`/`stepVectorBuild` let the app resume a persisted build after interruption. The existing graph stays available until the replacement commits.
+
+Graph record caching is bounded at 8 MiB per operation. This excludes query queues, result documents, the database page cache and original vectors. Scalar/binary quantization compresses graph vectors; measure memory, recall and latency on your actual mobile devices. All scores are rescored from full precision originals.
+
+The direct `@taladb/react-native` collection also exposes the asynchronous vector methods. Its legacy `createVectorIndex` and `upgradeVectorIndex` methods are synchronous; use batched `rebuildVectorIndex` when working with an existing large collection. See [the complete vector API](/api/vector-search).
+
+### Keyword and hybrid search
+
+BM25 full-text ranking needs an FTS index on the field:
+
+```ts
+await articles.createFtsIndex('body')
+
+const hits = await articles.searchText('body', 'reset my password', 5)
+```
+
+`hybridSearch` runs both retrievers and fuses their rankings with reciprocal rank fusion. The two fail differently — keyword search misses paraphrases, vector search misses exact identifiers and rare proper nouns — so fusing them recovers both. It needs an FTS index on the text field and a vector index on the vector field:
+
+```ts
+const hits = await articles.hybridSearch(
+  { textField: 'body', text: userQuery },
+  { vectorField: 'embedding', vector: queryVec },
+  5,
+)
+
+hits.forEach(({ document, score, textRank, vectorRank }) => {
+  // textRank / vectorRank are null when that retriever did not return the row
+  console.log(document.title, textRank, vectorRank)
+})
+```
+
+The fused `score` is meaningful only as an ordering inside one result set — it is not a similarity or a confidence.
 
 ## Where data is stored
 
@@ -251,3 +302,5 @@ Make sure Xcode command-line tools are active: `xcode-select --install`. Then re
 
 - **Expo Go** — not supported. You must use a custom dev client (`expo prebuild`).
 - **Live queries (`subscribe`)** — polling-based on React Native; native file-watch push is planned for a future release.
+- **ANN recall depends on the workload** — use `measureVectorRecall` and test latency/memory on target devices.
+- **Original vectors are stored as `f32`** — scalar or binary quantization compresses the HNSW graph vectors, while originals remain available for exact search and rescoring.

@@ -10,7 +10,7 @@
     "lib": ["ES2020", "DOM"],
     "jsx": "react-jsx",
     "paths": {
-      "taladb": ["../../clients/taladb/src/webhook.ts"]
+      "taladb": ["../../clients/taladb/src/binding-surface.ts"]
     }
   },
   "include": ["src"]

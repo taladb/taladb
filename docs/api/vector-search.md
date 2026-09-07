@@ -44,8 +44,9 @@ await articles.createVectorIndex('embedding', {
 | --- | --- | --- | --- |
 | `dimensions` | `number` | — | Required. Enforced on every insert and query. |
 | `metric` | `'cosine' \| 'dot' \| 'euclidean'` | `'cosine'` | Similarity metric. |
-| `indexType` | `'flat' \| 'hnsw'` | `'flat'` | Exact scan, or approximate HNSW (Node.js only). |
-| `hnswM` | `number` | `16` | HNSW connectivity. Higher = better recall, more memory. |
+| `indexType` | `'flat' \| 'hnsw'` | `'flat'` | Exact scan, or approximate HNSW (browser, Node.js, React Native). |
+| `hnswM` | `number` | `32` | HNSW connectivity, 2–128. |
+| `quantization` | `'none' \| 'scalar' \| 'binary'` | `'none'` | Compress graph vectors; exact originals remain stored. |
 | `hnswEfConstruction` | `number` | `200` | HNSW build-time quality. |
 
 ## `findNearest(field, vector, topK, filter?)`
@@ -98,35 +99,77 @@ latency.
 - `VectorIndexNotFound` — no vector index exists on `field`
 - `VectorDimensionMismatch` — `vector.length` ≠ the index's configured `dimensions`
 
-## Exact by default, HNSW when you need it
+## Persistent HNSW on browser, React Native and Node
 
-The default `flat` index is an **exact** scan over every vector — no
-approximation, no recall trade-off. It is the right default for most on-device
-corpora and is what ships on the browser and React Native.
-
-On Node.js you can opt into an approximate **HNSW** graph for large corpora:
+Flat indexes use exact scanning. HNSW nodes and links are persisted in the same database as documents and updated in the same transaction as embedding writes. Reopening a database requires no graph rebuild. Metadata-only updates leave the graph unchanged.
 
 ```ts
 await articles.createVectorIndex('embedding', {
   dimensions: 384,
   indexType: 'hnsw',
+  hnswM: 16,
+  hnswEfConstruction: 200,
+  quantization: 'scalar',
 })
-
-// The graph is built at creation time and NOT updated by later writes —
-// rebuild after a bulk ingest (e.g. during an idle period):
-await articles.upgradeVectorIndex('embedding')
 ```
 
-Two caveats: graph construction is CPU-intensive (a one-off cost that grows
-with collection size), and recall depends on your data's structure — HNSW is
-approximate, so measure both speed and recall on your own embeddings.
+HNSW supports cosine and euclidean metrics. Dot product remains available through exact indexes. Binary quantization requires cosine; its quality depends strongly on the embedding model. Scalar and binary codes reduce the graph's vector payload by approximately 4× and 32× respectively, excluding headers and edges. Original vectors stay in the database for exact rescoring, so these are not total storage or RAM reduction guarantees.
 
-### `dropVectorIndex(field)` / `upgradeVectorIndex(field)`
+## Search controls and execution details
 
 ```ts
-await articles.dropVectorIndex('embedding')      // remove the index and its vectors
-await articles.upgradeVectorIndex('embedding')   // rebuild the HNSW graph (Node.js; no-op on flat)
+const result = await articles.searchVectors('embedding', queryVector, 10,
+  { category: 'memory' },
+  { mode: 'ann', efSearch: 200, scoreThreshold: 0.85,
+    groupBy: 'parentId', groupSize: 1, offset: 0 })
+
+console.log(result.execution) // path, reason, revision, effective efSearch, distanceComputations
+console.log(result.hits)      // { document, score }[]
 ```
+
+`mode` is `auto` (default), `exact`, or `ann`. Auto uses a ready HNSW index for unfiltered queries and exact search under filters. Explicit ANN errors if the graph is unavailable or stale. Filtered ANN traverses nonmatching nodes as routing bridges and returns only matches; it does not promise exact recall or use filter-specific precomputed edges.
+
+`efSearch` defaults to 100. The effective candidate count is at least `(offset + topK) * oversampling`; oversampling defaults to 4 and accepts 1–100. Grouped ANN expands the pool when necessary. Every returned ANN score is recomputed from the original f32 vector in the same read snapshot as the filter and document.
+
+Grouping retains the highest scoring `groupSize` hits per field value before pagination. Missing and null group values form one group. `scoreThreshold` uses the index metric's similarity score, inclusive. `offset` and `nextOffset` support pagination over live queries; writes between pages can change ordering. ANN pages are approximate and increasing the candidate pool may change earlier rankings; use exact mode when stable ranking on unchanged data matters.
+
+The existing `findNearest` accepts these controls as an optional fifth argument and still returns a hit array. To retrieve every result meeting a threshold, use exact range search:
+
+```ts
+const matches = await articles.findWithin('embedding', queryVector, 0.85)
+```
+
+## Index status and resumable rebuilds
+
+```ts
+const status = await articles.vectorIndexStatus('embedding')
+// state: flat | ready | stale | rebuildRequired
+// indexedVectors, totalVectors, deletedNodes, revision, indexRevision,
+// options, persistent, and current/last build progress
+
+const controller = new AbortController()
+await articles.rebuildVectorIndex('embedding', {
+  m: 16, quantization: 'binary', batchSize: 32,
+  signal: controller.signal,
+  onProgress: p => console.log(p.processed, p.total, p.state),
+})
+```
+
+Rebuilding compacts tombstones and can change graph settings or promote a flat index. Batches run off the JS thread on Node and React Native, and in the browser worker. Cancellation is cooperative between batches (1–1024 vectors; default 32), not an interruption of an individual insertion. Rebuilds keep the active graph available and publish the replacement atomically. Embedding mutations during a rebuild cause it to fail instead of publishing stale data; retry when ingestion is idle. Metadata-only changes are allowed.
+
+For explicit resume after a process restart, use `beginVectorBuild(field, options)`, `stepVectorBuild(field, buildId, batchSize)` and `cancelVectorBuild(field, buildId)`. The status response includes the build ID and progress. Only one staged build per field may run at a time. Cancellation preserves the active graph; the storage compactor can reclaim freed pages later.
+
+`upgradeVectorIndex(field)` now promotes flat/legacy indexes and rebuilds existing HNSW graphs. `dropVectorIndex(field)` removes both flat and graph records while retaining documents. Old HNSW metadata opens in `rebuildRequired` state and exact search remains available until promotion/rebuild.
+
+## Measure recall on your embeddings
+
+```ts
+const report = await articles.measureVectorRecall('embedding', sampleQueries, 10,
+  undefined, { efSearch: 200 })
+// recallAtK, queries, topK, exactMs, annMs
+```
+
+Measurement compares ANN with exact top-k using the same database snapshot. Use representative query vectors; this is an explicit evaluation operation, not automatic telemetry. Graph construction and selective filtered ANN can be expensive on a phone, so measure with your target devices and workload.
 
 ## Pairing with on-device embedding models
 

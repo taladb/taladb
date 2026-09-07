@@ -4,6 +4,18 @@
  * This file is the Codegen source. It defines the native interface that
  * both the iOS JSI HostObject (TalaDB.mm) and the Android JNI bridge
  * (TalaDBModule.kt) must implement.
+ *
+ * # This is not the public API
+ *
+ * Only `initialize` and `close` are ever called through the TurboModule. Every
+ * other method below is a stub that exists so Codegen sees a complete surface;
+ * at runtime JS goes straight to the JSI HostObject at `global.__TalaDB__`.
+ *
+ * So do **not** add methods here to expose new functionality — each one
+ * generates an abstract member that `TalaDBModule.kt` and `TalaDB.mm` must
+ * override, and forgetting either breaks the native build for a stub nothing
+ * calls. The real surface is registered in `cpp/TalaDBHostObject.cpp` and typed
+ * by `JsiTalaDB` in `index.tsx`; extend those two together.
  */
 import type { TurboModule } from 'react-native';
 import { TurboModuleRegistry } from 'react-native';

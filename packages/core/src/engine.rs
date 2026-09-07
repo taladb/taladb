@@ -81,6 +81,11 @@ pub trait WriteTxn {
     /// behind.
     fn delete_table(&mut self, table: &str) -> Result<bool, TalaDbError>;
 
+    /// Count without decoding values. Backends can override with table metadata.
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        Ok(self.range(table, Bound::Unbounded, Bound::Unbounded)?.len() as u64)
+    }
+
     /// Fetch many keys from one table. Semantically `keys.map(|k| self.get(k))`.
     ///
     /// The point is that a backend can resolve the table **once** for the whole
@@ -174,7 +179,7 @@ impl ReadTxn for WriteView<'_> {
         self.0.list_tables()
     }
     fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
-        Ok(self.scan_all(table)?.len() as u64)
+        self.0.count_entries(table)
     }
     fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
         self.0.get_many(table, keys)
@@ -428,6 +433,15 @@ fn intern_name_cached(name: &str) -> Result<&'static str, TalaDbError> {
 }
 
 impl WriteTxn for RedbWriteTxn {
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        use redb::ReadableTableMetadata;
+        match self.txn.open_table(table_def(table)?) {
+            Ok(tbl) => Ok(tbl.len()?),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), TalaDbError> {
         let mut tbl = self.txn.open_table(table_def(table)?)?;
         tbl.insert(key, value)?;

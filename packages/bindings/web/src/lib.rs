@@ -261,7 +261,7 @@ impl CollectionWasm {
     /// `dimensions`           - expected vector length.
     /// `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
     /// `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
-    /// `hnsw_m`               - HNSW connectivity (only 32 is supported).
+    /// `hnsw_m`               - HNSW connectivity (2–128, default 32).
     /// `hnsw_ef_construction` - build quality (default 200).
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(
@@ -390,6 +390,26 @@ impl CollectionWasm {
             })
             .collect();
         to_js(&json)
+    }
+
+    /// Internal JSON protocol for advanced vector search and index lifecycle.
+    #[wasm_bindgen(js_name = vectorCommand)]
+    pub fn vector_command(&self, request_json: &str) -> Result<String, JsValue> {
+        let request =
+            serde_json::from_str(request_json).map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        let result = self
+            .inner
+            .vector_command(
+                request,
+                &|v| {
+                    json_to_filter(v).ok_or_else(|| {
+                        taladb_core::TalaDbError::InvalidFilter("invalid filter".into())
+                    })
+                },
+                &doc_to_json,
+            )
+            .map_err(err_to_js)?;
+        serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Find the `top_k` nearest documents to `query` on a vector index.

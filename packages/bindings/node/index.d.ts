@@ -87,16 +87,13 @@ export declare class CollectionNode {
    *
    * - `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
    * - `index_type` — optional: `"flat"` (default) or `"hnsw"`.
-   * - `hnsw_m` — HNSW connectivity (only 32 is supported).
+   * - `hnsw_m` — HNSW connectivity (2–128).
    * - `hnsw_ef_construction` — build quality (default 200).
    */
   createVectorIndex(field: string, dimensions: number, metric?: string | undefined | null, indexType?: string | undefined | null, hnswM?: number | undefined | null, hnswEfConstruction?: number | undefined | null): void
   /** Drop a vector index (and its HNSW graph if present). */
   dropVectorIndex(field: string): void
-  /**
-   * Rebuild the HNSW graph for a vector index from the current flat data.
-   * No-op when the feature is disabled or the index is flat-only.
-   */
+  /** Promote a flat/legacy vector index or compact its persistent HNSW graph. */
   upgradeVectorIndex(field: string): void
   /**
    * Return the indexes on this collection as a JSON string
@@ -126,6 +123,9 @@ export declare class CollectionNode {
    * retriever did not return the document.
    */
   hybridSearch(textField: string, text: string, vectorField: string, vector: Array<number>, topK: number, filter?: JsonValue | undefined | null, options?: JsonValue | undefined | null): Array<JsonValue>
+  /** Internal command protocol for advanced vector search and index lifecycle. */
+  vectorCommand(request: JsonValue): JsonValue
+  vectorCommandAsync(request: JsonValue): Promise<any>
   /**
    * Find the `top_k` nearest documents to `query`.
    *

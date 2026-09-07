@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react-native",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "TalaDB React Native module — document and vector database via JSI HostObject",
   "main": "src/index",
   "types": "src/index.tsx",
@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build:ios": "sh scripts/build-ios.sh",
     "build:android": "sh scripts/build-android.sh",
-    "build:cbindgen": "cbindgen --config rust/cbindgen.toml --crate taladb-ffi --output cpp/taladb.h"
+    "build:cbindgen": "cd rust && cbindgen --config cbindgen.toml --crate taladb-ffi --output ../cpp/taladb.h"
   },
   "files": [
     "LICENSE-APACHE",

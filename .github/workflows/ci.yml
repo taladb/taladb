@@ -366,6 +366,99 @@ jobs:
 
 
   # ---------------------------------------------------------------------------
+  # React Native — the hand-written native glue
+  #
+  # `release.yml` cross-compiles the Rust FFI crate for iOS and Android, but
+  # nothing compiled the C++ that calls it: TalaDBHostObject.cpp is the entire
+  # runtime surface of the React Native binding — every method reachable from JS
+  # is registered there — and it only ever saw a compiler when somebody built an
+  # app. A syntax error in it could reach npm.
+  #
+  # Compiling it here needs no NDK and no Android SDK: the JSI headers ship
+  # inside the react-native package, JNI headers come from the JDK, and neither
+  # file links. That makes this a ~1 minute job rather than a ~20 minute one.
+  #
+  # Still not covered: ios/TalaDB.mm, which imports React CocoaPods headers that
+  # only exist after `pod install`, and the CMake/Gradle link step. Both need a
+  # real app build.
+  # ---------------------------------------------------------------------------
+  rn-native:
+    name: React Native — native glue
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # react-native is a devDependency of the binding; this is only here to put
+      # its bundled JSI headers on disk.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install cbindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+
+      # cpp/taladb.h is generated. If it disagrees with the Rust, the C++ is
+      # compiling against a signature the library does not export — which links
+      # fine and corrupts the stack at run time.
+      - name: cpp/taladb.h matches the Rust FFI
+        working-directory: packages/bindings/react-native/rust
+        run: |
+          cbindgen --config cbindgen.toml --crate taladb-ffi --output /tmp/taladb.generated.h
+          if ! diff -u ../cpp/taladb.h /tmp/taladb.generated.h; then
+            echo "::error file=packages/bindings/react-native/cpp/taladb.h::Header is stale. Run: pnpm --filter @taladb/react-native build:cbindgen"
+            exit 1
+          fi
+
+      - name: Compile the JSI HostObject and JNI bridge
+        run: |
+          set -euo pipefail
+          RN=packages/bindings/react-native
+          # react-native lives in the pnpm store under a hashed directory, so
+          # resolve it rather than guessing a path.
+          JSI="$(cd "$RN" && node -e "const p=require('path'),r=require.resolve('react-native/package.json');console.log(p.join(p.dirname(r),'ReactCommon','jsi'))")"
+          test -f "$JSI/jsi/jsi.h" || { echo "JSI headers not found at $JSI"; exit 1; }
+          echo "JSI headers: $JSI"
+
+          # -fsyntax-only: these two translation units are compiled for real by
+          # CMake against the NDK. What is being checked here is that they agree
+          # with jsi.h and with the generated taladb.h, which is where the
+          # hand-written code actually goes wrong.
+          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra \
+            -I "$JSI" -I "$RN/cpp" \
+            "$RN/cpp/TalaDBHostObject.cpp"
+
+          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra -DANDROID \
+            -I "$JSI" -I "$RN/cpp" \
+            -I "$JAVA_HOME/include" -I "$JAVA_HOME/include/linux" \
+            "$RN/cpp/TalaDBJni.cpp"
+
+
+  # ---------------------------------------------------------------------------
   # Build — WASM (wasm-pack)
   # ---------------------------------------------------------------------------
   build-wasm:
@@ -624,6 +717,7 @@ jobs:
       - rust-miri
       - rust-fuzz
       - ts-check
+      - rn-native
       - build-wasm
       - build-node
       - build-cli

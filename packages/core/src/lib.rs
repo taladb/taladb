@@ -35,7 +35,7 @@
 //! - [`Filter`] and [`FindOptions`] — the query language: comparisons, logical
 //!   combinators, sorting, pagination, and projection.
 //! - [`vector`] — vector indexes and `find_nearest`, exact by default and
-//!   approximate (HNSW) behind the `vector-hnsw` feature.
+//!   persistent approximate (HNSW) on every platform.
 //! - [`bm25`] / [`fts`] — full-text search over the same documents.
 //! - [`TalaDbError`] — one error type for everything, carrying the originating
 //!   storage error as a [`source`](std::error::Error::source).
@@ -143,8 +143,6 @@ pub struct Database {
     /// Decoded-vector cache for flat search, shared by every Collection handle
     /// from this Database (keyed by `collection::field`).
     vector_cache: vector::SharedVectorCache,
-    #[cfg(feature = "vector-hnsw")]
-    hnsw_cache: vector::SharedHnswCache,
 }
 
 impl Database {
@@ -212,8 +210,6 @@ impl Database {
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             vector_cache: vector::new_shared_vector_cache(),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: vector::new_shared_cache(),
         })
     }
 
@@ -291,18 +287,12 @@ impl Database {
             .with_index_cache(Arc::clone(&self.index_cache))
             .with_watch_registry(registry)
             .with_vector_cache(Arc::clone(&self.vector_cache));
-        #[cfg(feature = "vector-hnsw")]
-        let col = col.with_hnsw_cache(Arc::clone(&self.hnsw_cache));
         Ok(col)
     }
 
-    /// Warm the in-memory HNSW cache by rebuilding all graphs whose options are
-    /// stored in [`META_HNSW_TABLE`].  Call this once after `Database::open*`
-    /// if you want approximate-nearest-neighbor search to be available
-    /// immediately without waiting for the first `upgrade_vector_index` call.
-    ///
-    /// No-op when the `vector-hnsw` feature is disabled.
-    #[cfg(feature = "vector-hnsw")]
+    /// Rebuild configured HNSW indexes for maintenance or legacy migration.
+    /// Persistent graphs need no startup warm-up. For large indexes use the
+    /// collection batch-build API instead.
     pub fn rebuild_hnsw_indexes(&self) -> Result<(), TalaDbError> {
         let txn = self.backend.begin_read()?;
         let all = txn.scan_all(vector::META_HNSW_TABLE)?;
@@ -643,3 +633,10 @@ mod snapshot_encoding_tests {
         assert_eq!(cursor, 4);
     }
 }
+
+mod vector_graph;
+pub use collection::{
+    VectorBuildProgress, VectorExecution, VectorIndexStatus, VectorQueryOptions, VectorQueryResult,
+    VectorSearchMode,
+};
+pub use vector_graph::{GraphOptions, Quantization};

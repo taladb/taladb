@@ -42,6 +42,12 @@ pub(super) fn execute(h: &TalaDbHandle, op: &str, args: &[Json]) -> Result<Json,
             return Ok(Json::Null);
         }
         "listCollectionNames" => return Ok(json!(core!(h.db.list_collection_names()))),
+        // Reads and re-inserts every indexed vector, so it belongs on a worker
+        // thread rather than the synchronous JSI path.
+        "rebuildVectorIndexes" => {
+            core!(h.db.rebuild_hnsw_indexes());
+            return Ok(Json::Null);
+        }
         _ => {}
     }
     let col = core!(h.collection(text(args, 0)?));
@@ -132,6 +138,15 @@ pub(super) fn execute(h: &TalaDbHandle, op: &str, args: &[Json]) -> Result<Json,
             }
             Json::Null
         }
+        "vectorCommand" => {
+            core!(col.vector_command(
+                value(args, 1)?.clone(),
+                &|v| json_to_filter(v).ok_or_else(|| taladb_core::TalaDbError::InvalidFilter(
+                    "invalid filter".into()
+                )),
+                &doc_to_json
+            ))
+        }
         "createVectorIndex" => {
             let options = args.get(3).unwrap_or(&Json::Null);
             let metric = match options.get("metric").and_then(Json::as_str) {
@@ -142,10 +157,15 @@ pub(super) fn execute(h: &TalaDbHandle, op: &str, args: &[Json]) -> Result<Json,
             };
             let hnsw = options
                 .get("hnsw")
-                .map(|v| serde_json::from_value::<HnswOptions>(v.clone()))
+                .map(|v| serde_json::from_value::<taladb_core::GraphOptions>(v.clone()))
                 .transpose()
                 .map_err(|e| e.to_string())?;
-            core!(col.create_vector_index(text(args, 1)?, number(args, 2)?, Some(metric), hnsw));
+            core!(col.create_vector_index_with_options(
+                text(args, 1)?,
+                number(args, 2)?,
+                Some(metric),
+                hnsw
+            ));
             Json::Null
         }
         "dropVectorIndex" => {

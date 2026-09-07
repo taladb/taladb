@@ -66,7 +66,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use taladb_core::{Database, Filter, HnswOptions, TalaDbConfig, Update, Value, VectorMetric};
+use taladb_core::{Database, Filter, TalaDbConfig, Update, Value, VectorMetric};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -1566,28 +1566,29 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
 // Vector index management
 // ---------------------------------------------------------------------------
 
-fn parse_vector_metric(m: *const c_char) -> Option<VectorMetric> {
+fn parse_vector_metric(m: *const c_char) -> Result<Option<VectorMetric>, String> {
     if m.is_null() {
-        return None;
+        return Ok(None);
     }
-    let s = match unsafe { CStr::from_ptr(m) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
+    let s = unsafe { CStr::from_ptr(m) }
+        .to_str()
+        .map_err(|e| e.to_string())?;
     match s {
-        "cosine" => Some(VectorMetric::Cosine),
-        "dot" => Some(VectorMetric::Dot),
-        "euclidean" => Some(VectorMetric::Euclidean),
-        _ => None,
+        "cosine" => Ok(Some(VectorMetric::Cosine)),
+        "dot" => Ok(Some(VectorMetric::Dot)),
+        "euclidean" => Ok(Some(VectorMetric::Euclidean)),
+        _ => Err("invalid vector metric".into()),
     }
 }
 
-fn parse_hnsw_opts(json: *const c_char) -> Option<HnswOptions> {
+fn parse_hnsw_opts(json: *const c_char) -> Result<Option<taladb_core::GraphOptions>, String> {
     if json.is_null() {
-        return None;
+        return Ok(None);
     }
-    let s = unsafe { CStr::from_ptr(json) }.to_str().ok()?;
-    serde_json::from_str::<HnswOptions>(s).ok()
+    let s = unsafe { CStr::from_ptr(json) }
+        .to_str()
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(s).map(Some).map_err(|e| e.to_string())
 }
 
 /// Create a vector index. `metric` and `hnsw_json` may be NULL.
@@ -1612,8 +1613,13 @@ pub unsafe extern "C" fn taladb_create_vector_index(
             // A helper rejected one of the pointers and set the message.
             _ => return -1,
         };
-        let m = parse_vector_metric(metric);
-        let hnsw = parse_hnsw_opts(hnsw_json);
+        let (m, hnsw) = match (parse_vector_metric(metric), parse_hnsw_opts(hnsw_json)) {
+            (Ok(m), Ok(h)) => (m, h),
+            (Err(e), _) | (_, Err(e)) => {
+                set_last_error(e);
+                return -1;
+            }
+        };
         let c = match h.db.collection(&col) {
             Ok(c) => c,
             Err(e) => {
@@ -1621,7 +1627,7 @@ pub unsafe extern "C" fn taladb_create_vector_index(
                 return -1;
             }
         };
-        match c.create_vector_index(&fld, dimensions, m, hnsw) {
+        match c.create_vector_index_with_options(&fld, dimensions, m, hnsw) {
             Ok(()) => 1,
             Err(e) => {
                 set_last_error(e.to_string());
@@ -1663,8 +1669,8 @@ pub unsafe extern "C" fn taladb_drop_vector_index(
     })
 }
 
-/// Rebuild the HNSW graph for a vector index. No-op when HNSW is disabled or
-/// the index is flat-only. Returns 1 on success, -1 on error.
+/// Promote a flat/legacy vector index or compact its persistent HNSW graph.
+/// Returns 1 on success, -1 on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_upgrade_vector_index(
     handle: *mut TalaDbHandle,
@@ -1687,6 +1693,34 @@ pub unsafe extern "C" fn taladb_upgrade_vector_index(
             .collection(&col)
             .and_then(|c| c.upgrade_vector_index(&fld))
         {
+            Ok(()) => 1,
+            Err(e) => {
+                set_last_error(e.to_string());
+                -1
+            }
+        }
+    })
+}
+
+/// Rebuild every configured persistent HNSW graph in the database.
+///
+/// This walks the stored HNSW options and rebuilds each one, so a caller does
+/// not have to know which collections and fields were configured as HNSW —
+/// unlike `taladb_upgrade_vector_index`, which rebuilds a single named field.
+///
+/// It reads and re-inserts every indexed vector, so call it for maintenance or
+/// legacy migration and off any latency-sensitive path. Normal startup does
+/// not need a rebuild. Returns 1 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_rebuild_hnsw_indexes(handle: *mut TalaDbHandle) -> i32 {
+    ffi_guard(-1, move || {
+        clear_last_error();
+        let h = match unsafe { ptr_to_ref(handle) } {
+            Some(h) => h,
+            // `ptr_to_ref` rejected the pointer and set the message.
+            None => return -1,
+        };
+        match h.db.rebuild_hnsw_indexes() {
             Ok(()) => 1,
             Err(e) => {
                 set_last_error(e.to_string());
@@ -2407,6 +2441,61 @@ mod tests {
     }
 
     #[test]
+    fn mobile_vector_commands_build_search_cancel_and_measure_recall() {
+        let (handle, _dir) = open_temp_db();
+        let invoke = |request: serde_json::Value| -> serde_json::Value {
+            let op = cstr("vectorCommand");
+            let args = cstr(&serde_json::json!(["docs", request]).to_string());
+            let job = unsafe { taladb_call_start(handle, op.as_ptr(), args.as_ptr()) };
+            assert!(!job.is_null());
+            let out = unsafe { taladb_job_take_result(job) };
+            assert!(!out.is_null(), "{:?}", last_error());
+            let json = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+            unsafe { taladb_free_string(out) };
+            serde_json::from_str(&json).unwrap()
+        };
+        invoke(serde_json::json!({"op":"create", "field":"v", "dimensions":2}));
+        unsafe { &*handle }
+            .db
+            .collection("docs")
+            .unwrap()
+            .insert(vec![(
+                "v".into(),
+                Value::Array(vec![Value::Float(1.), Value::Float(0.)]),
+            )])
+            .unwrap();
+        let build = invoke(
+            serde_json::json!({"op":"beginBuild", "field":"v", "options":{"m":8,"quantization":"scalar"}}),
+        );
+        assert_eq!(
+            invoke(
+                serde_json::json!({"op":"stepBuild","field":"v","id":build["id"],"batchSize":8})
+            )["state"],
+            "ready"
+        );
+        let result = invoke(
+            serde_json::json!({"op":"search","field":"v","query":[1,0],"topK":10,"options":{"mode":"ann","efSearch":32}}),
+        );
+        assert_eq!(result["execution"]["path"], "hnsw");
+        assert_eq!(result["hits"][0]["score"], 1.0);
+        assert!(result["hits"][0]["document"]["_id"].is_string());
+        assert_eq!(
+            invoke(serde_json::json!({"op":"recall","field":"v","queries":[[1,0]],"topK":1}))["recallAtK"],
+            1.0
+        );
+        let build = invoke(serde_json::json!({"op":"beginBuild","field":"v"}));
+        assert_eq!(
+            invoke(serde_json::json!({"op":"cancelBuild","field":"v","id":build["id"]}))["state"],
+            "cancelled"
+        );
+        assert_eq!(
+            invoke(serde_json::json!({"op":"status","field":"v"}))["state"],
+            "ready"
+        );
+        unsafe { taladb_close(handle) };
+    }
+
+    #[test]
     fn a_successful_job_still_reports_its_result() {
         // The guard must not change the happy path.
         let dir = tempfile::tempdir().unwrap();
@@ -2692,6 +2781,115 @@ mod tests {
 
     fn cstr(s: &str) -> CString {
         CString::new(s).unwrap()
+    }
+
+    /// A reopened database has an empty HNSW cache, and nothing in the FFI could
+    /// refill it — so every `taladb_find_nearest` after a restart silently took
+    /// the exact path and scanned the whole vector table.
+    #[test]
+    fn rebuild_hnsw_indexes_warms_a_reopened_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = CString::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let col = cstr("docs");
+        let field = cstr("v");
+
+        let handle = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!handle.is_null(), "first open: {:?}", last_error());
+        for doc in [
+            r#"{"name":"a","v":[1.0,0.0]}"#,
+            r#"{"name":"b","v":[0.0,1.0]}"#,
+        ] {
+            let doc = cstr(doc);
+            let id = unsafe { taladb_insert(handle, col.as_ptr(), doc.as_ptr()) };
+            assert!(!id.is_null(), "insert: {:?}", last_error());
+            unsafe { taladb_free_string(id) };
+        }
+        let hnsw = cstr(r#"{"m":32,"ef_construction":200}"#);
+        let created = unsafe {
+            taladb_create_vector_index(
+                handle,
+                col.as_ptr(),
+                field.as_ptr(),
+                2,
+                std::ptr::null(),
+                hnsw.as_ptr(),
+            )
+        };
+        assert_eq!(created, 1, "create_vector_index: {:?}", last_error());
+        unsafe { taladb_close(handle) };
+
+        let handle = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!handle.is_null(), "reopen: {:?}", last_error());
+        assert_eq!(
+            unsafe { taladb_rebuild_hnsw_indexes(handle) },
+            1,
+            "rebuild: {:?}",
+            last_error()
+        );
+
+        let query = [1.0f32, 0.0];
+        let out = unsafe {
+            taladb_find_nearest(
+                handle,
+                col.as_ptr(),
+                field.as_ptr(),
+                query.as_ptr(),
+                query.len(),
+                1,
+                std::ptr::null(),
+            )
+        };
+        assert!(!out.is_null(), "find_nearest: {:?}", last_error());
+        let json: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(out) }.to_str().unwrap()).unwrap();
+        unsafe { taladb_free_string(out) };
+        assert_eq!(json[0]["document"]["name"], "a");
+
+        // Warming twice is not an error: callers run this unconditionally at
+        // startup and cannot know whether something else already did.
+        assert_eq!(unsafe { taladb_rebuild_hnsw_indexes(handle) }, 1);
+        unsafe { taladb_close(handle) };
+    }
+
+    /// The `taladb` client prefers `callAsync` whenever the host object offers
+    /// it, so an op missing from the dispatch table is unreachable from the
+    /// supported API even when the direct export exists.
+    #[test]
+    fn rebuild_hnsw_indexes_is_reachable_through_async_dispatch() {
+        let (handle, _dir) = open_temp_db();
+        let op = cstr("rebuildVectorIndexes");
+        let args = cstr("[]");
+        let job = unsafe { taladb_call_start(handle, op.as_ptr(), args.as_ptr()) };
+        assert!(!job.is_null(), "call_start: {:?}", last_error());
+        let out = unsafe { taladb_job_take_result(job) };
+        assert!(
+            !out.is_null(),
+            "dispatch rejected the op: {:?}",
+            last_error()
+        );
+        unsafe { taladb_free_string(out) };
+        unsafe { taladb_close(handle) };
+    }
+
+    /// No HNSW index configured is nothing to do, not a failure — a caller that
+    /// warms unconditionally at startup must not have to special-case it.
+    #[test]
+    fn rebuild_hnsw_indexes_is_a_no_op_without_an_index() {
+        let (handle, _dir) = open_temp_db();
+        assert_eq!(unsafe { taladb_rebuild_hnsw_indexes(handle) }, 1);
+        unsafe { taladb_close(handle) };
+    }
+
+    #[test]
+    fn rebuild_hnsw_indexes_rejects_a_null_handle() {
+        assert_eq!(
+            unsafe { taladb_rebuild_hnsw_indexes(std::ptr::null_mut()) },
+            -1
+        );
+        assert!(
+            last_error().is_some(),
+            "a rejected handle must set an error"
+        );
     }
 
     /// The bug: `LAST_ERROR` was only ever written, never cleared, so after any
