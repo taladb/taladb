@@ -368,7 +368,7 @@ export async function run(page, r) {
     r.eq(out.topKOverflow, 2, 'topK larger than the collection returns everything');
     r.eq(out.topKZero.ok, [], 'topK of 0 returns nothing');
     r.ok(out.noIndex.err, 'findNearest without an index errors');
-    r.ok(out.hnsw.err?.includes('HNSW'), 'HNSW is refused in the browser with a clear message');
+    r.ok(!out.hnsw.err, 'HNSW is available in the browser');
   });
 
   await r.test('use-after-close errors instead of hanging', async (r) => {

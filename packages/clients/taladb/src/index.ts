@@ -1,3 +1,6 @@
+import { createVectorClient, vectorIndexRequest } from './vector-client';
+export { createVectorClient } from './vector-client';
+export type { VectorClient, VectorQuantization, VectorGraphOptions, VectorQueryOptions, VectorRebuildOptions, VectorBuildProgress, VectorIndexStatus, VectorQueryResult, VectorRecall } from './vector-client';
 import type {
   Collection,
   CollectionIndexInfo,
@@ -661,7 +664,9 @@ async function createInMemoryBrowserDB(
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = db.collection(name);
+    const vectorCommand = async (request: Record<string, unknown>) => JSON.parse(await col.vectorCommand(JSON.stringify(request)));
     const wrapped: Collection<T> = {
+      ...createVectorClient<T>(vectorCommand),
       insert: async (doc) => col.insert(doc),
       insertMany: async (docs) => col.insertMany(docs),
       find: async (filter?) => col.find(filter ?? null),
@@ -680,14 +685,14 @@ async function createInMemoryBrowserDB(
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) => {
-        if (options.indexType === 'hnsw') throw new Error('HNSW vector indexes are not available in the browser (requires native threads). Use Node.js or React Native.');
-        return col.createVectorIndex(field, options.dimensions, options.metric ?? null, null, null, null);
+        const request = vectorIndexRequest(field, options);
+        await vectorCommand({ ...request, deferBuild: true });
+        if (request.options) await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field, request.options as import('./vector-client').VectorGraphOptions);
       },
       dropVectorIndex: async (field) => col.dropVectorIndex(field),
-      upgradeVectorIndex: async (_field) => {
-        throw new Error('HNSW vector indexes are not available in the browser (requires native threads). Use Node.js or React Native.');
-      },
-      findNearest: async (field, vector, topK, filter?) => {
+      upgradeVectorIndex: async (field) => { await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field); },
+      findNearest: async (field, vector, topK, filter?, options?) => {
+        if (options) return (await createVectorClient<T>(vectorCommand).searchVectors(field, vector, topK, filter, options)).hits;
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
@@ -774,7 +779,9 @@ async function createBrowserDB(
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const s = JSON.stringify;
+    const vectorCommand = async (request: Record<string, unknown>) => JSON.parse(await proxy.send<string>('vectorCommand', { collection: name, requestJson: JSON.stringify(request) }));
     const wrapped: Collection<T> = {
+      ...createVectorClient<T>(vectorCommand),
       insert: (doc) =>
         proxy.send<string>('insert', { collection: name, docJson: s(doc) }),
 
@@ -846,31 +853,23 @@ async function createBrowserDB(
       dropFtsIndex: (field) =>
         proxy.send<void>('dropFtsIndex', { collection: name, field }),
 
-      createVectorIndex: (field, options) => {
-        if (options.indexType === 'hnsw') return Promise.reject(new Error('HNSW vector indexes are not available in the browser (requires native threads). Use Node.js or React Native.'));
-        return proxy.send<void>('createVectorIndex', {
-          collection: name,
-          field,
-          dimensions: options.dimensions,
-          metric: options.metric,
-          indexType: null,
-          hnswM: null,
-          hnswEfConstruction: null,
-        });
+      createVectorIndex: async (field, options) => {
+        const request = vectorIndexRequest(field, options);
+        await vectorCommand({ ...request, deferBuild: true });
+        if (request.options) await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field, request.options as import('./vector-client').VectorGraphOptions);
       },
-
       dropVectorIndex: (field) =>
         proxy.send<void>('dropVectorIndex', { collection: name, field }),
 
-      upgradeVectorIndex: (_field) =>
-        Promise.reject(new Error('HNSW vector indexes are not available in the browser (requires native threads). Use Node.js or React Native.')),
+      upgradeVectorIndex: async (field) => { await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field); },
 
       listIndexes: async () => {
         const json = await proxy.send<string>('listIndexes', { collection: name });
         return JSON.parse(json);
       },
 
-      findNearest: async (field, vector, topK, filter?) => {
+      findNearest: async (field, vector, topK, filter?, options?) => {
+        if (options) return (await createVectorClient<T>(vectorCommand).searchVectors(field, vector, topK, filter, options)).hits;
         const json = await proxy.send<string>('findNearest', {
           collection: name,
           field,
@@ -1101,7 +1100,9 @@ async function createNodeDB(
     // Prefer the *Async native variants (added in 0.8.1): they run on the
     // libuv thread pool instead of blocking the JS event loop. Fall back to
     // the sync calls when running against an older prebuilt .node binary.
+    const vectorCommand = async (request: Record<string, unknown>) => col.vectorCommandAsync ? col.vectorCommandAsync(request) : col.vectorCommand(request);
     const wrapped: Collection<T> = {
+      ...createVectorClient<T>(vectorCommand),
       insert: async (doc) =>
         col.insertAsync ? col.insertAsync(doc as Record<string, unknown>) : col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) =>
@@ -1126,15 +1127,19 @@ async function createNodeDB(
       dropCompoundIndex: async (fields) => col.dropCompoundIndex(fields as string[]),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
-      createVectorIndex: async (field, options) =>
-        col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
+      createVectorIndex: async (field, options) => {
+        const request = vectorIndexRequest(field, options);
+        await vectorCommand({ ...request, deferBuild: true });
+        if (request.options) await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field, request.options as import('./vector-client').VectorGraphOptions);
+      },
       dropVectorIndex: async (field) => col.dropVectorIndex(field),
       upgradeVectorIndex: async (field) => col.upgradeVectorIndex(field),
       listIndexes: async () => {
         const json = col.listIndexes() as string;
         return JSON.parse(json);
       },
-      findNearest: async (field, vector, topK, filter?) => {
+      findNearest: async (field, vector, topK, filter?, options?) => {
+        if (options) return (await createVectorClient<T>(vectorCommand).searchVectors(field, vector, topK, filter, options)).hits;
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
@@ -1276,7 +1281,9 @@ async function createNativeDB(
 
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
+    const vectorCommand = async (request: Record<string, unknown>) => call('vectorCommand', name, request);
     const wrapped: Collection<T> = {
+      ...createVectorClient<T>(vectorCommand),
       insert: async (doc) => await call('insert', name, doc as Record<string, unknown>),
       insertMany: async (docs) => await call('insertMany', name, docs as Record<string, unknown>[]),
       find: async (filter?) => await call('find', name, filter ?? {}) as T[],
@@ -1295,17 +1302,15 @@ async function createNativeDB(
       createFtsIndex: async (field) => await call('createFtsIndex', name, field),
       dropFtsIndex: async (field) => await call('dropFtsIndex', name, field),
       createVectorIndex: async (field, options) => {
-        const opts: Record<string, unknown> = {};
-        if (options.metric) opts.metric = options.metric;
-        if (options.indexType === 'hnsw') {
-          opts.hnsw = { m: options.hnswM ?? 32, ef_construction: options.hnswEfConstruction ?? 200 };
-        }
-        return await call('createVectorIndex', name, field, options.dimensions, opts);
+        const request = vectorIndexRequest(field, options);
+        await vectorCommand({ ...request, deferBuild: true });
+        if (request.options) await createVectorClient<T>(vectorCommand).rebuildVectorIndex(field, request.options as import('./vector-client').VectorGraphOptions);
       },
       dropVectorIndex: async (field) => await call('dropVectorIndex', name, field),
       upgradeVectorIndex: async (field) => await call('upgradeVectorIndex', name, field),
       listIndexes: async (): Promise<CollectionIndexInfo> => call('listIndexes', name),
-      findNearest: async (field, vector, topK, filter?) => {
+      findNearest: async (field, vector, topK, filter?, options?) => {
+        if (options) return (await createVectorClient<T>(vectorCommand).searchVectors(field, vector, topK, filter, options)).hits;
         const raw = await call('findNearest', name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
       },

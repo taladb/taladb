@@ -43,9 +43,6 @@ pbkdf2           = { version = "0.13", optional = true }
 hmac             = { version = "0.13", optional = true }
 sha2             = { version = "0.11", optional = true }
 zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
-# HNSW approximate nearest-neighbor index — opt-in via `vector-hnsw` feature.
-# Pure Rust, WASM-compatible, MIT license.
-instant-distance = { version = "0.6", optional = true }
 # Config parsing — JSON always; YAML only behind `config-yaml`.
 serde_json = { version = "1.0", features = ["preserve_order"] }
 # `serde_yaml_ng`, not `serde_yaml`: the original was deprecated by its author and
@@ -84,7 +81,7 @@ getrandom = "0.4"
 # before — see the feature's own comment.
 default      = ["config-yaml", "legacy-migration"]
 encryption   = ["dep:aes-gcm", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
-vector-hnsw  = ["dep:instant-distance"]
+vector-hnsw  = [] # Compatibility alias; portable HNSW is now always available.
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
 # Native builds turn it off (`default-features = false`) to drop serde_yaml and
 # unsafe-libyaml from the bundle. JSON config works either way.

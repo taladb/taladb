@@ -1,3 +1,4 @@
+import type { VectorClient, VectorQuantization, VectorQueryOptions } from "./vector-client";
 // ============================================================
 // TalaDB — Shared TypeScript Types
 // ============================================================
@@ -16,13 +17,15 @@ export interface VectorIndexOptions {
    * Index algorithm. Defaults to `"flat"` (exact brute-force).
    * Use `"hnsw"` for approximate nearest-neighbour search — much faster on
    * large collections at the cost of occasional missed results.
-   * Requires the `vector-hnsw` feature to be compiled in.
+   * Supported on browser, Node.js and React Native.
    */
   indexType?: 'flat' | 'hnsw';
-  /** HNSW connectivity parameter M. This implementation supports only 32 (the default). */
+  /** HNSW connectivity parameter M. Supported range is 2–128; defaults to 32. */
   hnswM?: number;
   /** HNSW build-time quality parameter ef_construction (default 200). */
   hnswEfConstruction?: number;
+  /** Graph compression; originals remain available for exact rescoring. */
+  quantization?: VectorQuantization;
 }
 
 /** Describes the indexes that exist on a collection. */
@@ -408,7 +411,7 @@ export type AggregatePipeline<T extends Document = Document> = AggregateStage<T>
  */
 export type InsertDoc<T extends Document> = Omit<T, '_id'> & { _id?: string };
 
-export interface Collection<T extends Document = Document> {
+export interface Collection<T extends Document = Document> extends VectorClient<T> {
   insert(doc: InsertDoc<T>): Promise<string>;
   insertMany(docs: InsertDoc<T>[]): Promise<string[]>;
   find(filter?: Filter<T>): Promise<T[]>;
@@ -535,7 +538,7 @@ export interface Collection<T extends Document = Document> {
    *
    * After calling this, `findNearest` uses approximate nearest-neighbour
    * search which is significantly faster on large collections.
-   * Requires the `vector-hnsw` feature to be compiled in; no-op otherwise.
+   * Promotes flat/legacy indexes and compacts persistent graphs.
    */
   upgradeVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /**
@@ -560,6 +563,7 @@ export interface Collection<T extends Document = Document> {
     vector: number[],
     topK: number,
     filter?: Filter<T>,
+    options?: VectorQueryOptions,
   ): Promise<VectorSearchResult<T>[]>;
   /**
    * Subscribe to live query results. The callback receives a full snapshot of
@@ -635,19 +639,9 @@ export interface TalaDB {
    */
   flush?(): Promise<void>;
   /**
-   * Rebuild every HNSW vector graph in the database, warming the in-memory
-   * cache. **React Native only** — `undefined` on the browser and Node.js,
-   * where nothing drops the graphs between calls.
-   *
-   * HNSW graphs are held in memory and never persisted: the index is built in
-   * one shot, with no incremental insert, so the cache starts empty in each new
-   * process and a write to an indexed field drops it. While a graph is missing,
-   * `findNearest` still returns correct results — it just quietly takes the
-   * exact path and scans the whole vector table.
-   *
-   * Reads every indexed vector, so call it once after `openDB` and keep it off
-   * any latency-sensitive path. Prefer `Collection.upgradeVectorIndex` when you
-   * know the single field you need.
+   * Rebuild all configured HNSW graphs for maintenance. Graphs persist across
+   * restarts; startup rebuilding is unnecessary. Prefer per-collection
+   * rebuildVectorIndex for bounded batches, progress and cancellation.
    */
   rebuildVectorIndexes?(): Promise<void>;
   /**

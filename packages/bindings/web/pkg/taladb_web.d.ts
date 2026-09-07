@@ -32,7 +32,7 @@ export class CollectionWasm {
      * `dimensions`           - expected vector length.
      * `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
      * `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
-     * `hnsw_m`               - HNSW connectivity (only 32 is supported).
+     * `hnsw_m`               - HNSW connectivity (2–128, default 32).
      * `hnsw_ef_construction` - build quality (default 200).
      */
     createVectorIndex(field: string, dimensions: number, metric?: string | null, index_type?: string | null, hnsw_m?: number | null, hnsw_ef_construction?: number | null): void;
@@ -111,6 +111,10 @@ export class CollectionWasm {
      * Rebuild the HNSW graph from the current flat vector table.
      */
     upgradeVectorIndex(field: string): void;
+    /**
+     * Internal JSON protocol for advanced vector search and index lifecycle.
+     */
+    vectorCommand(request_json: string): string;
 }
 
 export class TalaDBWasm {
@@ -199,7 +203,7 @@ export class WorkerDB {
      *
      * - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
      * - `index_type`: `"flat"` (default) | `"hnsw"`
-     * - `hnsw_m`: HNSW connectivity (only 32 is supported)
+     * - `hnsw_m`: HNSW connectivity (2–128, default 32)
      * - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
      */
     createVectorIndex(collection: string, field: string, dimensions: number, metric_str?: string | null, index_type?: string | null, hnsw_m?: number | null, hnsw_ef_construction?: number | null): void;
@@ -355,7 +359,7 @@ export class WorkerDB {
      * Rebuild the HNSW graph for a vector index from the current flat vector
      * table.  Use after bulk inserts or when ANN recall has degraded.
      *
-     * No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
+     * A flat index is promoted with default HNSW options.
      */
     upgradeVectorIndex(collection: string, field: string): void;
     /**
@@ -376,6 +380,10 @@ export class WorkerDB {
      * the `openDB({ migrations })` runner, which advances it per migration.
      */
     userVersion(): number;
+    /**
+     * Internal JSON protocol for advanced vector search and index lifecycle.
+     */
+    vectorCommand(collection: string, request_json: string): string;
     /**
      * This collection's write generation — a counter bumped once per committed
      * mutation.
@@ -465,6 +473,7 @@ export interface InitOutput {
     readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
+    readonly collectionwasm_vectorCommand: (a: number, b: number, c: number) => [number, number, number, number];
     readonly idb_load_snapshot: (a: number, b: number) => any;
     readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly is_opfs_available: () => any;
@@ -516,6 +525,7 @@ export interface InitOutput {
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_upsertManyWithIds: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_userVersion: (a: number) => [number, number, number];
+    readonly workerdb_vectorCommand: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_writeGeneration: (a: number, b: number, c: number) => [number, number, number];
     readonly init: () => void;
     readonly wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output_______: (a: number, b: number) => void;

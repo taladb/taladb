@@ -280,7 +280,7 @@ taladb drop ./myapp.db sessions
 
 ### `upgrade-vector-index` — rebuild HNSW graph
 
-Rebuild the in-memory HNSW graph for a vector index from the current flat vector table. Use this after bulk imports, or whenever the HNSW index has grown stale due to writes since the graph was last built.
+Promote a flat or legacy vector index, or compact an existing persistent HNSW graph from the current flat vector table. Normal document writes update the graph transactionally, so routine writes do not require a rebuild.
 
 ```sh
 taladb upgrade-vector-index ./myapp.db articles embedding

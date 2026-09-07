@@ -1,4 +1,4 @@
-//! Vector index support for TalaDB — Phase 1 (flat / brute-force search).
+//! Exact vector storage and scoring. Persistent HNSW lives in `vector_graph`.
 //!
 //! Storage layout
 //! ──────────────
@@ -10,13 +10,6 @@
 //!   key       : ULID bytes (16 B, big-endian)
 //!   value     : raw f32 LE bytes  (dimensions × 4 B)
 //!
-//! Search algorithm
-//! ────────────────
-//! Phase 1 uses a flat (brute-force) linear scan — O(n·d).
-//! Every vector stored in the vec table is scored against the query vector,
-//! results are sorted descending, and the top-k documents are loaded.
-//! Phase 2 will replace this with an HNSW index for sub-linear search.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -138,7 +131,7 @@ pub struct VectorDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HnswOptions {
     /// Number of bi-directional links per node (connectivity).
-    /// The current graph implementation supports only 32; other values are rejected.
+    /// Supported range: 2 through 128.
     pub m: u32,
     /// Build-time quality parameter (ef during construction).
     /// Higher values produce a better graph at the cost of slower builds.
@@ -154,192 +147,6 @@ impl Default for HnswOptions {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// HNSW build / search  (compiled only when feature = "vector-hnsw")
-//
-// Design: the HNSW graph lives entirely in memory (no serialisation).
-//
-// • `instant-distance` 0.6.x does not expose a working serde implementation
-//   for its const-generic array types across all Rust toolchains.  To stay
-//   toolchain-agnostic and WASM-safe we skip the serde feature and instead
-//   keep the built graph in a `SharedHnswCache` that is shared between every
-//   `Collection` handle returned by the same `Database` instance.
-//
-// • On `create_vector_index`/`upgrade_vector_index` the graph is built from
-//   the always-persisted flat `vec::` table and inserted into the cache.
-//
-// • On `Database::open*` callers may call `Database::rebuild_hnsw_indexes()`
-//   to warm the cache from any existing HNSW metadata entries.
-//
-// • HNSW graphs survive for the lifetime of the `Database` handle; they are
-//   dropped when the `Database` is dropped or when `upgrade_vector_index` is
-//   called (which replaces the entry).
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "vector-hnsw")]
-mod hnsw_impl {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-
-    use instant_distance::{Builder, HnswMap, Point as HnswTrait, Search};
-    use ulid::Ulid;
-
-    use super::{VectorMetric, cosine_similarity, dot_similarity};
-    use crate::error::TalaDbError;
-
-    // ------------------------------------------------------------------
-    // Shared in-memory HNSW cache
-    // ------------------------------------------------------------------
-
-    /// HNSW map type — values are `()` because the ULID is embedded in each point.
-    pub type HnswGraph = HnswMap<HnswPoint, ()>;
-
-    /// Graph entry keyed by `"{collection}::{field}"`.
-    pub(super) type HnswCacheMap = HashMap<String, (u64, Arc<HnswGraph>)>;
-    /// Thread-safe, reference-counted cache shared by all Collection handles
-    /// belonging to the same Database.
-    pub type SharedHnswCache = Arc<Mutex<HnswCacheMap>>;
-
-    pub fn new_shared_cache() -> SharedHnswCache {
-        Arc::new(Mutex::new(HashMap::new()))
-    }
-
-    pub(super) fn distance_to_similarity(metric: &VectorMetric, distance: f32) -> f32 {
-        match metric {
-            VectorMetric::Cosine => 1.0 - distance,
-            VectorMetric::Dot => -distance,
-            VectorMetric::Euclidean => 1.0 / (1.0 + distance),
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // HnswPoint — embeds the ULID so search results are self-identifying
-    // ------------------------------------------------------------------
-
-    #[derive(Clone)]
-    pub struct HnswPoint {
-        pub id_bytes: [u8; 16],
-        pub vec: Vec<f32>,
-        pub metric: VectorMetric,
-    }
-
-    impl HnswTrait for HnswPoint {
-        fn distance(&self, other: &Self) -> f32 {
-            match self.metric {
-                VectorMetric::Cosine => 1.0 - cosine_similarity(&self.vec, &other.vec),
-                VectorMetric::Dot => -dot_similarity(&self.vec, &other.vec),
-                _ => self
-                    .vec
-                    .iter()
-                    .zip(other.vec.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt(),
-            }
-        }
-    }
-
-    #[test]
-    fn euclidean_distance_is_carried_to_build_threads() {
-        // The old thread-local metric reverted to cosine on a new worker.
-        let point = HnswPoint {
-            id_bytes: [0; 16],
-            vec: vec![3.0, 4.0],
-            metric: VectorMetric::Euclidean,
-        };
-        let origin = HnswPoint {
-            id_bytes: [1; 16],
-            vec: vec![0.0, 0.0],
-            metric: VectorMetric::Euclidean,
-        };
-        assert_eq!(
-            std::thread::spawn(move || point.distance(&origin))
-                .join()
-                .unwrap(),
-            5.0
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Build
-    // ------------------------------------------------------------------
-
-    /// Build an HNSW graph from `vectors` and return it ready for search.
-    ///
-    /// `VectorMetric::Dot` is rejected here because raw dot product is not a
-    /// valid HNSW distance (can be arbitrarily negative, violating the
-    /// greedy-descent invariant). Callers that want magnitude-sensitive
-    /// similarity should L2-normalise their vectors and use `Cosine`, which is
-    /// mathematically equivalent on unit vectors.
-    pub fn build_hnsw(
-        vectors: &[(Ulid, Vec<f32>)],
-        metric: &VectorMetric,
-        ef_construction: u32,
-    ) -> Result<Arc<HnswGraph>, TalaDbError> {
-        if matches!(metric, VectorMetric::Dot) {
-            return Err(TalaDbError::InvalidOperation(
-                "HNSW indexes do not support the Dot metric; L2-normalise vectors and use Cosine instead"
-                    .into(),
-            ));
-        }
-
-        let points: Vec<HnswPoint> = vectors
-            .iter()
-            .map(|(id, vec)| HnswPoint {
-                id_bytes: id.to_bytes(),
-                vec: vec.clone(),
-                metric: *metric,
-            })
-            .collect();
-
-        // `HnswMap::build` requires a parallel values vec; we embed the ULID in
-        // the point itself so the values vec is `()`.
-        let values = vec![(); points.len()];
-        let hnsw = Builder::default()
-            .ef_construction(ef_construction as usize)
-            .build(points, values);
-
-        Ok(Arc::new(hnsw))
-    }
-
-    // ------------------------------------------------------------------
-    // Search
-    // ------------------------------------------------------------------
-
-    /// Search an in-memory HNSW graph and return the top-k results.
-    pub fn search_hnsw(
-        hnsw: &HnswGraph,
-        query: &[f32],
-        metric: &VectorMetric,
-        top_k: usize,
-    ) -> Vec<(Ulid, f32)> {
-        let query_point = HnswPoint {
-            id_bytes: [0u8; 16],
-            vec: query.to_vec(),
-            metric: *metric,
-        };
-        let mut search = Search::default();
-
-        let mut results: Vec<(Ulid, f32)> = hnsw
-            .search(&query_point, &mut search)
-            .take(top_k)
-            .map(|item| {
-                let id = Ulid::from_bytes(item.point.id_bytes);
-                let score = distance_to_similarity(metric, item.distance);
-                (id, score)
-            })
-            .collect();
-
-        results.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        results
-    }
-}
-
-#[cfg(feature = "vector-hnsw")]
-pub use hnsw_impl::{
-    HnswGraph, HnswPoint, SharedHnswCache, build_hnsw, new_shared_cache, search_hnsw,
-};
 
 // ---------------------------------------------------------------------------
 // Table / key naming helpers

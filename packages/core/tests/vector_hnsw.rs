@@ -1,9 +1,4 @@
-//! Integration tests for HNSW vector index (requires `vector-hnsw` feature).
-//!
-//! Run with:
-//!   cargo test --features vector-hnsw -p taladb-core --test vector_hnsw
-
-#![cfg(feature = "vector-hnsw")]
+//! Integration tests for the portable persistent HNSW vector index.
 
 use taladb_core::{Database, Filter, HnswOptions, Value, VectorMetric};
 
@@ -78,11 +73,11 @@ fn hnsw_create_and_search() {
 }
 
 // ---------------------------------------------------------------------------
-// upgrade_vector_index rebuilds the in-memory cache
+// upgrade_vector_index promotes or compacts the persistent graph
 // ---------------------------------------------------------------------------
 
 #[test]
-fn upgrade_vector_index_warms_cache() {
+fn upgrade_vector_index_promotes_graph() {
     let db = Database::open_in_memory().unwrap();
     seed_collection(&db, "docs", 20);
 
@@ -103,7 +98,7 @@ fn upgrade_vector_index_warms_cache() {
 
     col.upgrade_vector_index("emb").unwrap();
 
-    // HNSW search should now work
+    // HNSW search should now work.
     let results = col
         .find_nearest("emb", &fv(&[5.0, 0.0, 0.0, 0.0]), 3, None)
         .unwrap();
@@ -111,7 +106,7 @@ fn upgrade_vector_index_warms_cache() {
 }
 
 // ---------------------------------------------------------------------------
-// rebuild_hnsw_indexes warms cache across handles
+// rebuild_hnsw_indexes performs database-wide graph maintenance
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -133,10 +128,10 @@ fn rebuild_hnsw_indexes_on_open() {
         .unwrap();
     }
 
-    // Warm cache for all HNSW indexes (simulates what a caller does after open)
+    // Rebuild all configured HNSW indexes.
     db.rebuild_hnsw_indexes().unwrap();
 
-    // A freshly obtained collection handle shares the same cache
+    // A freshly obtained collection handle reads the persistent graph.
     let col2 = db.collection("vecs").unwrap();
     let results = col2
         .find_nearest("emb", &fv(&[3.0, 0.0, 0.0, 0.0]), 1, None)
@@ -145,11 +140,11 @@ fn rebuild_hnsw_indexes_on_open() {
 }
 
 // ---------------------------------------------------------------------------
-// Cache is evicted on drop_vector_index
+// Persistent graph is removed on drop_vector_index
 // ---------------------------------------------------------------------------
 
 #[test]
-fn drop_vector_index_clears_cache() {
+fn drop_vector_index_clears_graph() {
     let db = Database::open_in_memory().unwrap();
     seed_collection(&db, "drop_test", 5);
 
@@ -175,11 +170,11 @@ fn drop_vector_index_clears_cache() {
 }
 
 // ---------------------------------------------------------------------------
-// HNSW falls back to flat when cache is cold (no upgrade called)
+// A flat index uses exact search
 // ---------------------------------------------------------------------------
 
 #[test]
-fn flat_fallback_when_no_graph_in_cache() {
+fn flat_index_uses_exact_search() {
     let db = Database::open_in_memory().unwrap();
     seed_collection(&db, "fallback", 8);
 
@@ -284,16 +279,8 @@ fn multiple_collections_independent() {
 // A caller-supplied `top_k` must not overflow the HNSW over-fetch margin
 // ---------------------------------------------------------------------------
 
-/// The HNSW branch over-fetches by `top_k + (top_k / 5).max(8)` so churn in the
-/// graph doesn't starve the caller of results. That addition used to be a plain
-/// `+`, so a `top_k` near the top of the range panicked with "attempt to add
-/// with overflow" — reachable from every binding, since `top_k` is passed
-/// straight through from JS (`u32`, and a 32-bit `usize` on wasm32) and from the
-/// React Native FFI (a raw `usize`).
-///
-/// Only the graph path over-fetches, so the cache has to be warm for this to
-/// exercise anything: a cold collection takes the flat path and never computes
-/// `fetch_k` at all.
+/// A caller-provided `top_k` can reach the full integer range through the native
+/// API. Candidate sizing and pagination must saturate instead of overflowing.
 #[test]
 fn a_huge_top_k_saturates_the_hnsw_over_fetch() {
     let db = Database::open_in_memory().unwrap();
@@ -309,10 +296,6 @@ fn a_huge_top_k_saturates_the_hnsw_over_fetch() {
         }),
     )
     .unwrap();
-
-    // Warm the graph cache so the next call takes the HNSW path.
-    col.find_nearest("emb", &fv(&[1.0, 0.0, 0.0, 0.0]), 1, None)
-        .unwrap();
 
     let results = col
         .find_nearest("emb", &fv(&[1.0, 0.0, 0.0, 0.0]), usize::MAX, None)

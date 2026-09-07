@@ -76,9 +76,11 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 Driven by findings from the measurement suites in `scripts/` (`pnpm bench`, `pnpm bench:web`). The goal: keep TalaDB among the fastest embedded databases on every JS runtime.
 
-### Cached decoded vectors — avoid re-reading storage per query
+### Vector cache sizing
 
-The flat path still `scan_all`s the entire vector table from redb on **every** query (150 MB of reads for 100k × 384-dim). A persistent in-memory decoded-vector cache — invalidated on writes, mirroring the existing HNSW-graph cache — would make repeated queries memory-bound instead of storage-bound. Likely the single largest remaining flat-search win.
+Exact search keeps a bounded decoded-vector cache and persistent HNSW reads
+graph records on demand. Remaining work is adaptive cache sizing from the
+device memory budget and workload rather than one fixed default.
 
 ### SIMD dot products (WASM validated, native next)
 
@@ -91,13 +93,12 @@ The scoring reductions are scalar today. The WASM lever is **measured and confir
 
 Bounded two-sided range plans (`$gte` + `$lt` on one indexed field → a single bounded index scan) shipped. Still to do: extend to `$in` + range combinations on compound indexes once partial-prefix matching lands.
 
-### Non-blocking HNSW graph builds
+### HNSW performance tuning by device class
 
-`createVectorIndex(..., { indexType: 'hnsw' })` blocks while the graph is constructed — tens of minutes at 50k × 384-dim on laptop hardware:
-
-- Build on a background thread with an `onProgress` callback; queries fall back to the flat scan until the graph is ready
-- Incremental graph inserts, so steady-state writes don't require a full `upgradeVectorIndex` rebuild
-- Document expected build cost by collection size so apps can schedule rebuilds during idle periods
+Persistent, resumable HNSW builds and incremental writes are available on
+browser, Node.js, and React Native. Remaining work is a device-aware benchmark
+matrix for recommended `m`, `efConstruction`, `efSearch`, quantization, and
+batch sizes across low-memory phones and desktop workloads.
 
 ### Faster filtered-vector pre-filters (id-only path)
 

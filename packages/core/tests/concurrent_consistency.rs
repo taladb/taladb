@@ -193,7 +193,6 @@ fn delete_by_id_cleans_up_the_latest_index_entries() {
     );
 }
 
-#[cfg(feature = "vector-hnsw")]
 #[test]
 fn stale_hnsw_falls_back_to_current_exact_results() {
     let db = Database::open_in_memory().unwrap();
@@ -236,9 +235,8 @@ fn invalid_vector_components_roll_back_the_document_write() {
     assert_eq!(col.count(Filter::All).unwrap(), 0);
 }
 
-#[cfg(feature = "vector-hnsw")]
 #[test]
-fn unsupported_hnsw_connectivity_is_rejected() {
+fn invalid_hnsw_connectivity_is_rejected() {
     use taladb_core::vector::HnswOptions;
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("docs").unwrap();
@@ -248,7 +246,7 @@ fn unsupported_hnsw_connectivity_is_rejected() {
             2,
             None,
             Some(HnswOptions {
-                m: 8,
+                m: 1,
                 ef_construction: 200
             })
         )

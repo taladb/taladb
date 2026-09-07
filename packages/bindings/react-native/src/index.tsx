@@ -1,6 +1,8 @@
 /** TalaDB React Native public API. CRUD is synchronous through the JSI host. */
 import {
   createWebhookDispatcher,
+  createVectorClient,
+  type VectorClient,
   type HybridSearchOptions,
   type TextSearchOptions,
   type VectorMetric,
@@ -15,6 +17,7 @@ export type {
   HybridSearchOptions,
   TextSearchOptions,
   VectorMetric,
+  VectorClient, VectorQueryOptions, VectorRebuildOptions, VectorBuildProgress, VectorIndexStatus, VectorQueryResult, VectorRecall, VectorGraphOptions, VectorQuantization,
 } from 'taladb';
 
 export const TalaDBModule = {
@@ -77,17 +80,16 @@ export interface HybridSearchResult<T extends Document = Document> {
 /**
  * HNSW build parameters.
  *
- * Both fields are required and snake_case: the native side deserialises this
- * object straight into the Rust `HnswOptions`, which declares no serde
- * defaults. A partial or camelCase object fails to parse and is discarded
- * silently, leaving a flat (exact, linear) index behind with no error — so the
- * types here deliberately do not let you write one.
+ * The native binding validates these values and reports malformed options.
+ * `ef_construction` is retained for compatibility with the direct native API;
+ * the shared asynchronous vector API uses `efConstruction`.
  */
 export interface HnswBuildOptions {
-  /** Bi-directional links per node. The graph implementation supports only 32. */
+  /** Bi-directional links per node (2–128). */
   m: number;
   /** Build-time quality (ef during construction). Must be ≥ `m`. Typically 200. */
   ef_construction: number;
+  quantization?: import("taladb").VectorQuantization;
 }
 
 export interface VectorIndexOptions {
@@ -96,15 +98,13 @@ export interface VectorIndexOptions {
   /**
    * Supply this to build an HNSW (approximate) index instead of a flat one.
    *
-   * The graph is held in memory only and is **not** persisted, so it is empty
-   * after every app launch. Until it is warmed, `findNearest` silently falls
-   * back to an exact linear scan. Call `upgradeVectorIndex(field)` once at
-   * startup to rebuild it — see that method's docs.
+   * Nodes and links persist in the database and update with document writes.
+   * Reopening requires no warm-up.
    */
   hnsw?: HnswBuildOptions;
 }
 
-export interface Collection<T extends Document = Document> {
+export interface Collection<T extends Document = Document> extends VectorClient<T> {
   insert(doc: InsertDocument<T>): string;
   insertMany(docs: InsertDocument<T>[]): string[];
   find(filter?: Filter): T[];
@@ -202,15 +202,9 @@ export interface Collection<T extends Document = Document> {
   dropVectorIndex(field: string): void;
 
   /**
-   * Rebuild this field's in-memory HNSW graph from the persisted vectors.
-   *
-   * The graph is never written to disk, so it is empty in every new process.
-   * Until it is built, `findNearest` degrades silently to an exact linear scan
-   * over the whole vector table — correct, but O(n). Call this once per
-   * HNSW-indexed field after `initialize()` to get the approximate path back.
-   * It scans every vector in the field, so run it off the first frame.
-   *
-   * A no-op on a flat index.
+   * Promote a flat/legacy index or compact a persistent graph. This synchronous
+   * call may be expensive; prefer rebuildVectorIndex for background batches,
+   * progress and AbortSignal cancellation on mobile.
    */
   upgradeVectorIndex(field: string): void;
 }
@@ -246,19 +240,8 @@ export interface DB {
   /**
    * Warm every HNSW vector index in the database.
    *
-   * HNSW graphs are held in memory and never persisted — the underlying index
-   * is built in one shot and has no incremental insert — so the cache is empty
-   * in every new process, and a write to an indexed field drops it again. While
-   * a graph is missing, `findNearest` silently takes the exact path and scans
-   * the entire vector table: correct, but linear, with nothing in the result to
-   * say so.
-   *
-   * Call this once after `TalaDBModule.initialize()` to get approximate search
-   * back. It reads every indexed vector and rebuilds each graph, so keep it off
-   * the first frame. Prefer `Collection.upgradeVectorIndex` when you know the
-   * one field you need.
-   *
-   * A no-op when no HNSW index exists.
+   * Graphs persist across app launches. This is maintenance, not a startup
+   * requirement. Prefer per-field rebuildVectorIndex for progress/cancellation.
    */
   rebuildVectorIndexes(): void;
 
@@ -277,6 +260,7 @@ export interface DB {
  * called. Add new methods here, not there.
  */
 interface JsiTalaDB {
+  callAsync(op: string, args: unknown[]): Promise<any>;
   insert(collection: string, doc: Object): string;
   insertMany(collection: string, docs: Object[]): string[];
   find(collection: string, filter: Object | null): Object[];
@@ -389,6 +373,7 @@ function collection<T extends Document>(
   webhook: WebhookDispatcher | null,
 ): Collection<T> {
   return {
+    ...createVectorClient<T>(request => native().callAsync('vectorCommand', [colName, request])),
     insert(doc) {
       const id = native().insert(colName, doc as Object);
       const committedAt = Date.now();

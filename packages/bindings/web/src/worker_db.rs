@@ -633,7 +633,7 @@ impl WorkerDB {
     ///
     /// - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
     /// - `index_type`: `"flat"` (default) | `"hnsw"`
-    /// - `hnsw_m`: HNSW connectivity (only 32 is supported)
+    /// - `hnsw_m`: HNSW connectivity (2–128, default 32)
     /// - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = createVectorIndex)]
@@ -669,7 +669,7 @@ impl WorkerDB {
     /// Rebuild the HNSW graph for a vector index from the current flat vector
     /// table.  Use after bulk inserts or when ANN recall has degraded.
     ///
-    /// No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
+    /// A flat index is promoted with default HNSW options.
     #[wasm_bindgen(js_name = upgradeVectorIndex)]
     pub fn upgrade_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
@@ -695,6 +695,29 @@ impl WorkerDB {
             "vector": info.vector,
         });
         Ok(json.to_string())
+    }
+
+    /// Internal JSON protocol for advanced vector search and index lifecycle.
+    #[wasm_bindgen(js_name = vectorCommand)]
+    pub fn vector_command(&self, collection: &str, request_json: &str) -> Result<String, JsValue> {
+        let request =
+            serde_json::from_str(request_json).map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        let col = self
+            .db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let result = col
+            .vector_command(
+                request,
+                &|v| {
+                    json_to_filter_val(v).ok_or_else(|| {
+                        taladb_core::TalaDbError::InvalidFilter("invalid filter".into())
+                    })
+                },
+                &doc_to_json,
+            )
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Find nearest neighbours. Returns a JSON string of `[{ document, score }]`.
