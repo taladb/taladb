@@ -799,7 +799,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "close") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "close"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+            [this](Runtime &, const Value &, const Value *, size_t) -> Value {
                 if (db_) {
                     taladb_close(db_);
                     db_ = nullptr;

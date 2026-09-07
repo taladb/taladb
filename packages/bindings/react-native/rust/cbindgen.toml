@@ -1,20 +1,51 @@
 # cbindgen configuration for taladb-ffi.
 # Run: cbindgen --config cbindgen.toml --crate taladb-ffi --output ../cpp/taladb.h
+# (or `pnpm --filter @taladb/react-native build:cbindgen`)
 
 language = "C"
 include_guard = "TALADB_FFI_H"
 pragma_once = true
 
-# Prepend fixed includes so the header is self-contained.
-after_includes = """
-#include <stdint.h>
-#include <stdlib.h>
+# The header is included from C++ (TalaDBHostObject.cpp, TalaDBJni.cpp, and the
+# iOS TalaDB.mm) but every symbol is plain C. Without this, cbindgen emits no
+# `extern "C"` block and every call fails to link against the Rust staticlib
+# under C++ name mangling.
+cpp_compat = true
+
+# `stdint.h`/`stdlib.h` come from cbindgen's own sys-include logic; listing them
+# in `after_includes` as well emits each twice.
+after_includes = ""
+
+# Prepended verbatim. Lives here rather than in the .h so that regenerating the
+# header cannot silently drop it — the per-function documentation below is
+# generated from the doc comments in rust/src/lib.rs.
+header = """
+/*
+ * TalaDB C FFI header.
+ *
+ * GENERATED FILE — do not edit. Regenerate with:
+ *   pnpm --filter @taladb/react-native build:cbindgen
+ * CI fails if this file and rust/src/lib.rs disagree.
+ *
+ * This is the stable C interface between the Rust taladb-ffi crate and the C++
+ * JSI HostObject (cpp/TalaDBHostObject.cpp, cpp/TalaDBJni.cpp) and the iOS
+ * TurboModule (ios/TalaDB.mm).
+ *
+ * Ownership rules
+ * ---------------
+ *  - Strings IN  : caller-owned, UTF-8, null-terminated.
+ *  - Strings OUT : heap-allocated by Rust; caller must free with
+ *                  taladb_free_string().
+ *  - Handles     : allocated by taladb_open(); freed by taladb_close().
+ *  - Errors      : string functions return NULL; integer functions return -1,
+ *                  with detail available from taladb_last_error().
+ */
 """
 
-# Suppress C++ name-mangling — the header is included from C++ but the symbols
-# are plain C.
-[export]
-prefix = "taladb"
+# NOTE: do not set `[export] prefix`. It prefixes *type* names, not symbols —
+# the FFI functions are already `taladb_`-prefixed by their Rust names — so it
+# renames `TalaDbHandle` to `taladbTalaDbHandle` and desynchronises the header
+# from the C++ that includes it.
 
 [parse]
 parse_deps = false

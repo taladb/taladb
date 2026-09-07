@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.4 Unreleased
+
+- Exposed full-text, vector, hybrid, and aggregation queries on the React
+  Native `Collection` type, and `flush`/`compact`/`userVersion` on `DB`. The
+  JSI host had always registered them; only the TypeScript surface was missing.
+- Fixed `build:cbindgen`, which resolved the crate from the wrong directory, and
+  its config, which renamed the opaque handle types and omitted the `extern "C"`
+  guards — regenerating `cpp/taladb.h` would have broken the native build.
+- Added a CI job that compiles the React Native C++ glue and checks the
+  generated FFI header against the Rust.
+
 ## 0.11.3 — 2026-09-06
 
 - Added authoritative single-owner browser storage and multi-tab RPC.
