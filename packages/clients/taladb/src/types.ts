@@ -635,6 +635,22 @@ export interface TalaDB {
    */
   flush?(): Promise<void>;
   /**
+   * Rebuild every HNSW vector graph in the database, warming the in-memory
+   * cache. **React Native only** — `undefined` on the browser and Node.js,
+   * where nothing drops the graphs between calls.
+   *
+   * HNSW graphs are held in memory and never persisted: the index is built in
+   * one shot, with no incremental insert, so the cache starts empty in each new
+   * process and a write to an indexed field drops it. While a graph is missing,
+   * `findNearest` still returns correct results — it just quietly takes the
+   * exact path and scans the whole vector table.
+   *
+   * Reads every indexed vector, so call it once after `openDB` and keep it off
+   * any latency-sensitive path. Prefer `Collection.upgradeVectorIndex` when you
+   * know the single field you need.
+   */
+  rebuildVectorIndexes?(): Promise<void>;
+  /**
    * Whether this browser tab owns the database storage. All tabs execute reads
    * and writes through that owner and await its result. Ownership can change
    * after the owning tab closes. Node.js and React Native return true.

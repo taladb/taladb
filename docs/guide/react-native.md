@@ -7,7 +7,7 @@ description: Use TalaDB in React Native apps for on-device vector search, BM25 a
 
 Ship a vector and document database inside your mobile app. Store application data and embeddings from a local model, then run structured queries, [vector search](/api/vector-search), [BM25 full-text](/api/search), and [hybrid RAG retrieval](/api/search#hybrid-search) directly on the phone — private by default and available offline.
 
-TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Search calls are synchronous via JSI.
+TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path. Large reads and vector searches are dispatched to a background thread so they do not block the JS thread.
 
 
 ## Requirements
@@ -66,6 +66,8 @@ const all = await users.find()
 ```
 
 That's it. The `taladb` package detects React Native automatically — the same code you write for the browser or Node.js works here too.
+
+Import `openDB` from `taladb`, not from `@taladb/react-native`. The latter is the low-level binding: it installs the native module and exposes the raw JSI surface synchronously, without migrations, live queries, or schema handling. Use it directly only when you specifically want synchronous calls on the JS thread.
 
 ## Change webhook
 
@@ -179,6 +181,8 @@ export default function App() {
 
 TalaDB supports on-device semantic search — store embeddings from a local ML model (Core ML, TensorFlow Lite) and search them without any server.
 
+The API is the same one you use on the browser and Node.js: promise-based, with heavy work dispatched to a background thread by the native module rather than blocking the JS thread.
+
 ```ts
 interface Article {
   _id?: string
@@ -190,7 +194,7 @@ interface Article {
 const articles = db.collection<Article>('articles')
 await articles.createVectorIndex('embedding', { dimensions: 384 })
 
-// Insert with embedding from your on-device model
+// Insert with an embedding from your on-device model
 const embedding = await myModel.embed(content)
 await articles.insert({ title, body: content, embedding })
 
@@ -207,6 +211,67 @@ const filtered = await articles.findNearest('embedding', queryVec, 5, {
   category: 'faq',
 })
 ```
+
+Passing a `Float32Array` as the query vector takes a zero-copy path across JSI.
+
+### Approximate search: warm the index at startup
+
+The index above is **flat** — exact, and linear in the number of vectors. Ask for an HNSW graph instead when the collection grows past a few thousand rows:
+
+```ts
+await articles.createVectorIndex('embedding', {
+  dimensions: 384,
+  metric: 'cosine',
+  indexType: 'hnsw',
+  hnswEfConstruction: 200,
+})
+```
+
+**HNSW graphs are held in memory and never written to disk.** The index is built in one shot — there is no incremental insert — so the graph is empty in every new process, and a write to an indexed field drops it. While no graph is present `findNearest` still returns correct results; it just quietly takes the exact path and scans the whole vector table.
+
+On a phone that matters, because the OS restarts your app often. Warm the graphs after opening:
+
+```ts
+const db = await openDB('myapp.db')
+
+// Rebuilds every HNSW graph in the database. Reads every indexed vector,
+// so keep it off the first frame.
+await db.rebuildVectorIndexes?.()
+```
+
+`rebuildVectorIndexes` is React Native only and `undefined` elsewhere, since no other platform drops the graphs between calls. When you know the one field you need, `await articles.upgradeVectorIndex('embedding')` warms just that one.
+
+Two more things worth knowing:
+
+- A `filter` always takes the exact path, because the graph cannot be traversed under an arbitrary predicate. That is usually what you want for a scoped search: it is exact, and it only reads the vectors that survive the filter.
+- HNSW rejects the `dot` metric. L2-normalise your vectors and use `cosine`.
+
+### Keyword and hybrid search
+
+BM25 full-text ranking needs an FTS index on the field:
+
+```ts
+await articles.createFtsIndex('body')
+
+const hits = await articles.searchText('body', 'reset my password', 5)
+```
+
+`hybridSearch` runs both retrievers and fuses their rankings with reciprocal rank fusion. The two fail differently — keyword search misses paraphrases, vector search misses exact identifiers and rare proper nouns — so fusing them recovers both. It needs an FTS index on the text field and a vector index on the vector field:
+
+```ts
+const hits = await articles.hybridSearch(
+  { textField: 'body', text: userQuery },
+  { vectorField: 'embedding', vector: queryVec },
+  5,
+)
+
+hits.forEach(({ document, score, textRank, vectorRank }) => {
+  // textRank / vectorRank are null when that retriever did not return the row
+  console.log(document.title, textRank, vectorRank)
+})
+```
+
+The fused `score` is meaningful only as an ordering inside one result set — it is not a similarity or a confidence.
 
 ## Where data is stored
 
@@ -251,3 +316,5 @@ Make sure Xcode command-line tools are active: `xcode-select --install`. Then re
 
 - **Expo Go** — not supported. You must use a custom dev client (`expo prebuild`).
 - **Live queries (`subscribe`)** — polling-based on React Native; native file-watch push is planned for a future release.
+- **HNSW graphs are not persisted** — they are rebuilt in memory per process. See [warm the index at startup](#approximate-search-warm-the-index-at-startup).
+- **Vectors are stored as `f32`** — there is no quantization, so an index costs roughly `dimensions * 4` bytes per document.

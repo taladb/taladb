@@ -1696,6 +1696,40 @@ pub unsafe extern "C" fn taladb_upgrade_vector_index(
     })
 }
 
+/// Rebuild every HNSW graph in the database, warming the in-memory cache.
+///
+/// The graphs are never persisted — `instant-distance` builds an index in one
+/// shot and offers no incremental insert, so the cache is empty in every new
+/// process and is dropped again whenever a write bumps a vector table's
+/// revision. Until a graph is present, `taladb_find_nearest` silently takes the
+/// exact path and scans the whole vector table: correct, but linear.
+///
+/// This walks the stored HNSW options and rebuilds each one, so a caller does
+/// not have to know which collections and fields were configured as HNSW —
+/// unlike `taladb_upgrade_vector_index`, which rebuilds a single named field.
+///
+/// It reads and re-inserts every indexed vector, so call it once after opening
+/// the database and off any latency-sensitive path. Returns 1 on success, -1 on
+/// error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_rebuild_hnsw_indexes(handle: *mut TalaDbHandle) -> i32 {
+    ffi_guard(-1, move || {
+        clear_last_error();
+        let h = match unsafe { ptr_to_ref(handle) } {
+            Some(h) => h,
+            // `ptr_to_ref` rejected the pointer and set the message.
+            None => return -1,
+        };
+        match h.db.rebuild_hnsw_indexes() {
+            Ok(()) => 1,
+            Err(e) => {
+                set_last_error(e.to_string());
+                -1
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // findNearest — Float32 raw-pointer fast path
 // ---------------------------------------------------------------------------
@@ -2692,6 +2726,115 @@ mod tests {
 
     fn cstr(s: &str) -> CString {
         CString::new(s).unwrap()
+    }
+
+    /// A reopened database has an empty HNSW cache, and nothing in the FFI could
+    /// refill it — so every `taladb_find_nearest` after a restart silently took
+    /// the exact path and scanned the whole vector table.
+    #[test]
+    fn rebuild_hnsw_indexes_warms_a_reopened_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = CString::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let col = cstr("docs");
+        let field = cstr("v");
+
+        let handle = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!handle.is_null(), "first open: {:?}", last_error());
+        for doc in [
+            r#"{"name":"a","v":[1.0,0.0]}"#,
+            r#"{"name":"b","v":[0.0,1.0]}"#,
+        ] {
+            let doc = cstr(doc);
+            let id = unsafe { taladb_insert(handle, col.as_ptr(), doc.as_ptr()) };
+            assert!(!id.is_null(), "insert: {:?}", last_error());
+            unsafe { taladb_free_string(id) };
+        }
+        let hnsw = cstr(r#"{"m":32,"ef_construction":200}"#);
+        let created = unsafe {
+            taladb_create_vector_index(
+                handle,
+                col.as_ptr(),
+                field.as_ptr(),
+                2,
+                std::ptr::null(),
+                hnsw.as_ptr(),
+            )
+        };
+        assert_eq!(created, 1, "create_vector_index: {:?}", last_error());
+        unsafe { taladb_close(handle) };
+
+        let handle = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!handle.is_null(), "reopen: {:?}", last_error());
+        assert_eq!(
+            unsafe { taladb_rebuild_hnsw_indexes(handle) },
+            1,
+            "rebuild: {:?}",
+            last_error()
+        );
+
+        let query = [1.0f32, 0.0];
+        let out = unsafe {
+            taladb_find_nearest(
+                handle,
+                col.as_ptr(),
+                field.as_ptr(),
+                query.as_ptr(),
+                query.len(),
+                1,
+                std::ptr::null(),
+            )
+        };
+        assert!(!out.is_null(), "find_nearest: {:?}", last_error());
+        let json: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(out) }.to_str().unwrap()).unwrap();
+        unsafe { taladb_free_string(out) };
+        assert_eq!(json[0]["document"]["name"], "a");
+
+        // Warming twice is not an error: callers run this unconditionally at
+        // startup and cannot know whether something else already did.
+        assert_eq!(unsafe { taladb_rebuild_hnsw_indexes(handle) }, 1);
+        unsafe { taladb_close(handle) };
+    }
+
+    /// The `taladb` client prefers `callAsync` whenever the host object offers
+    /// it, so an op missing from the dispatch table is unreachable from the
+    /// supported API even when the direct export exists.
+    #[test]
+    fn rebuild_hnsw_indexes_is_reachable_through_async_dispatch() {
+        let (handle, _dir) = open_temp_db();
+        let op = cstr("rebuildVectorIndexes");
+        let args = cstr("[]");
+        let job = unsafe { taladb_call_start(handle, op.as_ptr(), args.as_ptr()) };
+        assert!(!job.is_null(), "call_start: {:?}", last_error());
+        let out = unsafe { taladb_job_take_result(job) };
+        assert!(
+            !out.is_null(),
+            "dispatch rejected the op: {:?}",
+            last_error()
+        );
+        unsafe { taladb_free_string(out) };
+        unsafe { taladb_close(handle) };
+    }
+
+    /// No HNSW index configured is nothing to do, not a failure — a caller that
+    /// warms unconditionally at startup must not have to special-case it.
+    #[test]
+    fn rebuild_hnsw_indexes_is_a_no_op_without_an_index() {
+        let (handle, _dir) = open_temp_db();
+        assert_eq!(unsafe { taladb_rebuild_hnsw_indexes(handle) }, 1);
+        unsafe { taladb_close(handle) };
+    }
+
+    #[test]
+    fn rebuild_hnsw_indexes_rejects_a_null_handle() {
+        assert_eq!(
+            unsafe { taladb_rebuild_hnsw_indexes(std::ptr::null_mut()) },
+            -1
+        );
+        assert!(
+            last_error().is_some(),
+            "a rejected handle must set an error"
+        );
     }
 
     /// The bug: `LAST_ERROR` was only ever written, never cleared, so after any

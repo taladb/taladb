@@ -42,6 +42,12 @@ pub(super) fn execute(h: &TalaDbHandle, op: &str, args: &[Json]) -> Result<Json,
             return Ok(Json::Null);
         }
         "listCollectionNames" => return Ok(json!(core!(h.db.list_collection_names()))),
+        // Reads and re-inserts every indexed vector, so it belongs on a worker
+        // thread rather than the synchronous JSI path.
+        "rebuildVectorIndexes" => {
+            core!(h.db.rebuild_hnsw_indexes());
+            return Ok(Json::Null);
+        }
         _ => {}
     }
     let col = core!(h.collection(text(args, 0)?));

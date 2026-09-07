@@ -644,6 +644,24 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     }
 
     // ------------------------------------------------------------------
+    // rebuildVectorIndexes(): void
+    //
+    // Warms every HNSW graph in the database. The graphs are memory-only, so
+    // without this findNearest silently degrades to an exact linear scan for
+    // the whole process lifetime. Scans every indexed vector — call it once at
+    // startup, off the first frame.
+    // ------------------------------------------------------------------
+    if (name == "rebuildVectorIndexes") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "rebuildVectorIndexes"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int32_t res = taladb_rebuild_hnsw_indexes(db_);
+                if (res < 0) throw ffiError(rt, "taladb_rebuild_hnsw_indexes failed");
+                return Value::undefined();
+            });
+    }
+
+    // ------------------------------------------------------------------
     // findNearest(collection, field, query, topK, filter?): { document, score }[]
     //   query — Float32Array (preferred, zero-copy) or number[]
     // ------------------------------------------------------------------

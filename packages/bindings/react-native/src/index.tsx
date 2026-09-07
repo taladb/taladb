@@ -243,6 +243,25 @@ export interface DB {
   /** Reclaim space from deleted documents. Expensive; run it off the hot path. */
   compact(): void;
 
+  /**
+   * Warm every HNSW vector index in the database.
+   *
+   * HNSW graphs are held in memory and never persisted — the underlying index
+   * is built in one shot and has no incremental insert — so the cache is empty
+   * in every new process, and a write to an indexed field drops it again. While
+   * a graph is missing, `findNearest` silently takes the exact path and scans
+   * the entire vector table: correct, but linear, with nothing in the result to
+   * say so.
+   *
+   * Call this once after `TalaDBModule.initialize()` to get approximate search
+   * back. It reads every indexed vector and rebuilds each graph, so keep it off
+   * the first frame. Prefer `Collection.upgradeVectorIndex` when you know the
+   * one field you need.
+   *
+   * A no-op when no HNSW index exists.
+   */
+  rebuildVectorIndexes(): void;
+
   /** The application-defined schema version stored in the database file. */
   userVersion(): number;
   setUserVersion(version: number): void;
@@ -314,6 +333,7 @@ interface JsiTalaDB {
   dropVectorIndex(collection: string, field: string): void;
   upgradeVectorIndex(collection: string, field: string): void;
   listCollectionNames(): string[];
+  rebuildVectorIndexes(): void;
   flush(): void;
   compact(): void;
   userVersion(): number;
@@ -484,6 +504,7 @@ export function openDB(_dbName: string, options?: OpenDBOptions): DB {
     listCollectionNames: () => native().listCollectionNames(),
     flush: () => native().flush(),
     compact: () => native().compact(),
+    rebuildVectorIndexes: () => native().rebuildVectorIndexes(),
     userVersion: () => native().userVersion(),
     setUserVersion: (version) => native().setUserVersion(version),
     close: async () => {

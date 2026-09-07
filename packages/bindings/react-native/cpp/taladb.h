@@ -308,6 +308,25 @@ int32_t taladb_upgrade_vector_index(struct TalaDbHandle *handle,
                                     const char *field);
 
 /**
+ * Rebuild every HNSW graph in the database, warming the in-memory cache.
+ *
+ * The graphs are never persisted — `instant-distance` builds an index in one
+ * shot and offers no incremental insert, so the cache is empty in every new
+ * process and is dropped again whenever a write bumps a vector table's
+ * revision. Until a graph is present, `taladb_find_nearest` silently takes the
+ * exact path and scans the whole vector table: correct, but linear.
+ *
+ * This walks the stored HNSW options and rebuilds each one, so a caller does
+ * not have to know which collections and fields were configured as HNSW —
+ * unlike `taladb_upgrade_vector_index`, which rebuilds a single named field.
+ *
+ * It reads and re-inserts every indexed vector, so call it once after opening
+ * the database and off any latency-sensitive path. Returns 1 on success, -1 on
+ * error.
+ */
+int32_t taladb_rebuild_hnsw_indexes(struct TalaDbHandle *handle);
+
+/**
  * Synchronous `find_nearest` with a zero-copy Float32 query vector.
  *
  * `query_ptr` — pointer to `query_len` consecutive f32 values (caller-owned).

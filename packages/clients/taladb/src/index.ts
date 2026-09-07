@@ -1229,6 +1229,8 @@ interface NativeDB {
   setUserVersion?(version: number): void;
   // Force batched (eventual) writes durable. Feature-detected (JSI 0.9.2+).
   flush?(): void;
+  /** Present from @taladb/react-native 0.11.4; warms every HNSW graph. */
+  rebuildVectorIndexes?(): void;
 }
 
 async function createNativeDB(
@@ -1335,6 +1337,10 @@ async function createNativeDB(
     compact: async () => await call('compact'),
     close: async () => await call('close'),
     flush: native.callAsync || native.flush ? async () => { await call('flush'); } : undefined,
+    rebuildVectorIndexes:
+      native.callAsync || native.rebuildVectorIndexes
+        ? async () => { await call('rebuildVectorIndexes'); }
+        : undefined,
     // One process owns the file — there is no other tab to defer to.
     isPrimary: async () => true,
   };
