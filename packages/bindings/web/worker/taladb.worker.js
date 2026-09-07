@@ -165,12 +165,12 @@ async function executeOwned(op, args) {
   if (op === 'hello') return { epoch, encrypted, config: activeConfigJson };
   if (op === 'capabilities') return { storage: backend, durableWrites: immediate,
     maxSnapshotBytes: backend === 'indexeddb' ? MAX_SNAPSHOT_BYTES : null, storageError,
-    hnsw: false, owner: true };
+    hnsw: true, owner: true };
   if (op === 'flush') { db.flush(); await flushSnapshot(); return null; }
   if (storageError && immediate) throw new Error(`TalaDB persistence failed; reopen the database: ${storageError}`);
   if (JSON.stringify(args).length > MAX_REQUEST_BYTES) throw new Error('TalaDB request exceeds 32 MiB; split the batch');
   const result = executeOp(op, args);
-  if (mutations.has(op)) {
+  if (mutations.has(op) || (op === 'vectorCommand' && ['create', 'beginBuild', 'stepBuild', 'cancelBuild'].includes(JSON.parse(args.requestJson).op))) {
     if (backend === 'indexeddb') {
       dirty = true;
       if (immediate) await flushSnapshot(); else scheduleFlush();
@@ -374,6 +374,9 @@ function executeOp(op, args) {
     case 'upgradeVectorIndex':
       db.upgradeVectorIndex(args.collection, args.field);
       return null;
+
+    case 'vectorCommand':
+      return db.vectorCommand(args.collection, args.requestJson);
 
     case 'findNearest':
       return db.findNearest(

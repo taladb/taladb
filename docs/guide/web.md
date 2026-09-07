@@ -595,11 +595,10 @@ allows another tab to acquire the OPFS file as the new primary.
 
 ## Current limitations
 
-- **HNSW vector index** — not available in the browser. The HNSW algorithm uses
-  `rayon` for parallelism which requires native threads. Calling
-  `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the
-  browser throws a clear error. Flat (brute-force) vector search works correctly
-  and scales to ~100k vectors without an index upgrade.
+- **Vector build scheduling** — persistent HNSW indexes work in browsers and
+  Web Workers without native threads. Use `rebuildVectorIndex()` for a batched,
+  cancellable build so each batch yields to the browser event loop. A direct
+  synchronous Wasm rebuild can still block the current thread on a large index.
 
 - **Snapshot size** — `exportSnapshot` and the IndexedDB fallback path
   serialise the entire database to a `Uint8Array` in Wasm memory. This works

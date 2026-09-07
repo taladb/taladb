@@ -32,8 +32,9 @@ use crate::vector::{
     VectorMetric, VectorSearchResult, decode_f32_vec, encode_f32_vec, value_to_f32_vec,
     vec_meta_key, vec_table_name,
 };
-#[cfg(feature = "vector-hnsw")]
-use crate::vector::{SharedHnswCache, build_hnsw, search_hnsw};
+#[path = "vector_api.rs"]
+mod vector_api;
+pub use vector_api::*;
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
@@ -165,11 +166,9 @@ pub struct Collection {
     field_encryption: Option<crate::crypto::FieldEncryptionConfig>,
     /// In-memory decoded vectors for the flat search path, shared across all
     /// handles from the same `Database` and invalidated by the collection's
-    /// write generation (see [`crate::watch`]). Always present — the flat path
-    /// is the default and the only vector path on web/React Native.
+    /// write generation (see [`crate::watch`]). Always present because exact
+    /// search remains available alongside HNSW on every platform.
     vector_cache: SharedVectorCache,
-    #[cfg(feature = "vector-hnsw")]
-    hnsw_cache: SharedHnswCache,
 }
 
 impl Collection {
@@ -183,8 +182,6 @@ impl Collection {
             #[cfg(feature = "encryption")]
             field_encryption: None,
             vector_cache: crate::vector::new_shared_vector_cache(),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: crate::vector::new_shared_cache(),
         }
     }
 
@@ -240,8 +237,6 @@ impl Collection {
             #[cfg(feature = "encryption")]
             field_encryption: self.field_encryption.clone(),
             vector_cache: Arc::clone(&self.vector_cache),
-            #[cfg(feature = "vector-hnsw")]
-            hnsw_cache: Arc::clone(&self.hnsw_cache),
         }
     }
 
@@ -282,14 +277,6 @@ impl Collection {
             fields: sorted,
             key,
         });
-        self
-    }
-
-    /// Attach a shared HNSW cache (called by `Database::collection()` so all
-    /// handles from the same `Database` share a single graph store).
-    #[cfg(feature = "vector-hnsw")]
-    pub(crate) fn with_hnsw_cache(mut self, cache: SharedHnswCache) -> Self {
-        self.hnsw_cache = cache;
         self
     }
 
@@ -884,7 +871,16 @@ impl Collection {
         let txn = self.backend.begin_read()?;
         let text_hits =
             self.search_text_in(txn.as_ref(), text_field, text, pool, &bm25, filter.clone())?;
-        let vector_hits = self.find_nearest_in(txn.as_ref(), vector_field, vector, pool, filter)?;
+        let vector_hits = self
+            .search_vectors_in(
+                txn.as_ref(),
+                vector_field,
+                vector,
+                pool,
+                filter,
+                &VectorQueryOptions::default(),
+            )?
+            .hits;
 
         let mut fused: HashMap<[u8; 16], FusedEntry> = HashMap::new();
         let mut docs: HashMap<[u8; 16], Document> = HashMap::new();
@@ -1106,9 +1102,9 @@ impl Collection {
     ///
     /// - `dimensions`: expected length of every stored vector.
     /// - `metric`: similarity metric used by `find_nearest` (default: Cosine).
-    /// - `hnsw`: when `Some`, builds an HNSW approximate-nearest-neighbor index
-    ///   in addition to the flat vector table.  Requires the `vector-hnsw` feature;
-    ///   ignored (with a no-op) if the feature is disabled.
+    /// - `hnsw`: when `Some`, builds a persistent HNSW approximate-nearest-
+    ///   neighbor graph in addition to the flat vector table. Available on
+    ///   native, browser/Wasm, and mobile targets.
     ///
     /// Backfills any existing documents that already have a numeric array in
     /// `field`. Silently skips documents where `field` is absent or not a
@@ -1120,29 +1116,47 @@ impl Collection {
         metric: Option<VectorMetric>,
         hnsw: Option<HnswOptions>,
     ) -> Result<(), TalaDbError> {
+        self.create_vector_index_with_options(
+            field,
+            dimensions,
+            metric,
+            hnsw.map(|h| crate::GraphOptions {
+                m: h.m,
+                ef_construction: h.ef_construction,
+                ..Default::default()
+            }),
+        )
+    }
+
+    pub fn create_vector_index_with_options(
+        &self,
+        field: &str,
+        dimensions: usize,
+        metric: Option<VectorMetric>,
+        hnsw: Option<crate::GraphOptions>,
+    ) -> Result<(), TalaDbError> {
         if dimensions == 0 {
             return Err(TalaDbError::InvalidOperation(
                 "vector dimensions must be positive".into(),
             ));
         }
-        #[cfg(not(feature = "vector-hnsw"))]
-        if hnsw.is_some() {
-            return Err(TalaDbError::InvalidOperation(
-                "HNSW support is not enabled in this build".into(),
-            ));
-        }
-        if let Some(opts) = &hnsw
-            && (opts.m != 32 || opts.ef_construction < 32)
-        {
-            return Err(TalaDbError::InvalidOperation(
-                "this HNSW implementation requires m = 32 and ef_construction >= 32".into(),
-            ));
+        if let Some(opts) = &hnsw {
+            opts.validate(metric.unwrap_or_default())?;
         }
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
-        // Idempotent: no-op if already exists
-        if wtxn.get(META_VECTOR_TABLE, meta_key.as_bytes())?.is_some() {
+        if let Some(bytes) = wtxn.get(META_VECTOR_TABLE, meta_key.as_bytes())? {
+            let existing: VectorDef = postcard::from_bytes(&bytes)?;
+            if existing.dimensions != dimensions || existing.metric != metric.unwrap_or_default() {
+                return Err(TalaDbError::InvalidOperation(
+                    "existing vector index has different dimensions or metric".into(),
+                ));
+            }
+            if let Some(options) = hnsw {
+                self.build_graph_in(wtxn.as_mut(), &existing, options)?;
+                wtxn.commit()?;
+            }
             return Ok(());
         }
 
@@ -1164,14 +1178,7 @@ impl Collection {
             std::ops::Bound::Unbounded,
         )?;
         let vtable = vec_table_name(&self.name, field);
-        // The decoded copy exists only to seed the HNSW graph, so it is built
-        // only when a graph is actually going to be built. Populating it
-        // unconditionally cost a second full copy of every vector — on 100k
-        // documents at 384 dimensions that is ~150 MB of WASM heap held
-        // alongside `encoded` for the whole backfill, and on the default build
-        // (no `vector-hnsw`) it was never read at all.
-        #[cfg(feature = "vector-hnsw")]
-        let mut backfill: Vec<(ulid::Ulid, Vec<f32>)> = Vec::new();
+        // Flat backfill keeps a single encoded copy; graph construction reads it.
         let mut encoded: Vec<([u8; 16], Vec<u8>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
@@ -1187,10 +1194,6 @@ impl Collection {
                 && vec.iter().all(|v| v.is_finite())
             {
                 encoded.push((doc.id.to_bytes(), encode_f32_vec(&vec)));
-                #[cfg(feature = "vector-hnsw")]
-                if hnsw.is_some() {
-                    backfill.push((doc.id, vec));
-                }
             }
         }
         let ops: Vec<crate::engine::KvOp<'_>> = encoded
@@ -1201,30 +1204,11 @@ impl Collection {
         let vector_revision = bump_revision(wtxn.as_mut(), &vtable)?;
         let _ = vector_revision;
 
-        #[cfg(feature = "vector-hnsw")]
-        let mut built_graph = None;
-        // Persist HNSW options and build the in-memory graph when requested
-        if let Some(hnsw_opts) = hnsw {
-            let hnsw_meta_key = format!("{}::{}", self.name, field);
-            let opts_bytes = postcard::to_allocvec(&hnsw_opts)?;
-            wtxn.put(META_HNSW_TABLE, hnsw_meta_key.as_bytes(), &opts_bytes)?;
-
-            #[cfg(feature = "vector-hnsw")]
-            {
-                let graph = build_hnsw(&backfill, &resolved_metric, hnsw_opts.ef_construction)?;
-                built_graph = Some(graph);
-            }
+        if let Some(opts) = hnsw {
+            self.build_graph_in(wtxn.as_mut(), &def, opts)?;
         }
-
         bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
-        #[cfg(feature = "vector-hnsw")]
-        if let Some(graph) = built_graph {
-            self.hnsw_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(vec_meta_key(&self.name, field), (vector_revision, graph));
-        }
         self.invalidate_index_cache();
         self.evict_vector_cache(field);
         Ok(())
@@ -1255,21 +1239,12 @@ impl Collection {
             .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
             .collect();
         wtxn.apply_batch(&vtable, &ops)?;
-        let vector_revision = bump_revision(wtxn.as_mut(), &vtable)?;
-        let _ = vector_revision;
+        bump_revision(wtxn.as_mut(), &vtable)?;
 
-        // Remove HNSW metadata (if present) and evict from in-memory cache
+        // Remove both legacy HNSW metadata and the persistent graph.
         let hnsw_meta_key = format!("{}::{}", self.name, field);
         let _ = wtxn.delete(META_HNSW_TABLE, hnsw_meta_key.as_bytes());
-        #[cfg(feature = "vector-hnsw")]
-        {
-            let cache_key = format!("{}::{}", self.name, field);
-            let mut cache = self
-                .hnsw_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.remove(&cache_key);
-        }
+        self.drop_graph_in(wtxn.as_mut(), field)?;
 
         wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
         bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
@@ -1282,22 +1257,12 @@ impl Collection {
     /// Search for the `top_k` most similar documents to `query` using the
     /// named vector index.
     ///
-    /// When the index was created with `hnsw: Some(...)` and the `vector-hnsw`
-    /// feature is enabled, uses the HNSW approximate-nearest-neighbor graph for
-    /// sub-linear search.  Falls back automatically to the flat brute-force
-    /// scan when no HNSW graph is stored (e.g. the feature is disabled, or the
-    /// graph has not been built yet).
-    ///
-    /// HNSW graphs carry the persisted vector revision they were built from.
-    /// After an embedding changes, search falls back to exact scanning until
-    /// [`Self::upgrade_vector_index`] rebuilds the graph. Metadata-only writes
-    /// preserve the graph. Scores, filtering, and bodies share one read snapshot.
-    ///
-    /// If `pre_filter` is `Some`, only documents matching that filter are
-    /// considered. This lets you combine metadata filtering with vector
-    /// similarity in one call.  Pre-filtering forces flat search regardless of
-    /// whether an HNSW graph exists, because the graph does not support
-    /// arbitrary set-membership constraints.
+    /// Ready persistent HNSW graphs serve unfiltered queries. Flat and legacy
+    /// indexes use exact scanning; `search_vectors` reports the execution path
+    /// and can require ANN explicitly. Embedding writes maintain the graph in
+    /// the document transaction. Metadata-only updates do not touch the graph.
+    /// A supplied filter defaults to exact search; opt into filtered ANN with
+    /// `VectorQueryOptions::mode` when approximate retrieval is appropriate.
     ///
     /// Results are ordered by descending similarity score (highest first).
     #[tracing::instrument(skip(self, query, pre_filter), fields(collection = %self.name, field, top_k))]
@@ -1308,8 +1273,15 @@ impl Collection {
         top_k: usize,
         pre_filter: Option<Filter>,
     ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
-        let txn = self.backend.begin_read()?;
-        self.find_nearest_in(txn.as_ref(), field, query, top_k, pre_filter)
+        Ok(self
+            .search_vectors(
+                field,
+                query,
+                top_k,
+                pre_filter,
+                &VectorQueryOptions::default(),
+            )?
+            .hits)
     }
 
     fn matching_ids_in(
@@ -1334,7 +1306,7 @@ impl Collection {
         query: &[f32],
         top_k: usize,
         pre_filter: Option<Filter>,
-    ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
+    ) -> Result<(Vec<VectorSearchResult>, usize), TalaDbError> {
         use crate::vector::{Candidate, DEFAULT_VECTOR_CACHE_BYTES, VectorBlock};
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
@@ -1361,37 +1333,26 @@ impl Collection {
             ));
         }
         if top_k == 0 {
-            return Ok(vec![]);
+            return Ok((vec![], 0));
         }
         let table = vec_table_name(&self.name, field);
         let generation = revision(txn, &table)?;
         let cache_key = vec_meta_key(&self.name, field);
-        #[cfg(feature = "vector-hnsw")]
-        if pre_filter.is_none() {
-            let graph = self
-                .hnsw_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&cache_key)
-                .filter(|(version, _)| *version == generation)
-                .map(|(_, graph)| Arc::clone(graph));
-            if let Some(graph) = graph {
-                return self.load_results_in(txn, search_hnsw(&graph, query, &def.metric, top_k));
-            }
-        }
         let allowed = pre_filter
             .as_ref()
             .map(|f| self.matching_ids_in(txn, f))
             .transpose()?;
         if allowed.as_ref().is_some_and(HashSet::is_empty) {
-            return Ok(vec![]);
+            return Ok((vec![], 0));
         }
         let norm = crate::vector::l2_norm(query);
         let mut best: BinaryHeap<Reverse<Candidate>> = BinaryHeap::new();
+        let mut computations = 0;
         let mut score = |id: Ulid, values: &[f32]| {
             if values.len() != query.len() {
                 return;
             }
+            computations += 1;
             let similarity = crate::vector::score_with_query_norm(&def.metric, query, norm, values);
             if !similarity.is_finite() {
                 return;
@@ -1489,71 +1450,12 @@ impl Collection {
         let mut ranked: Vec<_> = best.into_iter().map(|r| r.0).collect();
         ranked.sort_unstable_by(|a, b| b.cmp(a));
         self.load_results_in(txn, ranked.into_iter().map(|c| (c.0, c.1)).collect())
+            .map(|rows| (rows, computations))
     }
 
-    /// Rebuild the HNSW graph for a vector index from the current flat vector
-    /// table.  Use this after bulk inserts or when the graph has become stale.
-    ///
-    /// The in-memory graph is **not** maintained incrementally: documents
-    /// written after the last build trigger exact search (and deleted
-    /// ones linger in the graph) until this is called again.
-    ///
-    /// Requires the `vector-hnsw` feature.  Returns `Ok(())` (no-op) when the
-    /// feature is disabled or when no HNSW options exist for the given field.
+    /// Promote a flat/legacy index or compact an existing persistent HNSW graph.
     pub fn upgrade_vector_index(&self, field: &str) -> Result<(), TalaDbError> {
-        // Metadata, vectors and graph version share one snapshot.
-        let rtxn = self.backend.begin_read()?;
-        let defs = self.read_vector_indexes(rtxn.as_ref())?;
-        let def = defs
-            .iter()
-            .find(|d| d.field == field)
-            .ok_or_else(|| TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field)))?
-            .clone();
-
-        // Load HNSW options — if not present, this index is flat-only; nothing to do
-        let hnsw_meta_key = format!("{}::{}", self.name, field);
-
-        let opts_bytes = rtxn.get(META_HNSW_TABLE, hnsw_meta_key.as_bytes())?;
-
-        let hnsw_opts: HnswOptions = match opts_bytes {
-            Some(b) => postcard::from_bytes(&b)?,
-            None => return Ok(()), // flat index — nothing to upgrade
-        };
-
-        // Read all vectors from the flat table
-        let vtable = vec_table_name(&self.name, field);
-        let vector_revision = revision(rtxn.as_ref(), &vtable)?;
-        let _ = vector_revision;
-        let all_entries = rtxn.scan_all(&vtable)?;
-
-        let mut vectors: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
-        for (key_bytes, val_bytes) in &all_entries {
-            if key_bytes.len() == 16 {
-                let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                };
-                let id = ulid::Ulid::from_bytes(arr);
-                if let Some(v) = decode_f32_vec(val_bytes) {
-                    vectors.push((id, v));
-                }
-            }
-        }
-
-        #[cfg(feature = "vector-hnsw")]
-        {
-            let graph = build_hnsw(&vectors, &def.metric, hnsw_opts.ef_construction)?;
-            let cache_key = format!("{}::{}", self.name, field);
-            let mut cache = self
-                .hnsw_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.insert(cache_key, (vector_revision, graph));
-        }
-
-        // Suppress unused-variable warning when feature is disabled
-        let _ = (hnsw_opts, vectors, def);
-        Ok(())
+        self.rebuild_vector_index(field, None)
     }
 
     /// Load full documents for a set of `(Ulid, score)` pairs.
@@ -1856,7 +1758,8 @@ impl Collection {
                 )
                 .collect();
             wtxn.apply_batch(vtable, &ops)?;
-            bump_revision(wtxn, vtable)?;
+            let generation = bump_revision(wtxn, vtable)?;
+            self.maintain_graph_in(wtxn, vtable, generation, &ops)?;
         }
 
         // --- compound indexes ---
@@ -2643,7 +2546,8 @@ impl Collection {
         for vtable in &tables.vectors {
             let ops: Vec<KvOp<'_>> = ids.iter().map(|k| KvOp::Delete(k.as_slice())).collect();
             wtxn.apply_batch(vtable, &ops)?;
-            bump_revision(wtxn, vtable)?;
+            let generation = bump_revision(wtxn, vtable)?;
+            self.maintain_graph_in(wtxn, vtable, generation, &ops)?;
         }
 
         for (cidx, ctable) in cache.compound_indexes.iter().zip(&tables.compound) {

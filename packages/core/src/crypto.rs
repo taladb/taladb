@@ -276,6 +276,10 @@ struct EncryptedWriteTxn<'a> {
 }
 
 impl<'a> WriteTxn for EncryptedWriteTxn<'a> {
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        self.inner.count_entries(table)
+    }
+
     fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), TalaDbError> {
         let encrypted = encrypt(self.key, table, key, value)?;
         self.inner.put(table, key, &encrypted)

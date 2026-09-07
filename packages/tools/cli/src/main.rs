@@ -92,7 +92,7 @@ enum Command {
     ///
     /// Use after bulk inserts or when approximate-nearest-neighbor recall has
     /// degraded due to writes since the graph was last built.
-    /// No-op when the vector-hnsw feature is disabled or the index is flat-only.
+    /// Promotes flat/legacy indexes and compacts persistent HNSW graphs.
     UpgradeVectorIndex {
         /// Path to the TalaDB database file.
         file: PathBuf,

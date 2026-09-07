@@ -3,9 +3,12 @@
 ## 0.11.4 Unreleased
 
 - Added full-text, vector, hybrid, and aggregation queries to the React Native TypeScript surface.
-- Added `db.rebuildVectorIndexes()` to warm the memory-only HNSW graphs after opening a database.
+- Replaced the memory-only `instant-distance` layer with portable, transactional HNSW graphs that persist and update on browser, Node.js, and React Native.
+- Added configurable graph construction and query-time `efSearch`, exact rescoring, scalar/binary quantization, explicit exact/ANN modes, score thresholds, pagination, and grouping.
+- Added persistent index status plus resumable, cancellable batch rebuilds with progress reporting; `db.rebuildVectorIndexes()` remains available for maintenance and legacy migration.
+- Added filtered ANN as an explicit opt-in while keeping filtered queries exact by default, plus recall measurement against exact ground truth.
 - Fixed the `build:cbindgen` script and config, which regenerated an unusable FFI header.
-- Documented the HNSW warm requirement, hybrid search, and package choice in the React Native guide.
+- Documented persistent HNSW lifecycle, mobile-safe rebuild scheduling, hybrid search, and package choice in the React Native guide.
 - Added a CI job that compiles the React Native C++ glue and checks the generated FFI header.
 
 ## 0.11.3 — 2026-09-06

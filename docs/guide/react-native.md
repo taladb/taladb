@@ -214,37 +214,23 @@ const filtered = await articles.findNearest('embedding', queryVec, 5, {
 
 Passing a `Float32Array` as the query vector takes a zero-copy path across JSI.
 
-### Approximate search: warm the index at startup
+### Persistent approximate search on mobile
 
-The index above is **flat** — exact, and linear in the number of vectors. Ask for an HNSW graph instead when the collection grows past a few thousand rows:
+React Native uses the same transactional HNSW implementation as browser and Node. Graph nodes and links live in the database; app restarts require no warm-up. Inserts, embedding updates and deletes maintain the index atomically.
 
 ```ts
 await articles.createVectorIndex('embedding', {
-  dimensions: 384,
-  metric: 'cosine',
-  indexType: 'hnsw',
-  hnswEfConstruction: 200,
+  dimensions: 384, indexType: 'hnsw', hnswM: 16, quantization: 'scalar',
 })
+const results = await articles.searchVectors('embedding', queryVector, 10,
+  { category: 'notes' }, { mode: 'ann', efSearch: 200, groupBy: 'parentId' })
 ```
 
-**HNSW graphs are held in memory and never written to disk.** The index is built in one shot — there is no incremental insert — so the graph is empty in every new process, and a write to an indexed field drops it. While no graph is present `findNearest` still returns correct results; it just quietly takes the exact path and scans the whole vector table.
+Advanced vector operations use the native background executor. For a large rebuild or flat-to-HNSW promotion, use `rebuildVectorIndex` with `batchSize`, `onProgress` and `signal`; the default batch is 32 insertions and cancellation takes effect between batches. `beginVectorBuild`/`stepVectorBuild` let the app resume a persisted build after interruption. The existing graph stays available until the replacement commits.
 
-On a phone that matters, because the OS restarts your app often. Warm the graphs after opening:
+Graph record caching is bounded at 8 MiB per operation. This excludes query queues, result documents, the database page cache and original vectors. Scalar/binary quantization compresses graph vectors; measure memory, recall and latency on your actual mobile devices. All scores are rescored from full precision originals.
 
-```ts
-const db = await openDB('myapp.db')
-
-// Rebuilds every HNSW graph in the database. Reads every indexed vector,
-// so keep it off the first frame.
-await db.rebuildVectorIndexes?.()
-```
-
-`rebuildVectorIndexes` is React Native only and `undefined` elsewhere, since no other platform drops the graphs between calls. When you know the one field you need, `await articles.upgradeVectorIndex('embedding')` warms just that one.
-
-Two more things worth knowing:
-
-- A `filter` always takes the exact path, because the graph cannot be traversed under an arbitrary predicate. That is usually what you want for a scoped search: it is exact, and it only reads the vectors that survive the filter.
-- HNSW rejects the `dot` metric. L2-normalise your vectors and use `cosine`.
+The direct `@taladb/react-native` collection also exposes the asynchronous vector methods. Its legacy `createVectorIndex` and `upgradeVectorIndex` methods are synchronous; use batched `rebuildVectorIndex` when working with an existing large collection. See [the complete vector API](/api/vector-search).
 
 ### Keyword and hybrid search
 
@@ -316,5 +302,5 @@ Make sure Xcode command-line tools are active: `xcode-select --install`. Then re
 
 - **Expo Go** — not supported. You must use a custom dev client (`expo prebuild`).
 - **Live queries (`subscribe`)** — polling-based on React Native; native file-watch push is planned for a future release.
-- **HNSW graphs are not persisted** — they are rebuilt in memory per process. See [warm the index at startup](#approximate-search-warm-the-index-at-startup).
-- **Vectors are stored as `f32`** — there is no quantization, so an index costs roughly `dimensions * 4` bytes per document.
+- **ANN recall depends on the workload** — use `measureVectorRecall` and test latency/memory on target devices.
+- **Original vectors are stored as `f32`** — scalar or binary quantization compresses the HNSW graph vectors, while originals remain available for exact search and rescoring.

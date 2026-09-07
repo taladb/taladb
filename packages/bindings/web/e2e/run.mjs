@@ -82,6 +82,15 @@ try {
     await page.close();
   }
 
+  if (want('9')) {
+    const { run } = await import('./phase9-ann.mjs');
+    const r = createRunner('ann');
+    const page = await newTab(browser, { label: 'ANN' });
+    await run(page, r, browser);
+    all.push(...r.results);
+    await page.close();
+  }
+
   if (want('8')) {
     console.log('\n── Phase 8: mixed collections ───────────────────────────');
     const { run } = await import('./phase8-mixed.mjs');

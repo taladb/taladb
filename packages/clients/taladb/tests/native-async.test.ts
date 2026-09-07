@@ -34,7 +34,9 @@ it('orders native writes, index reads, and close on the actual adapter async pat
 });
 
 it('passes HNSW configuration and native errors through without claiming success', async () => {
-  const callAsync = vi.fn(async (op: string) => {
+  const callAsync = vi.fn(async (op: string, args: any[]) => {
+    if (op === 'vectorCommand' && args[1].op === 'beginBuild') return { id: 'build', state: 'building', processed: 0, total: 0 };
+    if (op === 'vectorCommand' && args[1].op === 'stepBuild') return { id: 'build', state: 'ready', processed: 0, total: 0 };
     if (op === 'insert') throw new Error('DuplicateId');
   });
   vi.stubGlobal('nativeCallSyncHook', () => {});
@@ -42,7 +44,7 @@ it('passes HNSW configuration and native errors through without claiming success
   const db = await openDB('test');
   const col = db.collection('docs');
   await col.createVectorIndex('v', { dimensions: 3, indexType: 'hnsw' });
-  expect(callAsync).toHaveBeenCalledWith('createVectorIndex', ['docs', 'v', 3, { hnsw: { m: 32, ef_construction: 200 } }]);
+  expect(callAsync).toHaveBeenCalledWith('vectorCommand', ['docs', { op: 'beginBuild', field: 'v', options: { m: 32, efConstruction: 200, quantization: 'none' } }]);
   await expect(col.insert({})).rejects.toThrow('DuplicateId');
   await db.close();
 });

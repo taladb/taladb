@@ -531,7 +531,7 @@ impl CollectionNode {
     ///
     /// - `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
     /// - `index_type` — optional: `"flat"` (default) or `"hnsw"`.
-    /// - `hnsw_m` — HNSW connectivity (only 32 is supported).
+    /// - `hnsw_m` — HNSW connectivity (2–128).
     /// - `hnsw_ef_construction` — build quality (default 200).
     #[napi(js_name = "createVectorIndex")]
     pub fn create_vector_index(
@@ -556,8 +556,7 @@ impl CollectionNode {
         self.inner.drop_vector_index(&field).map_err(err_to_napi)
     }
 
-    /// Rebuild the HNSW graph for a vector index from the current flat data.
-    /// No-op when the feature is disabled or the index is flat-only.
+    /// Promote a flat/legacy vector index or compact its persistent HNSW graph.
     #[napi(js_name = "upgradeVectorIndex")]
     pub fn upgrade_vector_index(&self, field: String) -> napi::Result<()> {
         self.inner.upgrade_vector_index(&field).map_err(err_to_napi)
@@ -674,6 +673,20 @@ impl CollectionNode {
                 })
             })
             .collect())
+    }
+
+    /// Internal command protocol for advanced vector search and index lifecycle.
+    #[napi(js_name = "vectorCommand")]
+    pub fn vector_command(&self, request: JsonValue) -> napi::Result<JsonValue> {
+        run_vector_command(&self.inner, request)
+    }
+
+    #[napi(js_name = "vectorCommandAsync", ts_return_type = "Promise<any>")]
+    pub fn vector_command_async(&self, request: JsonValue) -> AsyncTask<VectorCommandTask> {
+        AsyncTask::new(VectorCommandTask {
+            collection: Arc::clone(&self.inner),
+            request,
+        })
     }
 
     /// Find the `top_k` nearest documents to `query`.
@@ -1047,5 +1060,32 @@ impl Task for DeleteManyTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         Ok(output as u32)
+    }
+}
+
+fn run_vector_command(collection: &Collection, request: JsonValue) -> napi::Result<JsonValue> {
+    collection
+        .vector_command(
+            request,
+            &|v| {
+                json_to_filter(v)
+                    .map_err(|e| taladb_core::TalaDbError::InvalidFilter(e.to_string()))
+            },
+            &doc_to_json,
+        )
+        .map_err(err_to_napi)
+}
+pub struct VectorCommandTask {
+    collection: Arc<Collection>,
+    request: JsonValue,
+}
+impl Task for VectorCommandTask {
+    type Output = JsonValue;
+    type JsValue = napi::JsUnknown;
+    fn compute(&mut self) -> napi::Result<JsonValue> {
+        run_vector_command(&self.collection, self.request.take())
+    }
+    fn resolve(&mut self, env: Env, output: JsonValue) -> napi::Result<napi::JsUnknown> {
+        env.to_js_value(&output)
     }
 }

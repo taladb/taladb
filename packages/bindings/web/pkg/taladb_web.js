@@ -85,7 +85,7 @@ export class CollectionWasm {
      * `dimensions`           - expected vector length.
      * `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
      * `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
-     * `hnsw_m`               - HNSW connectivity (only 32 is supported).
+     * `hnsw_m`               - HNSW connectivity (2–128, default 32).
      * `hnsw_ef_construction` - build quality (default 200).
      * @param {string} field
      * @param {number} dimensions
@@ -351,6 +351,31 @@ export class CollectionWasm {
             throw takeFromExternrefTable0(ret[0]);
         }
     }
+    /**
+     * Internal JSON protocol for advanced vector search and index lifecycle.
+     * @param {string} request_json
+     * @returns {string}
+     */
+    vectorCommand(request_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(request_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.collectionwasm_vectorCommand(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
 }
 if (Symbol.dispose) CollectionWasm.prototype[Symbol.dispose] = CollectionWasm.prototype.free;
 
@@ -606,7 +631,7 @@ export class WorkerDB {
      *
      * - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
      * - `index_type`: `"flat"` (default) | `"hnsw"`
-     * - `hnsw_m`: HNSW connectivity (only 32 is supported)
+     * - `hnsw_m`: HNSW connectivity (2–128, default 32)
      * - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
      * @param {string} collection
      * @param {string} field
@@ -1220,7 +1245,7 @@ export class WorkerDB {
      * Rebuild the HNSW graph for a vector index from the current flat vector
      * table.  Use after bulk inserts or when ANN recall has degraded.
      *
-     * No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
+     * A flat index is promoted with default HNSW options.
      * @param {string} collection
      * @param {string} field
      */
@@ -1282,6 +1307,34 @@ export class WorkerDB {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Internal JSON protocol for advanced vector search and index lifecycle.
+     * @param {string} collection
+     * @param {string} request_json
+     * @returns {string}
+     */
+    vectorCommand(collection, request_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(request_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_vectorCommand(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
     }
     /**
      * This collection's write generation — a counter bumped once per committed
@@ -1563,6 +1616,9 @@ function __wbg_get_imports() {
             const ret = arg0.getFile();
             return ret;
         },
+        __wbg_getRandomValues_3f44b700395062e5: function() { return handleError(function (arg0, arg1) {
+            globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
+        }, arguments); },
         __wbg_getRandomValues_76dfc69825c9c552: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
@@ -1786,6 +1842,14 @@ function __wbg_get_imports() {
             const ret = Date.now();
             return ret;
         },
+        __wbg_now_e7c6795a7f81e10f: function(arg0) {
+            const ret = arg0.now();
+            return ret;
+        },
+        __wbg_performance_3fcf6e32a7e1ed0a: function(arg0) {
+            const ret = arg0.performance;
+            return ret;
+        },
         __wbg_prototypesetcall_d62e5099504357e6: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
         },
@@ -1881,7 +1945,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 564, function: Function { arguments: [Externref], shim_idx: 565, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 618, function: Function { arguments: [Externref], shim_idx: 619, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen_ecca2db5e46bf455___closure__destroy___dyn_core_f0fd674eaa06beef___ops__function__FnMut__wasm_bindgen_ecca2db5e46bf455___JsValue____Output___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___, wasm_bindgen_ecca2db5e46bf455___convert__closures_____invoke___wasm_bindgen_ecca2db5e46bf455___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_ecca2db5e46bf455___JsError___true_);
             return ret;
         },

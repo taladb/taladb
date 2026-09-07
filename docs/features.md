@@ -55,22 +55,18 @@ const results = await articles.findNearest('embedding', queryVec, 5, {
 
 This is the pattern cloud vector databases (Qdrant, Weaviate, Pinecone) charge for — running entirely on device, with no network latency and no data leaving the user's device.
 
-### Optional HNSW index (Node.js)
+### Persistent HNSW index
 
-The default index is **flat** — an exact scan over every vector, with no approximation and no recall trade-off. On Node.js (since v0.8.3) you can opt into an approximate HNSW graph for larger corpora:
+Browser, React Native and Node all support exact vectors and persistent HNSW. Graph updates commit with document writes and survive restarts. HNSW offers connectivity tuning, scalar/binary quantization with rescoring, and explicit filtered ANN. Filtered queries remain exact by default.
 
 ```ts
 await articles.createVectorIndex('embedding', {
-  dimensions: 384,
-  indexType: 'hnsw', // default: 'flat'
+  dimensions: 384, indexType: 'hnsw', hnswM: 16, quantization: 'scalar',
 })
-
-// The graph is built at creation time and NOT updated by later writes —
-// rebuild it after bulk ingests (e.g. during an idle period):
-await articles.upgradeVectorIndex('embedding')
+const status = await articles.vectorIndexStatus('embedding')
 ```
 
-Two caveats before reaching for it: graph construction is CPU-intensive (a one-off cost that grows quickly with collection size), and recall depends on your data's structure — HNSW is approximate, so measure both speed and recall on your own embeddings. The flat index remains the right default for most on-device corpora, and is what ships on web and React Native.
+See [vector search](/api/vector-search) for query controls, grouping, thresholds, resumable rebuilds and recall evaluation. Measure ANN quality and latency on representative embeddings and devices.
 
 ### Dropping a vector index
 
