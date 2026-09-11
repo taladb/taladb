@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.4 Unreleased
+## 0.11.4 - 2026-09-12
 
 - Added full-text, vector, hybrid, and aggregation queries to the React Native TypeScript surface.
 - Replaced the memory-only `instant-distance` layer with portable, transactional HNSW graphs that persist and update on browser, Node.js, and React Native.
