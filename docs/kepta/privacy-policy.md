@@ -9,7 +9,7 @@ next: false
 
 # Privacy Policy for Kepta
 
-**Last updated: 20 September 2026**
+**Last updated: 4 October 2026**
 
 Kepta is a personal memory app for Android, published by ThinkGrid Labs. It is
 built on [TalaDB](/introduction), an embedded database that runs entirely on the
@@ -19,7 +19,9 @@ published by the same developer.
 ## The short version
 
 **Kepta collects nothing.** There is no account, no server, no analytics, no
-advertising, and no crash reporting. Everything you write stays on your phone.
+advertising, and no automatic crash reporting. Everything you write stays on
+your phone. If something goes wrong, you can choose to email us a problem
+report — see [Problem reports](#problem-reports).
 
 This is not a promise about how we choose to behave. The released app is built
 **without Android's internet permission**, so the operating system will not let
@@ -43,9 +45,28 @@ the app capable of transmitting it.
 
 ## What we receive
 
-Nothing. We have no servers that Kepta communicates with, so we do not receive,
-store, process, or have any means of accessing your information. We cannot read
-your records, and we cannot recover them for you if you lose access to them.
+Nothing, unless you send us a problem report. We have no servers that Kepta
+communicates with, so we do not receive, store, process, or have any means of
+accessing your information. We cannot read your records, and we cannot recover
+them for you if you lose access to them.
+
+## Problem reports
+
+Kepta keeps a short record of errors on your phone: what failed, where in the
+app's code, and which version of Kepta on which model of phone and version of
+Android. It never contains your things, memories, names, photos or anything
+else you wrote — the code that writes it does not read your records. It is
+deleted when you uninstall the app.
+
+If Kepta closes unexpectedly, or you choose **More → Report a problem**, the app
+offers to send that record to us. It opens your email app, or another app you
+pick, with the report already filled in and addressed to us. You can read
+exactly what it contains, change it or delete it before sending, and nothing is
+sent if you do not send it. Kepta does not send it itself — it has no internet
+permission.
+
+If you do send one, we receive the report and your email address, and use them
+only to find and fix the problem and to reply to you.
 
 ## Permissions the app requests
 
