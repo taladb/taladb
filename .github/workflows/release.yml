@@ -4,11 +4,11 @@ on:
   push:
     tags:
       - "v*" # v0.1.0, v1.2.3-beta.1, etc.
-    branches:
-      - main # allowed to push tags from main only (enforced below)
 
-# Only run when a version tag is pushed.
-# The `if:` on the build jobs ensures nothing runs on plain `main` pushes.
+# Only a version tag starts a release. A tag must point at a commit on main,
+# which `preflight` enforces. There is deliberately no `branches: [main]`
+# trigger: it started this workflow on every push to main, where every job
+# skipped — a "Release" run on each docs commit that released nothing.
 
 env:
   CARGO_TERM_COLOR: always

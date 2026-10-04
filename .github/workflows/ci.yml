@@ -7,10 +7,20 @@ on:
   # the second run validates the merge result, not the branch in isolation.
   push:
     branches: [main, dev]
+    # Changes that cannot affect a build or a test. Keep in sync with the
+    # `Detect code changes` step below, which applies the same list to PRs.
+    #  - scripts/** is release, benchmark and local-dev tooling; every script
+    #    CI runs lives under packages/.
+    #  - the other workflows are their own triggers; editing one does not
+    #    change what CI builds.
     paths-ignore:
       - "**.md"
       - "docs/**"
       - "LICENSE*"
+      - "scripts/**"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/performance.yml"
   # No paths-ignore here on purpose: `ci-pass` is meant to be the required
   # status check, and a skipped workflow never reports one — a docs-only PR
   # would hang forever on "Waiting for status". `setup` detects docs-only PRs
@@ -55,8 +65,9 @@ jobs:
         with:
           fetch-depth: 2
 
-      # The same files the push trigger ignores. Pushes and manual runs always
-      # build: the push filter already dropped docs-only pushes.
+      # The same files the push trigger ignores — keep the two lists in sync.
+      # Pushes and manual runs always build: the push filter already dropped
+      # pushes that touch nothing else.
       - name: Detect code changes
         id: changes
         run: |
@@ -67,7 +78,8 @@ jobs:
           # HEAD is GitHub's merge of the PR into its base; its first parent is the base.
           changed="$(git diff --name-only HEAD^1 HEAD)"
           echo "$changed"
-          if grep -qvE '^docs/|\.md$|^LICENSE' <<<"$changed"; then code=true; else code=false; fi
+          ignored='^docs/|\.md$|^LICENSE|^scripts/|^\.github/workflows/(docs|release|performance)\.yml$'
+          if grep -qvE "$ignored" <<<"$changed"; then code=true; else code=false; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "Code changed: $code"
 
