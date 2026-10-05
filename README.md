@@ -13,7 +13,7 @@ Store documents, metadata, and vectors together. Query structured data and seman
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20Node.js%20%7C%20React%20Native%20%7C%20Android%20%7C%20iOS-green)](https://github.com/taladb/taladb)
 [![Sponsor](https://img.shields.io/badge/Sponsor-taladb-red?logo=github-sponsors)](https://github.com/sponsors/tala-sh)
 
-**[Documentation](https://taladb.dev) · [Web Demo](https://taladb-playground.vercel.app/) · [React Native Demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) · [Android Demo](#) · [iOS Demo](#)**<br/>
+**[Documentation](https://taladb.dev) · [Web Demo](https://demo-web.taladb.dev/) · [React Native Demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) · [Android Demo](#) · [iOS Demo](#)**<br/>
 **[Web Guide](https://taladb.dev/guide/web) · [Node.js Guide](https://taladb.dev/guide/node) · [React Native Guide](https://taladb.dev/guide/react-native) · [Kotlin Guide](https://taladb.dev/guide/android) · [Swift Guide](https://taladb.dev/guide/swift)**
 
 </div>
