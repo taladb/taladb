@@ -11,12 +11,9 @@ indexes, [vector search](/api/vector-search),
 [full-text and hybrid search](/api/search), live queries and encryption at
 rest, all on the device.
 
-::: warning Early release
-The Kotlin package is new. Its API may still change before it is published,
-and it is **not on Maven Central yet**. To try it now, build it from source
-(see [below](#build-from-source)). Feedback and issues are welcome on
-[taladb/taladb-kotlin](https://github.com/taladb/taladb-kotlin).
-:::
+To see it in a real app, install [Notewell](https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell) from Google Play, a
+native Kotlin notebook built on this package. Feedback and issues are welcome
+on [taladb/taladb-kotlin](https://github.com/taladb/taladb-kotlin).
 
 ## Requirements
 
@@ -27,7 +24,7 @@ and it is **not on Maven Central yet**. To try it now, build it from source
 
 ## Installation
 
-Once published, add the dependency and the serialization plugin:
+Add the dependency and the serialization plugin:
 
 ```kotlin
 plugins {
@@ -35,13 +32,14 @@ plugins {
 }
 
 dependencies {
-    implementation("dev.taladb:taladb-android:<version>")
+    implementation("dev.taladb:taladb-android:0.1.1")
 }
 ```
 
 ### Build from source
 
-Until then, build the AAR from the repository. You need JDK 17, the Android
+To work on the package itself or try unreleased engine changes, build the AAR
+from the repository. You need JDK 17, the Android
 SDK with an NDK, Rust with `cargo-ndk`, and a checkout of this engine next to
 it:
 
@@ -50,11 +48,11 @@ git clone https://github.com/taladb/taladb
 git clone https://github.com/taladb/taladb-kotlin
 cd taladb-kotlin
 scripts/build-engine.sh ../taladb                       # builds the engine for every ABI
-./gradlew :taladb:publishToMavenLocal                    # dev.taladb:taladb-android:0.1.0-SNAPSHOT
+./gradlew :taladb:publishToMavenLocal                    # dev.taladb:taladb-android:<version>
 ```
 
-Then add `mavenLocal()` to your app's repositories and depend on
-`dev.taladb:taladb-android:0.1.0-SNAPSHOT`.
+Then add `mavenLocal()` to your app's repositories and depend on the version
+in the repository's `gradle.properties` (`VERSION_NAME`).
 
 ## Quick start
 

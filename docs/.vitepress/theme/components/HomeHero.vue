@@ -26,7 +26,10 @@
             Web Demo →
           </a>
           <a href="https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta" class="btn btn-secondary" target="_blank" rel="noopener">
-            Mobile Demo →
+            React Native Demo →
+          </a>
+          <a href="https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell" class="btn btn-secondary" target="_blank" rel="noopener">
+            Android Demo →
           </a>
           <a href="https://github.com/taladb/taladb" class="btn btn-ghost" target="_blank" rel="noopener">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

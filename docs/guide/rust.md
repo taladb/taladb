@@ -11,12 +11,8 @@ used directly — documents, filters, indexes,
 [vector search](/api/vector-search), [full-text search](/api/search), live
 queries and encryption at rest, in one file, inside your process.
 
-::: warning Early release
-The `taladb` crate is new, and its API may still change between minor
-versions before 1.0. It is published to [crates.io](https://crates.io/crates/taladb)
-with each TalaDB release, starting with 0.12.0; before that reaches crates.io,
-use the git dependency below. The full API reference is on [docs.rs](https://docs.rs/taladb).
-:::
+The `taladb` crate is published to [crates.io](https://crates.io/crates/taladb)
+with each TalaDB release. The full API reference is on [docs.rs](https://docs.rs/taladb).
 
 ## Installation
 
@@ -25,7 +21,7 @@ cargo add taladb serde --features serde/derive
 cargo add serde_json
 ```
 
-Until a release reaches crates.io, depend on the repository instead:
+To try unreleased changes, depend on the repository instead:
 
 ```toml
 taladb = { git = "https://github.com/taladb/taladb" }

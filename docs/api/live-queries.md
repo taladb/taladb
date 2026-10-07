@@ -36,7 +36,7 @@ stop() // unsubscribe
 
 ::: tip Native apps
 The [Kotlin](/guide/android#live-queries) and [Swift](/guide/swift#live-queries)
-packages (early release) expose this event-driven watch directly — as a `Flow`
+packages expose this event-driven watch directly — as a `Flow`
 and an `AsyncThrowingStream` — rather than polling.
 :::
 

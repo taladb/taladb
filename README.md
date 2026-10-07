@@ -13,7 +13,7 @@ Store documents, metadata, and vectors together. Query structured data and seman
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20Node.js%20%7C%20React%20Native%20%7C%20Android%20%7C%20iOS-green)](https://github.com/taladb/taladb)
 [![Sponsor](https://img.shields.io/badge/Sponsor-taladb-red?logo=github-sponsors)](https://github.com/sponsors/tala-sh)
 
-**[Documentation](https://taladb.dev) · [Web Demo](https://demo-web.taladb.dev/) · [React Native Demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) · [Android Demo](#) · [iOS Demo](#)**<br/>
+**[Documentation](https://taladb.dev) · [Web Demo](https://demo-web.taladb.dev/) · [React Native Demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) · [Android Demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell) · [iOS Demo](#)**<br/>
 **[Web Guide](https://taladb.dev/guide/web) · [Node.js Guide](https://taladb.dev/guide/node) · [React Native Guide](https://taladb.dev/guide/react-native) · [Kotlin Guide](https://taladb.dev/guide/android) · [Swift Guide](https://taladb.dev/guide/swift)**
 
 </div>
@@ -46,13 +46,13 @@ The same Rust core powers every platform:
 | Browser | `@taladb/web` | `wasm-bindgen` + OPFS via DedicatedWorker | Stable |
 | Node.js | `@taladb/node` | `napi-rs` native module | Stable |
 | React Native | `@taladb/react-native` | JSI HostObject (C FFI via `cbindgen`) | Stable |
-| Android (Kotlin) | [`taladb-kotlin`](https://github.com/taladb/taladb-kotlin) · `dev.taladb:taladb-android` | JNI over the C FFI · [guide](https://taladb.dev/guide/android) | Early release |
-| iOS & macOS (Swift) | [`taladb-swift`](https://github.com/taladb/taladb-swift) | SwiftPM over the C FFI · [guide](https://taladb.dev/guide/swift) | Early release |
-| Rust | [`taladb`](https://crates.io/crates/taladb) | The engine crate itself · [guide](https://taladb.dev/guide/rust) | Early release |
+| Android (Kotlin) | [`taladb-kotlin`](https://github.com/taladb/taladb-kotlin) · `dev.taladb:taladb-android` | JNI over the C FFI · [guide](https://taladb.dev/guide/android) | Stable |
+| iOS & macOS (Swift) | [`taladb-swift`](https://github.com/taladb/taladb-swift) | SwiftPM over the C FFI · [guide](https://taladb.dev/guide/swift) | Stable |
+| Rust | [`taladb`](https://crates.io/crates/taladb) | The engine crate itself · [guide](https://taladb.dev/guide/rust) | Stable |
 
 On the web, Node.js, and React Native, application code uses the unified `taladb` package with a single TypeScript API. Kotlin, Swift, and Rust apps get idiomatic native APIs over the same engine, with the same JSON filters, vector and full-text search, and live queries.
 
-Early-release packages may still change their APIs, and the Kotlin and Swift packages are not yet published to Maven Central or tagged for SwiftPM.
+The Kotlin package is on Maven Central, the Swift package is tagged for Swift Package Manager, and the Rust crate is on crates.io.
 
 ## Highlights
 
@@ -108,14 +108,14 @@ pnpm add taladb @taladb/node                 # required
 
 ```kotlin
 dependencies {
-    implementation("dev.taladb:taladb-android:<version>")
+    implementation("dev.taladb:taladb-android:0.1.1")
 }
 ```
 
 **iOS & macOS (Swift)** — [`taladb-swift`](https://github.com/taladb/taladb-swift), iOS 13+ / macOS 10.15+, Swift 5.9+
 
 ```swift
-.package(url: "https://github.com/taladb/taladb-swift", from: "<version>")
+.package(url: "https://github.com/taladb/taladb-swift", from: "0.1.1")
 // target dependency: .product(name: "TalaDB", package: "taladb-swift")
 ```
 
@@ -125,7 +125,7 @@ dependencies {
 cargo add taladb
 ```
 
-The Kotlin and Swift packages are not on Maven Central or tagged for SwiftPM yet; until they are, build them from source as described in the [Kotlin guide](https://taladb.dev/guide/android#build-from-source) and [Swift guide](https://taladb.dev/guide/swift#build-from-source). The examples below use the TypeScript API; each native guide has the same examples in Kotlin, Swift or Rust.
+The examples below use the TypeScript API; each native guide has the same examples in Kotlin, Swift or Rust.
 
 ### Quick start
 

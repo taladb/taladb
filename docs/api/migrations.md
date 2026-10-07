@@ -17,7 +17,7 @@ storage migrations** (index-encoding format, etc.), which run automatically at
 every open with no configuration — you never write those.
 
 The native [Kotlin](/guide/android#migrations) and
-[Swift](/guide/swift#migrations) packages (early release) run migrations the
+[Swift](/guide/swift#migrations) packages run migrations the
 same way, passed to their `open`.
 :::
 

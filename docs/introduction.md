@@ -25,7 +25,7 @@ The same Rust core powers every runtime:
 
 All three surfaces expose a single unified TypeScript API from the `taladb` package, so application code never needs to branch on platform.
 
-Native apps can use the same engine without React Native through first-party packages over the C FFI — [Android (Kotlin)](/guide/android) and [iOS & macOS (Swift)](/guide/swift). Rust applications use the engine directly as the [`taladb` crate](/guide/rust). All three are **early releases**.
+Native apps can use the same engine without React Native through first-party packages over the C FFI — [Android (Kotlin)](/guide/android) and [iOS & macOS (Swift)](/guide/swift). Rust applications use the engine directly as the [`taladb` crate](/guide/rust).
 
 ## Architecture overview
 
@@ -145,6 +145,6 @@ They meet where an app needs both — locally queryable data that must also reac
 
 TalaDB is production-ready. The Rust core, browser WASM, Node.js bindings, and React Native JSI layer are fully functional, tested, and stable across all supported platforms.
 
-The native [Kotlin](/guide/android) and [Swift](/guide/swift) packages are an **early release**: they cover documents, indexes, vector, full-text and hybrid search, live queries, migrations and encryption, and are tested against the same engine, but their APIs may still change and they are not yet published to Maven Central or SwiftPM.
+The native [Kotlin](/guide/android) and [Swift](/guide/swift) packages cover documents, indexes, vector, full-text and hybrid search, live queries, migrations and encryption, and are tested against the same engine. Kotlin is on Maven Central as `dev.taladb:taladb-android`, and Swift is tagged for Swift Package Manager.
 
-Try the [web demo](https://demo-web.taladb.dev/) to see TalaDB running in the browser with OPFS persistence and on-device semantic search, or install the [mobile demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) from Google Play to see it running on React Native. Follow the [GitHub repository](https://github.com/taladb/taladb) for progress updates.
+Try the [web demo](https://demo-web.taladb.dev/) to see TalaDB running in the browser with OPFS persistence and on-device semantic search. Two apps on Google Play show it on a phone: the [React Native demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) and the [Android demo](https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell), a native Kotlin app. Follow the [GitHub repository](https://github.com/taladb/taladb) for progress updates.

@@ -11,13 +11,8 @@ indexes, [vector search](/api/vector-search),
 [full-text and hybrid search](/api/search), live queries and encryption at
 rest, all on the device.
 
-::: warning Early release
-The Swift package is new. Its API may still change before it is published,
-and **no tagged SwiftPM release exists yet** — the prebuilt engine it links
-ships with an upcoming TalaDB release. To try it now, build it from source
-(see [below](#build-from-source)). Feedback and issues are welcome on
+Feedback and issues are welcome on
 [taladb/taladb-swift](https://github.com/taladb/taladb-swift).
-:::
 
 ## Requirements
 
@@ -26,11 +21,11 @@ ships with an upcoming TalaDB release. To try it now, build it from source
 
 ## Installation
 
-Once released, add the package:
+Add the package:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/taladb/taladb-swift", from: "<version>"),
+    .package(url: "https://github.com/taladb/taladb-swift", from: "0.1.1"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [.product(name: "TalaDB", package: "taladb-swift")]),
@@ -39,8 +34,10 @@ targets: [
 
 ### Build from source
 
-On a Mac with Rust installed, build the engine's xcframework from a checkout of
-this repository, then use the package locally:
+SwiftPM downloads the prebuilt engine (`TalaDBFFI.xcframework`) and verifies
+its checksum, so this step is only for working on the package itself or trying
+unreleased engine changes. On a Mac with Rust installed, build the engine's
+xcframework from a checkout of this repository, then use the package locally:
 
 ```sh
 git clone https://github.com/taladb/taladb

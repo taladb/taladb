@@ -22,7 +22,15 @@
           target="_blank"
           rel="noopener"
         >
-          Mobile Demo →
+          React Native Demo →
+        </a>
+        <a
+          href="https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell"
+          class="btn btn-secondary btn-lg"
+          target="_blank"
+          rel="noopener"
+        >
+          Android Demo →
         </a>
       </div>
       <div class="cta-links">

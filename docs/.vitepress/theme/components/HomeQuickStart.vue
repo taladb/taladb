@@ -212,13 +212,13 @@ const pinned = await notes.find({ pinned: true })`,
     steps: [
       {
         title: 'Add the dependency',
-        desc: 'Not on Maven Central yet — until it is, build the AAR from source as the Android guide describes.',
+        desc: 'Published on Maven Central. Typed collections also need the kotlinx.serialization plugin.',
         lang: 'build.gradle.kts',
         raw: `dependencies {
-    implementation("dev.taladb:taladb-android:<version>")
+    implementation("dev.taladb:taladb-android:0.1.1")
 }`,
         code: `dependencies <span class="token-punctuation">{</span>
-    <span class="token-function">implementation</span><span class="token-punctuation">(</span><span class="token-string">"dev.taladb:taladb-android:&lt;version&gt;"</span><span class="token-punctuation">)</span>
+    <span class="token-function">implementation</span><span class="token-punctuation">(</span><span class="token-string">"dev.taladb:taladb-android:0.1.1"</span><span class="token-punctuation">)</span>
 <span class="token-punctuation">}</span>`,
       },
       {
@@ -257,11 +257,11 @@ notes<span class="token-punctuation">.</span><span class="token-function">insert
     steps: [
       {
         title: 'Add the package',
-        desc: 'No tagged SwiftPM release yet — until there is, build it from source as the Swift guide describes.',
+        desc: 'iOS 13+ and macOS 10.15+. SwiftPM downloads the prebuilt engine and verifies its checksum.',
         lang: 'Package.swift',
-        raw: `.package(url: "https://github.com/taladb/taladb-swift", from: "<version>")
+        raw: `.package(url: "https://github.com/taladb/taladb-swift", from: "0.1.1")
 // target dependency: .product(name: "TalaDB", package: "taladb-swift")`,
-        code: `<span class="token-punctuation">.</span><span class="token-function">package</span><span class="token-punctuation">(</span>url<span class="token-punctuation">:</span> <span class="token-string">"https://github.com/taladb/taladb-swift"</span><span class="token-punctuation">,</span> from<span class="token-punctuation">:</span> <span class="token-string">"&lt;version&gt;"</span><span class="token-punctuation">)</span>
+        code: `<span class="token-punctuation">.</span><span class="token-function">package</span><span class="token-punctuation">(</span>url<span class="token-punctuation">:</span> <span class="token-string">"https://github.com/taladb/taladb-swift"</span><span class="token-punctuation">,</span> from<span class="token-punctuation">:</span> <span class="token-string">"0.1.1"</span><span class="token-punctuation">)</span>
 <span class="token-comment">// target dependency: .product(name: "TalaDB", package: "taladb-swift")</span>`,
       },
       {
