@@ -179,6 +179,7 @@ pub fn filter_from_json_object(v: &Json) -> Option<Filter> {
 /// `$pull`, applied in that order. An empty update or an unknown operator is
 /// an error.
 pub fn update_from_json(v: &Json) -> Result<Update, TalaDbError> {
+    check_json_depth(v)?;
     update_from_json_object(v)
         .ok_or_else(|| TalaDbError::InvalidOperation(format!("invalid update: {v}")))
 }

@@ -135,6 +135,65 @@ fn restore_from_empty_bytes_returns_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn snapshot_rejects_trailing_bytes_and_every_truncated_prefix() {
+    let db = Database::open_in_memory().unwrap();
+    db.collection("docs")
+        .unwrap()
+        .insert(vec![("body".into(), s("snapshot"))])
+        .unwrap();
+    let bytes = db.export_snapshot().unwrap();
+    for end in 0..bytes.len() {
+        assert!(
+            matches!(
+                Database::restore_from_snapshot(&bytes[..end]),
+                Err(taladb::TalaDbError::InvalidSnapshot)
+            ),
+            "prefix {end}"
+        );
+    }
+    for suffix in [&[0][..], &bytes[..]] {
+        let mut bad = bytes.clone();
+        bad.extend_from_slice(suffix);
+        assert!(matches!(
+            Database::restore_from_snapshot(&bad),
+            Err(taladb::TalaDbError::InvalidSnapshot)
+        ));
+    }
+}
+
+#[test]
+fn snapshot_rejects_impossible_counts_and_lengths_without_allocating_them() {
+    let header = |tables: u32| {
+        [
+            b"TDBS".as_slice(),
+            &1u32.to_le_bytes(),
+            &tables.to_le_bytes(),
+        ]
+        .concat()
+    };
+    let invalid = |bytes: &[u8]| {
+        assert!(matches!(
+            Database::restore_from_snapshot(bytes),
+            Err(taladb::TalaDbError::InvalidSnapshot)
+        ))
+    };
+    invalid(&header(u32::MAX));
+    let table = [header(1), 1u32.to_le_bytes().to_vec(), b"x".to_vec()].concat();
+    invalid(&[table.clone(), u64::MAX.to_le_bytes().to_vec()].concat());
+    let entry = [table, 1u64.to_le_bytes().to_vec()].concat();
+    invalid(&[entry.clone(), u32::MAX.to_le_bytes().to_vec(), vec![0; 8]].concat());
+    invalid(
+        &[
+            entry,
+            0u32.to_le_bytes().to_vec(),
+            u32::MAX.to_le_bytes().to_vec(),
+            vec![0; 8],
+        ]
+        .concat(),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot wire format
 //

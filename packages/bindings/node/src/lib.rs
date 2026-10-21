@@ -204,68 +204,7 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
 }
 
 fn json_to_update(json: JsonValue) -> napi::Result<Update> {
-    check_depth(&json)?;
-    let obj = json
-        .as_object()
-        .ok_or_else(|| napi::Error::from_reason("update must be an object"))?;
-
-    let mut updates = Vec::new();
-    if let Some(set_obj) = obj.get("$set") {
-        let pairs = set_obj
-            .as_object()
-            .ok_or_else(|| napi::Error::from_reason("$set must be an object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-            .collect();
-        updates.push(Update::Set(pairs));
-    }
-    if let Some(unset_obj) = obj.get("$unset") {
-        let keys = unset_obj
-            .as_object()
-            .ok_or_else(|| napi::Error::from_reason("$unset must be an object"))?
-            .keys()
-            .cloned()
-            .collect();
-        updates.push(Update::Unset(keys));
-    }
-    if let Some(inc_obj) = obj.get("$inc") {
-        let pairs = inc_obj
-            .as_object()
-            .ok_or_else(|| napi::Error::from_reason("$inc must be an object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-            .collect();
-        updates.push(Update::Inc(pairs));
-    }
-    if let Some(push_obj) = obj.get("$push") {
-        let map = push_obj
-            .as_object()
-            .ok_or_else(|| napi::Error::from_reason("$push must be an object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Push(k.clone(), json_to_value(v.clone()))),
-        );
-    }
-    if let Some(pull_obj) = obj.get("$pull") {
-        let map = pull_obj
-            .as_object()
-            .ok_or_else(|| napi::Error::from_reason("$pull must be an object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Pull(k.clone(), json_to_value(v.clone()))),
-        );
-    }
-    if obj
-        .keys()
-        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
-    {
-        return Err(napi::Error::from_reason("unsupported update operator"));
-    }
-    match updates.len() {
-        0 => Err(napi::Error::from_reason("update must contain an operator")),
-        1 => Ok(updates.remove(0)),
-        _ => Ok(Update::Many(updates)),
-    }
+    taladb_core::json::update_from_json(&json).map_err(err_to_napi)
 }
 
 // ---------------------------------------------------------------------------
@@ -478,8 +417,7 @@ impl CollectionNode {
     pub fn update_many(&self, filter: JsonValue, update: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         let u = json_to_update(update)?;
-        let n = self.inner.update_many(f, u).map_err(err_to_napi)?;
-        Ok(n as u32)
+        self.inner.update_many_u32(f, u).map_err(err_to_napi)
     }
 
     /// Delete the first matching document.
@@ -493,8 +431,7 @@ impl CollectionNode {
     #[napi(js_name = "deleteMany")]
     pub fn delete_many(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let n = self.inner.delete_many(f).map_err(err_to_napi)?;
-        Ok(n as u32)
+        self.inner.delete_many_u32(f).map_err(err_to_napi)
     }
 
     /// Count documents matching the filter.
@@ -502,7 +439,7 @@ impl CollectionNode {
     pub fn count(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         let n = self.inner.count(f).map_err(err_to_napi)?;
-        Ok(n as u32)
+        count_to_u32(n)
     }
 
     /// Create a secondary index on a field.
@@ -662,7 +599,9 @@ impl CollectionNode {
             .as_ref()
             .and_then(|o| o.get("candidates"))
             .and_then(serde_json::Value::as_u64)
-            .map(|v| v as usize);
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| napi::Error::from_reason("candidates exceeds platform size"))?;
 
         let results = self.inner.hybrid_search(query).map_err(err_to_napi)?;
 
@@ -1018,17 +957,17 @@ pub struct UpdateManyTask {
 }
 
 impl Task for UpdateManyTask {
-    type Output = u64;
+    type Output = u32;
     type JsValue = u32;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         self.collection
-            .update_many(self.filter.clone(), self.update.clone())
+            .update_many_u32(self.filter.clone(), self.update.clone())
             .map_err(err_to_napi)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output as u32)
+        Ok(output)
     }
 }
 
@@ -1058,17 +997,17 @@ pub struct DeleteManyTask {
 }
 
 impl Task for DeleteManyTask {
-    type Output = u64;
+    type Output = u32;
     type JsValue = u32;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         self.collection
-            .delete_many(self.filter.clone())
+            .delete_many_u32(self.filter.clone())
             .map_err(err_to_napi)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output as u32)
+        Ok(output)
     }
 }
 
@@ -1096,5 +1035,95 @@ impl Task for VectorCommandTask {
     }
     fn resolve(&mut self, env: Env, output: JsonValue) -> napi::Result<napi::JsUnknown> {
         env.to_js_value(&output)
+    }
+}
+
+fn count_to_u32(n: u64) -> napi::Result<u32> {
+    u32::try_from(n).map_err(|_| napi::Error::from_reason("result count exceeds u32 range"))
+}
+
+#[cfg(test)]
+mod count_conversion_tests {
+    #[test]
+    fn counts_never_wrap() {
+        assert_eq!(super::count_to_u32(u64::from(u32::MAX)).unwrap(), u32::MAX);
+        assert!(super::count_to_u32(u64::from(u32::MAX) + 1).is_err());
+        assert!(super::count_to_u32(u64::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod parser_parity_tests {
+    use super::*;
+
+    #[test]
+    fn parsers_match_the_shared_acceptance_fixture() {
+        let cases: JsonValue = serde_json::from_str(include_str!(
+            "../../../core/tests/fixtures/parser_parity.json"
+        ))
+        .unwrap();
+        for case in cases["filters"].as_array().unwrap() {
+            let parsed = json_to_filter(&case["input"]);
+            assert_eq!(parsed.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+            if let Ok(parsed) = parsed {
+                assert_eq!(
+                    serde_json::to_value(parsed).unwrap(),
+                    serde_json::to_value(
+                        taladb_core::json::filter_from_json(&case["input"]).unwrap()
+                    )
+                    .unwrap()
+                );
+            }
+        }
+        for case in cases["updates"].as_array().unwrap() {
+            assert_eq!(
+                json_to_update(case["input"].clone()).is_ok(),
+                case["valid"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_nested_null_filters_remain_supported() {
+        assert!(json_to_filter(&serde_json::json!({"$and": [null]})).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod mutation_task_tests {
+    use super::*;
+
+    // Async resolution receives an already representable value; there is no
+    // fallible count conversion left on the JS thread after compute commits.
+    fn u32_task<T: Task<Output = u32, JsValue = u32>>() {}
+
+    #[test]
+    fn async_mutation_compute_prepares_the_public_result() {
+        u32_task::<UpdateManyTask>();
+        u32_task::<DeleteManyTask>();
+        let db = Database::open_in_memory().unwrap();
+        let collection = Arc::new(db.collection("docs").unwrap());
+        collection
+            .insert(vec![("n".into(), Value::Int(0))])
+            .unwrap();
+        let mut update = UpdateManyTask {
+            collection: collection.clone(),
+            filter: Filter::All,
+            update: Update::Inc(vec![("n".into(), Value::Int(1))]),
+        };
+        assert_eq!(update.compute().unwrap(), 1u32);
+        assert_eq!(
+            collection
+                .count(Filter::Eq("n".into(), Value::Int(1)))
+                .unwrap(),
+            1
+        );
+        let mut delete = DeleteManyTask {
+            collection,
+            filter: Filter::All,
+        };
+        assert_eq!(delete.compute().unwrap(), 1u32);
+        assert_eq!(delete.compute().unwrap(), 0u32);
     }
 }

@@ -740,8 +740,8 @@ pub unsafe extern "C" fn taladb_update_many(
                     }
                 };
                 match parse_update(&us) {
-                    Some(update) => match collection.update_many(filter, update) {
-                        Ok(n) => n as i32,
+                    Some(update) => match collection.update_many_i32(filter, update) {
+                        Ok(n) => n,
                         Err(e) => {
                             set_last_error(engine_error(e));
                             -1
@@ -833,8 +833,8 @@ pub unsafe extern "C" fn taladb_delete_many(
                 return -1;
             }
         };
-        match col.delete_many(filter) {
-            Ok(n) => n as i32,
+        match col.delete_many_i32(filter) {
+            Ok(n) => n,
             Err(e) => {
                 set_last_error(engine_error(e));
                 -1
@@ -875,13 +875,19 @@ pub unsafe extern "C" fn taladb_count(
                 return -1;
             }
         };
-        match col.count(filter) {
-            Ok(n) => n as i32,
+        match col.count(filter).and_then(count_to_i32) {
+            Ok(n) => n,
             Err(e) => {
                 set_last_error(engine_error(e));
                 -1
             }
         }
+    })
+}
+
+fn count_to_i32(count: u64) -> Result<i32, taladb_core::TalaDbError> {
+    i32::try_from(count).map_err(|_| {
+        taladb_core::TalaDbError::InvalidOperation("result count exceeds i32 range".into())
     })
 }
 
@@ -1297,11 +1303,19 @@ pub unsafe extern "C" fn taladb_hybrid_search(
         query.filter = pre_filter;
         query.bm25 = bm25_from_options(options.as_ref());
         query.rrf = rrf_from_options(options.as_ref());
-        query.candidates = options
+        query.candidates = match options
             .as_ref()
             .and_then(|o| o.get("candidates"))
             .and_then(serde_json::Value::as_u64)
-            .map(|v| v as usize);
+            .map(usize::try_from)
+            .transpose()
+        {
+            Ok(candidates) => candidates,
+            Err(_) => {
+                set_last_error("candidates exceeds platform size".into());
+                return std::ptr::null_mut();
+            }
+        };
 
         match h.db.collection(&col).and_then(|c| c.hybrid_search(query)) {
             Ok(results) => {
@@ -3040,6 +3054,64 @@ mod tests {
         (handle, dir)
     }
 
+    #[test]
+    fn signed_counts_never_wrap_into_an_error_sentinel_or_zero() {
+        assert_eq!(count_to_i32(0).unwrap(), 0);
+        assert_eq!(count_to_i32(i32::MAX as u64).unwrap(), i32::MAX);
+        for count in [i32::MAX as u64 + 1, u64::from(u32::MAX), 1 << 32, u64::MAX] {
+            assert_eq!(count_to_i32(count).unwrap_err().code(), "InvalidOperation");
+        }
+    }
+
+    #[test]
+    fn signed_bulk_counts_match_committed_state_across_batches() {
+        let (handle, _dir) = open_temp_db();
+        // SAFETY: open_temp_db returns a live handle. All C strings below are
+        // static, valid UTF-8; the handle is closed once after its final use.
+        unsafe {
+            (*handle)
+                .collection("docs")
+                .unwrap()
+                .insert_many(vec![vec![("n".into(), Value::Int(0))]; 257])
+                .unwrap();
+            assert_eq!(
+                taladb_update_many(
+                    handle,
+                    c"docs".as_ptr(),
+                    c"{}".as_ptr(),
+                    c"{\"$inc\":{\"n\":1}}".as_ptr(),
+                ),
+                257
+            );
+            assert!(taladb_last_error().is_null());
+            assert_eq!(
+                taladb_count(handle, c"docs".as_ptr(), c"{\"n\":1}".as_ptr()),
+                257
+            );
+            assert_eq!(
+                taladb_delete_many(handle, c"docs".as_ptr(), c"{}".as_ptr()),
+                257
+            );
+            assert!(taladb_last_error().is_null());
+            assert_eq!(taladb_count(handle, c"docs".as_ptr(), c"{}".as_ptr()), 0);
+            assert_eq!(
+                taladb_delete_many(handle, c"docs".as_ptr(), c"{}".as_ptr()),
+                0
+            );
+            assert_eq!(
+                taladb_update_many(
+                    handle,
+                    c"docs".as_ptr(),
+                    c"{}".as_ptr(),
+                    c"{\"$inc\":{\"n\":1}}".as_ptr(),
+                ),
+                0
+            );
+            assert!(taladb_last_error().is_null());
+            taladb_close(handle);
+        }
+    }
+
     fn last_error() -> Option<String> {
         let ptr = taladb_last_error();
         if ptr.is_null() {
@@ -4010,5 +4082,30 @@ pub mod fuzz_api {
     /// Parse a document JSON string into insertable fields.
     pub fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
         super::json_to_fields(json)
+    }
+}
+
+#[cfg(test)]
+mod parser_parity_tests {
+    #[test]
+    fn parsers_match_the_shared_acceptance_fixture() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../core/tests/fixtures/parser_parity.json"
+        ))
+        .unwrap();
+        for case in cases["filters"].as_array().unwrap() {
+            assert_eq!(
+                super::parse_filter(&case["input"].to_string()).is_ok(),
+                case["valid"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
+        for case in cases["updates"].as_array().unwrap() {
+            assert_eq!(
+                super::parse_update(&case["input"].to_string()).is_some(),
+                case["valid"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
     }
 }

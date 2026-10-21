@@ -187,8 +187,7 @@ impl CollectionWasm {
     pub fn update_many(&self, filter: JsValue, update: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
         let u = js_to_update(update)?;
-        let n = self.inner.update_many(f, u).map_err(err_to_js)?;
-        Ok(n as u32)
+        self.inner.update_many_u32(f, u).map_err(err_to_js)
     }
 
     /// Delete the first matching document. Returns true if deleted.
@@ -202,15 +201,14 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = deleteMany)]
     pub fn delete_many(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
-        let n = self.inner.delete_many(f).map_err(err_to_js)?;
-        Ok(n as u32)
+        self.inner.delete_many_u32(f).map_err(err_to_js)
     }
 
     /// Count documents matching the filter.
     pub fn count(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
         let n = self.inner.count(f).map_err(err_to_js)?;
-        Ok(n as u32)
+        count_to_u32(n)
     }
 
     /// Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
@@ -321,7 +319,7 @@ impl CollectionWasm {
         } else {
             Some(js_to_filter(filter)?)
         };
-        let opts = js_options_to_json(options);
+        let opts = js_options_to_json(options)?;
         let bm25 = bm25_from_options(opts.as_ref());
 
         let results = self
@@ -358,7 +356,7 @@ impl CollectionWasm {
         } else {
             Some(js_to_filter(filter)?)
         };
-        let opts = js_options_to_json(options);
+        let opts = js_options_to_json(options)?;
 
         let mut query = taladb_core::fts::HybridQuery::new(
             text_field,
@@ -374,7 +372,9 @@ impl CollectionWasm {
             .as_ref()
             .and_then(|o| o.get("candidates"))
             .and_then(serde_json::Value::as_u64)
-            .map(|v| v as usize);
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| JsValue::from_str("candidates exceeds platform size"))?;
 
         let results = self.inner.hybrid_search(query).map_err(err_to_js)?;
 
@@ -565,32 +565,8 @@ fn json_to_value(j: serde_json::Value) -> Value {
     }
 }
 
-fn value_to_json(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(n) => serde_json::Value::Number((*n).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::Bytes(b) => serde_json::Value::String(format!("<bytes:{}>", b.len())),
-        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
-        Value::Object(obj) => serde_json::Value::Object(
-            obj.iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
 pub(crate) fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    map.insert("_id".into(), serde_json::Value::String(doc.id.to_string()));
-    for (k, v) in &doc.fields {
-        map.insert(k.clone(), value_to_json(v));
-    }
-    serde_json::Value::Object(map)
+    taladb_core::json::document_to_json(doc)
 }
 
 /// Convert a JS filter object to a Rust Filter.
@@ -598,15 +574,18 @@ pub(crate) fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
 ///           { field: { $gt, $gte, $lt, $lte, $ne, $in, $nin, $exists } }
 ///           { $and: [...] }, { $or: [...] }, { $not: { ... } }
 /// Convert an optional JS options object into plain JSON, treating
-/// `null`/`undefined`/unparseable as "use defaults" rather than an error —
-/// tuning knobs should never be the thing that fails a query.
-fn js_options_to_json(options: JsValue) -> Option<serde_json::Value> {
+/// `null`/`undefined` and ordinary parse failures use defaults. Excessive
+/// nesting is rejected before deserialization, as for filters and documents.
+fn js_options_to_json(options: JsValue) -> Result<Option<serde_json::Value>, JsValue> {
     if options.is_null() || options.is_undefined() {
-        return None;
+        return Ok(None);
     }
-    serde_wasm_bindgen::from_value::<serde_json::Value>(options)
+    // Guard the live object graph before serde's recursive conversion, as for
+    // documents and filters. Retain the existing default for other parse errors.
+    check_js_depth(&options)?;
+    Ok(serde_wasm_bindgen::from_value::<serde_json::Value>(options)
         .ok()
-        .filter(|v| !v.is_null())
+        .filter(|v| !v.is_null()))
 }
 
 fn bm25_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::Bm25Params {
@@ -652,153 +631,15 @@ fn js_to_filter(val: JsValue) -> Result<Filter, JsValue> {
 }
 
 fn json_to_filter(json: &serde_json::Value) -> Option<Filter> {
-    let obj = json.as_object()?;
-
-    // Field-level operators
-    let mut filters: Vec<Filter> = Vec::new();
-    for (field, expr) in obj {
-        let f = match field.as_str() {
-            "$and" => Filter::And(
-                expr.as_array()?
-                    .iter()
-                    .map(json_to_filter)
-                    .collect::<Option<_>>()?,
-            ),
-            "$or" => Filter::Or(
-                expr.as_array()?
-                    .iter()
-                    .map(json_to_filter)
-                    .collect::<Option<_>>()?,
-            ),
-            "$not" => Filter::Not(Box::new(json_to_filter(expr)?)),
-            op if op.starts_with('$') => return None,
-            _ => parse_field_filter(field, expr)?,
-        };
-        filters.push(f);
-    }
-
-    match filters.len() {
-        0 => Some(Filter::All),
-        1 => Some(filters.remove(0)),
-        _ => Some(Filter::And(filters)),
-    }
+    taladb_core::json::filter_from_json_object(json)
 }
 
-fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
-    // Simple equality: { age: 30 }
-    if !expr.is_object() {
-        return Some(Filter::Eq(field.to_string(), json_to_value(expr.clone())));
-    }
-
-    let ops = expr.as_object()?;
-    let mut filters = Vec::new();
-
-    for (op, val) in ops {
-        let v = json_to_value(val.clone());
-        let f = match op.as_str() {
-            "$eq" => Filter::Eq(field.to_string(), v),
-            "$ne" => Filter::Ne(field.to_string(), v),
-            "$gt" => Filter::Gt(field.to_string(), v),
-            "$gte" => Filter::Gte(field.to_string(), v),
-            "$lt" => Filter::Lt(field.to_string(), v),
-            "$lte" => Filter::Lte(field.to_string(), v),
-            "$in" => {
-                let arr = val
-                    .as_array()?
-                    .iter()
-                    .map(|v| json_to_value(v.clone()))
-                    .collect();
-                Filter::In(field.to_string(), arr)
-            }
-            "$nin" => {
-                let arr = val
-                    .as_array()?
-                    .iter()
-                    .map(|v| json_to_value(v.clone()))
-                    .collect();
-                Filter::Nin(field.to_string(), arr)
-            }
-            "$exists" => Filter::Exists(field.to_string(), val.as_bool()?),
-            "$contains" => Filter::Contains(field.to_string(), val.as_str()?.to_string()),
-            "$regex" => Filter::Regex(field.to_string(), val.as_str()?.to_string()),
-            _ => return None,
-        };
-        filters.push(f);
-    }
-
-    match filters.len() {
-        0 => None,
-        1 => Some(filters.remove(0)),
-        _ => Some(Filter::And(filters)),
-    }
-}
-
-/// Convert a JS update object to a Rust Update.
-/// Supports: { $set: {...} }, { $unset: {...} }, { $inc: {...} },
-///           { $push: { field: val } }, { $pull: { field: val } }
 fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
-    let json = js_to_json(val)?;
-    let obj = json
-        .as_object()
-        .ok_or_else(|| JsValue::from_str("update must be an object"))?;
+    taladb_core::json::update_from_json(&js_to_json(val)?).map_err(err_to_js)
+}
 
-    let mut updates = Vec::new();
-    if let Some(set_obj) = obj.get("$set") {
-        let pairs = set_obj
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$set must be an object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-            .collect();
-        updates.push(Update::Set(pairs));
-    }
-    if let Some(unset_obj) = obj.get("$unset") {
-        let keys = unset_obj
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$unset must be an object"))?
-            .keys()
-            .cloned()
-            .collect();
-        updates.push(Update::Unset(keys));
-    }
-    if let Some(inc_obj) = obj.get("$inc") {
-        let pairs = inc_obj
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$inc must be an object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
-            .collect();
-        updates.push(Update::Inc(pairs));
-    }
-    if let Some(push_obj) = obj.get("$push") {
-        let map = push_obj
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$push must be an object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Push(k.clone(), json_to_value(v.clone()))),
-        );
-    }
-    if let Some(pull_obj) = obj.get("$pull") {
-        let map = pull_obj
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$pull must be an object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Pull(k.clone(), json_to_value(v.clone()))),
-        );
-    }
-    if obj
-        .keys()
-        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
-    {
-        return Err(JsValue::from_str("unsupported update operator"));
-    }
-    match updates.len() {
-        0 => Err(JsValue::from_str("update must contain an operator")),
-        1 => Ok(updates.remove(0)),
-        _ => Ok(Update::Many(updates)),
-    }
+pub(crate) fn count_to_u32(n: u64) -> Result<u32, JsValue> {
+    u32::try_from(n).map_err(|_| JsValue::from_str("result count exceeds u32 range"))
 }
 
 // ---------------------------------------------------------------------------
@@ -946,11 +787,169 @@ mod js_depth_tests {
     }
 
     #[wasm_bindgen_test]
+    fn search_options_reject_excessive_depth_and_cycles_before_deserialization() {
+        assert!(js_options_to_json(nest(100_000)).is_err());
+        let cycle = js_sys::Array::new();
+        cycle.push(&cycle);
+        assert!(js_options_to_json(cycle.into()).is_err());
+        assert!(js_options_to_json(JsValue::NULL).unwrap().is_none());
+    }
+
+    #[wasm_bindgen_test]
     fn wide_is_not_deep() {
         let wide = js_sys::Array::new();
         for i in 0..5_000 {
             wide.push(&JsValue::from_f64(f64::from(i)));
         }
         assert!(check_js_depth(&wide.into()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod mutation_count_tests {
+    use super::*;
+    use serde_json::json;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn both_web_mutation_paths_return_committed_counts_across_batches() {
+        let docs = json!(vec![json!({"n": 0}); 257]);
+        let update = json!({"$inc": {"n": 1}});
+        let db = TalaDBWasm::open_in_memory().unwrap();
+        let col = db.collection("docs").unwrap();
+        col.insert_many(to_js(&docs).unwrap()).unwrap();
+        assert_eq!(
+            col.update_many(JsValue::NULL, to_js(&update).unwrap())
+                .unwrap(),
+            257u32
+        );
+        assert_eq!(col.count(to_js(&json!({"n": 1})).unwrap()).unwrap(), 257);
+        assert_eq!(col.delete_many(JsValue::NULL).unwrap(), 257u32);
+        assert_eq!(col.delete_many(JsValue::NULL).unwrap(), 0u32);
+        assert_eq!(
+            col.update_many(JsValue::NULL, to_js(&update).unwrap())
+                .unwrap(),
+            0u32
+        );
+
+        let worker = WorkerDB::open_in_memory().unwrap();
+        worker.insert_many("docs", &docs.to_string()).unwrap();
+        assert_eq!(
+            worker
+                .update_many("docs", "{}", &update.to_string())
+                .unwrap(),
+            257u32
+        );
+        assert_eq!(worker.count("docs", r#"{"n":1}"#).unwrap(), 257);
+        assert_eq!(worker.delete_many("docs", "{}").unwrap(), 257u32);
+        assert_eq!(worker.delete_many("docs", "{}").unwrap(), 0u32);
+        assert_eq!(
+            worker
+                .update_many("docs", "{}", &update.to_string())
+                .unwrap(),
+            0u32
+        );
+    }
+}
+
+#[cfg(test)]
+mod parser_parity_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn worker_parser_errors_preserve_the_string_transport_contract() {
+        let worker = WorkerDB::open_in_memory().unwrap();
+        for error in [
+            worker.find("docs", r#"{"n":{"$unknown":1}}"#).unwrap_err(),
+            worker
+                .update_many("docs", "{}", r#"{"$unknown":{}}"#)
+                .unwrap_err(),
+        ] {
+            // The worker bridge uses String(error.message ?? error). A plain
+            // object without `message` would become just "[object Object]".
+            let message = error
+                .as_string()
+                .expect("worker errors must remain strings");
+            assert!(message.contains("invalid"), "{message}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn both_web_bindings_match_the_shared_acceptance_fixture() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../core/tests/fixtures/parser_parity.json"
+        ))
+        .unwrap();
+        let worker = WorkerDB::open_with_snapshot(None).unwrap();
+        worker.insert("docs", r#"{"n":3,"tenant":"a"}"#).unwrap();
+        for case in cases["filters"].as_array().unwrap() {
+            let valid = case["valid"].as_bool().unwrap();
+            let parsed = js_to_filter(to_js(&case["input"]).unwrap());
+            assert_eq!(parsed.is_ok(), valid, "{case}");
+            if let Ok(parsed) = parsed {
+                assert_eq!(
+                    serde_json::to_value(parsed).unwrap(),
+                    serde_json::to_value(
+                        taladb_core::json::filter_from_json(&case["input"]).unwrap()
+                    )
+                    .unwrap()
+                );
+            }
+            assert_eq!(
+                worker.find("docs", &case["input"].to_string()).is_ok(),
+                valid,
+                "{case}"
+            );
+        }
+        for case in cases["updates"].as_array().unwrap() {
+            let valid = case["valid"].as_bool().unwrap();
+            assert_eq!(
+                js_to_update(to_js(&case["input"]).unwrap()).is_ok(),
+                valid,
+                "{case}"
+            );
+            assert_eq!(
+                worker
+                    .update_many("empty", "{}", &case["input"].to_string())
+                    .is_ok(),
+                valid,
+                "{case}"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn counts_and_candidate_pools_never_truncate() {
+        assert_eq!(count_to_u32(u64::from(u32::MAX)).unwrap(), u32::MAX);
+        assert!(count_to_u32(u64::from(u32::MAX) + 1).is_err());
+        let worker = WorkerDB::open_with_snapshot(None).unwrap();
+        worker.create_fts_index("docs", "body").unwrap();
+        worker
+            .create_vector_index("docs", "v", 1, None, None, None, None)
+            .unwrap();
+        worker
+            .insert("docs", r#"{"body":"rust","v":[1.0]}"#)
+            .unwrap();
+        // On wasm32 this pool cannot be represented. A wrapped zero would
+        // otherwise turn a valid retrieval into a successful empty result.
+        let error = worker
+            .hybrid_search(
+                "docs",
+                "body",
+                "rust",
+                "v",
+                "[1.0]",
+                1,
+                "null",
+                r#"{"candidates":4294967296}"#,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .as_string()
+                .unwrap()
+                .contains("candidates exceeds platform size")
+        );
     }
 }

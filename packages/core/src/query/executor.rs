@@ -151,60 +151,152 @@ pub fn execute_limited(
     deadline: Option<Instant>,
     limit: Option<usize>,
 ) -> Result<Vec<Document>, TalaDbError> {
+    // Keep ordinary full scans on the direct document collector. The ID-only
+    // mutation/count collector below uses projection; routing normal scans
+    // through that sink adds dispatch to an otherwise tight decode/filter loop.
+    if matches!(plan, QueryPlan::FullScan) {
+        check_deadline(deadline)?;
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let matcher = Matcher::new(filter)?;
+        let mut docs = Vec::new();
+        txn.scan(
+            &docs_table_name(collection),
+            Bound::Unbounded,
+            Bound::Unbounded,
+            &mut |_, bytes| {
+                check_deadline(deadline)?;
+                let doc = postcard::from_bytes(bytes)?;
+                if matcher.matches(&doc)? {
+                    docs.push(doc);
+                }
+                Ok(if limit.is_some_and(|n| docs.len() >= n) {
+                    ScanFlow::Stop
+                } else {
+                    ScanFlow::Continue
+                })
+            },
+        )?;
+        return Ok(docs);
+    }
+    let mut docs = Vec::new();
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        deadline,
+        limit,
+        false,
+        &mut |doc| docs.push(doc),
+    )?;
+    Ok(docs)
+}
+
+/// Keep the plan's natural order while retaining only IDs for write-side
+/// revalidation. Each candidate body is released immediately.
+pub(crate) fn candidate_ids(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+) -> Result<Vec<Ulid>, TalaDbError> {
+    let mut ids = Vec::new();
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        None,
+        None,
+        true,
+        &mut |doc| ids.push(doc.id),
+    )?;
+    Ok(ids)
+}
+
+struct DocumentSink<'a> {
+    emit: &'a mut dyn FnMut(Document),
+    count: usize,
+    fields: Option<HashSet<&'a str>>,
+}
+
+impl DocumentSink<'_> {
+    fn decode(&self, bytes: &[u8]) -> Result<Document, postcard::Error> {
+        match &self.fields {
+            Some(fields) => super::filter_document::decode(bytes, fields),
+            None => postcard::from_bytes(bytes),
+        }
+    }
+    fn push(&mut self, doc: Document) {
+        (self.emit)(doc);
+        self.count += 1;
+    }
+    fn len(&self) -> usize {
+        self.count
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_into(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+    deadline: Option<Instant>,
+    limit: Option<usize>,
+    ids_only: bool,
+    emit: &mut dyn FnMut(Document),
+) -> Result<(), TalaDbError> {
     // Check deadline up-front so callers that pass an already-expired deadline
     // don't touch storage at all.
     check_deadline(deadline)?;
     if limit == Some(0) {
-        return Ok(vec![]);
+        return Ok(());
     }
 
     // Pre-compile every regex in the filter tree once, and pre-tokenize a
     // `Contains` query once, instead of once per candidate document.
     let matcher = Matcher::new(filter)?;
-    let mut results: Vec<Document> = Vec::new();
+    let mut results = DocumentSink {
+        emit,
+        count: 0,
+        fields: ids_only.then(|| super::filter_document::fields(filter)),
+    };
 
     // `true` while more documents are still wanted.
-    let wants_more = |results: &Vec<Document>| limit.is_none_or(|n| results.len() < n);
+    let wants_more = |results: &DocumentSink<'_>| limit.is_none_or(|n| results.len() < n);
 
     match plan {
         QueryPlan::FullScan => {
             // Stream the docs table: decode, test, and drop non-matches as we
             // go rather than materialising every document first.
             let table = docs_table_name(collection);
-            let mut err: Option<TalaDbError> = None;
-            txn.scan(&table, Bound::Unbounded, Bound::Unbounded, &mut |_, v| {
-                if let Some(dl) = deadline
-                    && Instant::now() >= dl
-                {
-                    err = Some(TalaDbError::QueryTimeout);
-                    return Ok(ScanFlow::Stop);
-                }
-                let doc: Document = match postcard::from_bytes(v) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        err = Some(e.into());
-                        return Ok(ScanFlow::Stop);
-                    }
-                };
-                // Same `err` channel as the decode failure above: the scan
-                // callback cannot return a `TalaDbError`, so a filter failure is
-                // parked and re-raised after the scan stops.
-                match matcher.matches(&doc) {
-                    Ok(true) => results.push(doc),
-                    Ok(false) => {}
-                    Err(e) => {
-                        err = Some(e);
-                        return Ok(ScanFlow::Stop);
-                    }
+            // Choose the decoder once per scan. Keeping that branch inside
+            // the callback adds measurable overhead to ordinary full scans.
+            let fields = results.fields.take();
+            let mut accept = |doc: Document| {
+                if matcher.matches(&doc)? {
+                    results.push(doc);
                 }
                 Ok(if wants_more(&results) {
                     ScanFlow::Continue
                 } else {
                     ScanFlow::Stop
                 })
-            })?;
-            if let Some(e) = err {
-                return Err(e);
+            };
+            match fields {
+                Some(fields) => {
+                    txn.scan(&table, Bound::Unbounded, Bound::Unbounded, &mut |_, v| {
+                        check_deadline(deadline)?;
+                        accept(super::filter_document::decode(v, &fields)?)
+                    })?
+                }
+                None => txn.scan(&table, Bound::Unbounded, Bound::Unbounded, &mut |_, v| {
+                    check_deadline(deadline)?;
+                    accept(postcard::from_bytes(v)?)
+                })?,
             }
         }
 
@@ -223,92 +315,60 @@ pub fn execute_limited(
         }
 
         QueryPlan::IndexEq { field, start, end } => {
-            // When the range holds only matches, the post-filter cannot reject
-            // anything — so a bounded query can stop walking the index at
-            // `limit` entries instead of collecting every one and then keeping
-            // the first few. This is what makes `find_one` on an indexed
-            // equality O(limit) rather than O(matches).
-            let scan_cap = if plan_is_exact_for(plan, filter) {
-                limit
-            } else {
-                None
-            };
-            let ulids = index_range_scan(
+            fetch_index_range(
                 txn,
+                &index_table_name(collection, field),
+                Bound::Included(start),
+                Bound::Included(end),
                 collection,
-                field,
-                Bound::Included(start.as_slice()),
-                Bound::Included(end.as_slice()),
-                scan_cap,
-            )?;
-            check_deadline(deadline)?;
-            fetch_filtered(
-                txn,
-                collection,
-                &ulids,
                 &matcher,
                 deadline,
                 limit,
                 &mut results,
+                None,
             )?;
         }
-
         QueryPlan::IndexRange { field, start, end } => {
-            let start_ref = bound_as_ref(start);
-            let end_ref = bound_as_ref(end);
-            let mut ulids = index_range_scan(txn, collection, field, start_ref, end_ref, None)?;
-            // An array field is indexed once per element, so a document whose
-            // list has several values inside the range appears once per value.
-            // Without this the same document comes back two or three times from
-            // an ordinary `$gte`.
-            let mut seen: HashSet<Ulid> = HashSet::with_capacity(ulids.len());
-            ulids.retain(|u| seen.insert(*u));
-            check_deadline(deadline)?;
-            fetch_filtered(
+            let mut seen = HashSet::new();
+            fetch_index_range(
                 txn,
+                &index_table_name(collection, field),
+                bound_as_ref(start),
+                bound_as_ref(end),
                 collection,
-                &ulids,
                 &matcher,
                 deadline,
                 limit,
                 &mut results,
+                Some(&mut seen),
             )?;
         }
-
         QueryPlan::IndexIn { field, ranges } => {
-            let mut ulids: Vec<Ulid> = Vec::new();
+            let table = index_table_name(collection, field);
+            let mut seen = HashSet::new();
             for (start, end) in ranges {
-                check_deadline(deadline)?;
-                let mut batch = index_range_scan(
+                fetch_index_range(
                     txn,
+                    &table,
+                    Bound::Included(start),
+                    Bound::Included(end),
                     collection,
-                    field,
-                    Bound::Included(start.as_slice()),
-                    Bound::Included(end.as_slice()),
-                    None,
+                    &matcher,
+                    deadline,
+                    limit,
+                    &mut results,
+                    Some(&mut seen),
                 )?;
-                ulids.append(&mut batch);
+                if !wants_more(&results) {
+                    break;
+                }
             }
-            // Ranges from duplicate $in values (or overlapping cross-type
-            // numeric ranges) interleave, so adjacent-only Vec::dedup would
-            // leave duplicates and the same document would be returned twice.
-            let mut seen: HashSet<Ulid> = HashSet::with_capacity(ulids.len());
-            ulids.retain(|u| seen.insert(*u));
-            fetch_filtered(
-                txn,
-                collection,
-                &ulids,
-                &matcher,
-                deadline,
-                limit,
-                &mut results,
-            )?;
         }
 
         // Full-text search: intersect ULID sets across all query tokens (AND semantics).
         QueryPlan::FtsSearch { field, tokens } => {
             if tokens.is_empty() {
-                return Ok(vec![]);
+                return Ok(());
             }
             let table = fts_table_name(collection, field);
             // Collect ULID sets per token, then intersect
@@ -330,7 +390,7 @@ pub fn execute_limited(
                 )?;
                 // An absent token means an empty intersection — stop reading.
                 if set.is_empty() {
-                    return Ok(vec![]);
+                    return Ok(());
                 }
                 ulid_sets.push(set);
             }
@@ -354,22 +414,18 @@ pub fn execute_limited(
         }
 
         QueryPlan::CompoundIndexEq { fields, start, end } => {
-            let field_refs: Vec<&str> = fields.iter().map(std::string::String::as_str).collect();
-            let table = compound_table_name(collection, &field_refs);
-            let ulids = table_range_scan(
+            let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+            fetch_index_range(
                 txn,
-                &table,
-                Bound::Included(start.as_slice()),
-                Bound::Included(end.as_slice()),
-            )?;
-            fetch_filtered(
-                txn,
+                &compound_table_name(collection, &fields),
+                Bound::Included(start),
+                Bound::Included(end),
                 collection,
-                &ulids,
                 &matcher,
                 deadline,
                 limit,
                 &mut results,
+                None,
             )?;
         }
 
@@ -409,7 +465,7 @@ pub fn execute_limited(
                     .collect();
                 // Empty intersection — no later branch can add anything back.
                 if set.is_empty() {
-                    return Ok(vec![]);
+                    return Ok(());
                 }
                 sets.push(set);
             }
@@ -431,7 +487,7 @@ pub fn execute_limited(
         }
     }
 
-    Ok(results)
+    Ok(())
 }
 
 /// A filter with its per-query work (regex compilation, query tokenization)
@@ -502,15 +558,15 @@ fn fetch_filtered(
     matcher: &Matcher<'_>,
     deadline: Option<Instant>,
     limit: Option<usize>,
-    out: &mut Vec<Document>,
+    out: &mut DocumentSink<'_>,
 ) -> Result<(), TalaDbError> {
     let table = docs_table_name(collection);
-    let key_store: Vec<[u8; 16]> = ulids.iter().map(ulid::Ulid::to_bytes).collect();
-    for chunk in key_store.chunks(FETCH_CHUNK) {
+    for chunk in ulids.chunks(FETCH_CHUNK) {
         check_deadline(deadline)?;
-        let keys: Vec<&[u8]> = chunk.iter().map(<[u8; 16]>::as_slice).collect();
+        let key_store: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
+        let keys: Vec<&[u8]> = key_store.iter().map(<[u8; 16]>::as_slice).collect();
         for bytes in txn.get_many(&table, &keys)?.into_iter().flatten() {
-            let doc: Document = postcard::from_bytes(&bytes)?;
+            let doc = out.decode(&bytes)?;
             if matcher.matches(&doc)? {
                 out.push(doc);
                 if limit.is_some_and(|n| out.len() >= n) {
@@ -520,6 +576,60 @@ fn fetch_filtered(
         }
     }
     Ok(())
+}
+
+/// Keep only a bounded page of index IDs ahead of the document fetch. Resume
+/// after the last raw key, preserving range order and deduplicating array and
+/// overlapping `$in` entries before decoding their bodies.
+#[allow(clippy::too_many_arguments)]
+fn fetch_index_range(
+    txn: &dyn ReadTxn,
+    table: &str,
+    start: Bound<&[u8]>,
+    end: Bound<&[u8]>,
+    collection: &str,
+    matcher: &Matcher<'_>,
+    deadline: Option<Instant>,
+    limit: Option<usize>,
+    out: &mut DocumentSink<'_>,
+    mut seen: Option<&mut HashSet<Ulid>>,
+) -> Result<(), TalaDbError> {
+    let mut last: Option<Vec<u8>> = None;
+    loop {
+        check_deadline(deadline)?;
+        let cap = limit.map_or(FETCH_CHUNK, |n| {
+            n.saturating_sub(out.len()).min(FETCH_CHUNK)
+        });
+        if cap == 0 {
+            return Ok(());
+        }
+        let mut ids = Vec::with_capacity(cap);
+        let mut next = None;
+        let mut scanned = 0;
+        let lower = last.as_deref().map_or(start, Bound::Excluded);
+        txn.scan(table, lower, end, &mut |key, _| {
+            check_deadline(deadline)?;
+            scanned += 1;
+            let cursor = next.get_or_insert_with(Vec::new);
+            cursor.clear();
+            cursor.extend_from_slice(key);
+            if let Some(id) = ulid_from_index_key(key)
+                && seen.as_mut().is_none_or(|set| set.insert(id))
+            {
+                ids.push(id);
+            }
+            Ok(if scanned >= cap {
+                ScanFlow::Stop
+            } else {
+                ScanFlow::Continue
+            })
+        })?;
+        fetch_filtered(txn, collection, &ids, matcher, deadline, limit, out)?;
+        if scanned < cap {
+            return Ok(());
+        }
+        last = next;
+    }
 }
 
 /// Collect raw ULID bytes from an index-backed plan without loading documents.
@@ -622,7 +732,11 @@ pub fn count_matching(
     if plan_is_exact_for(plan, filter) {
         return count_plan_entries(plan, txn, collection);
     }
-    Ok(execute(plan, filter, txn, collection, None)?.len() as u64)
+    let mut count = 0;
+    execute_into(plan, filter, txn, collection, None, None, true, &mut |_| {
+        count += 1
+    })?;
+    Ok(count)
 }
 
 /// Whether every id the plan yields is guaranteed to satisfy `filter`, so the
@@ -810,10 +924,10 @@ pub(crate) fn fetch_by_ulids(
     ulids: &[Ulid],
 ) -> Result<Vec<Document>, TalaDbError> {
     let table = docs_table_name(collection);
-    let key_store: Vec<[u8; 16]> = ulids.iter().map(ulid::Ulid::to_bytes).collect();
     let mut docs = Vec::with_capacity(ulids.len());
-    for chunk in key_store.chunks(FETCH_CHUNK) {
-        let keys: Vec<&[u8]> = chunk.iter().map(<[u8; 16]>::as_slice).collect();
+    for chunk in ulids.chunks(FETCH_CHUNK) {
+        let key_store: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
+        let keys: Vec<&[u8]> = key_store.iter().map(<[u8; 16]>::as_slice).collect();
         for bytes in txn.get_many(&table, &keys)?.into_iter().flatten() {
             docs.push(postcard::from_bytes(&bytes)?);
         }
