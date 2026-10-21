@@ -45,6 +45,9 @@ mod vector_window;
 const VECTOR_FILTER_MIN_IDS: usize = 256;
 const VECTOR_FILTER_BUDGET_BYTES_PER_ID: usize = 1024;
 
+const WRITE_BATCH_DOCS: usize = 128;
+const WRITE_BATCH_BYTES: usize = 1024 * 1024;
+
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
 #[derive(Clone)]
@@ -537,29 +540,26 @@ impl Collection {
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_INDEXES_TABLE, meta_key.as_bytes(), &bytes)?;
 
-        // Backfill existing documents into the new index — one table open for
-        // the whole backfill rather than one per document.
+        // Build bounded batches in the writer's snapshot, publishing the
+        // completed index and metadata together at commit.
         let docs_table = docs_table_name(&self.name);
-        let existing = wtxn.range(
-            &docs_table,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
         let idx_table = index_table_name(&self.name, field);
-        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(existing.len());
         let mut arrays = 0u64;
-        for (_, doc_bytes) in existing {
-            let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field) {
-                arrays += u64::from(matches!(val, Value::Array(_)));
-                keys.extend(encode_index_keys(val, doc.id));
+        for_each_document_batch(wtxn.as_mut(), &docs_table, &mut |wtxn, docs| {
+            let mut keys = Vec::new();
+            for doc in docs {
+                if let Some(val) = doc.get(field) {
+                    arrays += u64::from(matches!(val, Value::Array(_)));
+                    keys.extend(encode_index_keys(val, doc.id));
+                }
             }
-        }
-        let ops: Vec<crate::engine::KvOp<'_>> = keys
-            .iter()
-            .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
-            .collect();
-        wtxn.apply_batch(&idx_table, &ops)?;
+            let ops: Vec<crate::engine::KvOp<'_>> = keys
+                .iter()
+                .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
+                .collect();
+            wtxn.apply_batch(&idx_table, &ops)?;
+            Ok(())
+        })?;
         wtxn.put(
             META_INDEX_ARRAYS_TABLE,
             meta_key.as_bytes(),
@@ -580,18 +580,7 @@ impl Collection {
             return Err(TalaDbError::IndexNotFound(meta_key));
         }
 
-        // Remove all index entries (range scan on the index table)
-        let idx_table = index_table_name(&self.name, field);
-        let all_entries = wtxn.range(
-            &idx_table,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
-        let ops: Vec<crate::engine::KvOp<'_>> = all_entries
-            .iter()
-            .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
-            .collect();
-        wtxn.apply_batch(&idx_table, &ops)?;
+        wtxn.delete_table(&index_table_name(&self.name, field))?;
 
         // Remove metadata
         wtxn.delete(META_INDEXES_TABLE, meta_key.as_bytes())?;
@@ -627,38 +616,35 @@ impl Collection {
 
         // Backfill existing documents
         let docs_table = docs_table_name(&self.name);
-        let existing = wtxn.range(
-            &docs_table,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
         let fts_table = fts_table_name(&self.name, field);
         let len_table = fts_len_table_name(&self.name, field);
         let mut stats = FtsStats::default();
-        // Accumulate the whole backfill, then write each table once.
-        let mut postings: Vec<(Vec<u8>, [u8; 4])> = Vec::new();
-        let mut lengths: Vec<([u8; 16], [u8; 4])> = Vec::new();
-        for (_, doc_bytes) in existing {
-            let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(crate::document::Value::Str(text)) = doc.get(field) {
-                let (freqs, doc_len) = token_frequencies(text);
-                for (token, tf) in &freqs {
-                    postings.push((encode_fts_key(token, &doc.id), encode_tf(*tf)));
+        // Batch writes without publishing metadata before the final commit.
+        for_each_document_batch(wtxn.as_mut(), &docs_table, &mut |wtxn, docs| {
+            let mut postings: Vec<(Vec<u8>, [u8; 4])> = Vec::new();
+            let mut lengths: Vec<([u8; 16], [u8; 4])> = Vec::new();
+            for doc in docs {
+                if let Some(crate::document::Value::Str(text)) = doc.get(field) {
+                    let (freqs, doc_len) = token_frequencies(text);
+                    for (token, tf) in &freqs {
+                        postings.push((encode_fts_key(token, &doc.id), encode_tf(*tf)));
+                    }
+                    lengths.push((doc.id.to_bytes(), encode_doc_len(doc_len)));
+                    stats.add_doc(doc_len);
                 }
-                lengths.push((doc.id.to_bytes(), encode_doc_len(doc_len)));
-                stats.add_doc(doc_len);
             }
-        }
-        let posting_ops: Vec<crate::engine::KvOp<'_>> = postings
-            .iter()
-            .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
-            .collect();
-        wtxn.apply_batch(&fts_table, &posting_ops)?;
-        let len_ops: Vec<crate::engine::KvOp<'_>> = lengths
-            .iter()
-            .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
-            .collect();
-        wtxn.apply_batch(&len_table, &len_ops)?;
+            let posting_ops: Vec<crate::engine::KvOp<'_>> = postings
+                .iter()
+                .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
+                .collect();
+            wtxn.apply_batch(&fts_table, &posting_ops)?;
+            let len_ops: Vec<crate::engine::KvOp<'_>> = lengths
+                .iter()
+                .map(|(k, v)| crate::engine::KvOp::Put(k.as_slice(), v.as_slice()))
+                .collect();
+            wtxn.apply_batch(&len_table, &len_ops)?;
+            Ok(())
+        })?;
         let stats_table = fts_stats_table_name(&self.name, field);
         wtxn.put(&stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
 
@@ -683,16 +669,7 @@ impl Collection {
             fts_len_table_name(&self.name, field),
             fts_stats_table_name(&self.name, field),
         ] {
-            let all = wtxn.range(
-                &table,
-                std::ops::Bound::Unbounded,
-                std::ops::Bound::Unbounded,
-            )?;
-            let ops: Vec<crate::engine::KvOp<'_>> = all
-                .iter()
-                .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
-                .collect();
-            wtxn.apply_batch(&table, &ops)?;
+            wtxn.delete_table(&table)?;
         }
         wtxn.delete(META_FTS_TABLE, meta_key.as_bytes())?;
         bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
@@ -790,80 +767,97 @@ impl Collection {
         let len_table = fts_len_table_name(&self.name, field);
         let stats_table = fts_stats_table_name(&self.name, field);
 
-        let stats: FtsStats = rtxn
-            .get(&stats_table, FTS_STATS_KEY)?
-            .and_then(|b| postcard::from_bytes(&b).ok())
-            .unwrap_or_default();
+        let stats = decode_fts_stats(rtxn.get(&stats_table, FTS_STATS_KEY)?, &stats_table)?;
         let avg_len = stats.avg_doc_len();
 
-        let mut scores: HashMap<[u8; 16], f32> = HashMap::new();
-        let mut lengths: HashMap<[u8; 16], u32> = HashMap::new();
-
+        // Cache length alongside score: one hash entry/probe per candidate,
+        // and at most one length lookup even when several query terms match.
+        let mut scores: HashMap<[u8; 16], (f32, u32)> = HashMap::new();
         for token in &tokens {
+            use crate::engine::ScanFlow;
+            use std::ops::Bound;
             let (start, end) = crate::fts::fts_token_range(token);
-            let postings = rtxn.range(
+            let mut doc_freq = 0u64;
+            // IDF is global even with a metadata filter. Count without copying
+            // postings, then stream scores using that exact corpus frequency.
+            rtxn.scan(
                 &fts_table,
-                std::ops::Bound::Included(start.as_slice()),
-                std::ops::Bound::Included(end.as_slice()),
+                Bound::Included(&start),
+                Bound::Included(&end),
+                &mut |_, _| {
+                    doc_freq += 1;
+                    Ok(ScanFlow::Continue)
+                },
             )?;
-            // The postings scan *is* the document frequency — no counter to keep.
-            // Note this counts the whole corpus, not the filtered subset: IDF
-            // describes how informative a term is overall, and recomputing it
-            // per filter would make scores incomparable between queries.
-            let doc_freq = postings.len() as u64;
             if doc_freq == 0 {
                 continue;
             }
             let token_idf = crate::bm25::idf(stats.doc_count, doc_freq);
-
-            for (key, value) in postings {
-                let Some(ulid) = crate::fts::ulid_from_fts_key(&key) else {
-                    continue;
-                };
-                let id = ulid.to_bytes();
-                if let Some(ids) = &id_filter
-                    && !ids.contains(&id)
-                {
-                    continue;
-                }
-                let doc_len = match lengths.get(&id) {
-                    Some(len) => *len,
-                    None => {
-                        let len = rtxn
-                            .get(&len_table, &id)?
-                            .map(|b| decode_doc_len(&b))
-                            .unwrap_or(0);
-                        lengths.insert(id, len);
-                        len
+            rtxn.scan(
+                &fts_table,
+                Bound::Included(&start),
+                Bound::Included(&end),
+                &mut |key, value| {
+                    let Some(ulid) = crate::fts::ulid_from_fts_key(key) else {
+                        return Ok(ScanFlow::Continue);
+                    };
+                    let id = ulid.to_bytes();
+                    if id_filter.as_ref().is_some_and(|ids| !ids.contains(&id)) {
+                        return Ok(ScanFlow::Continue);
                     }
-                };
-                let score = crate::bm25::term_score(
-                    crate::fts::decode_tf(&value),
-                    doc_len,
-                    avg_len,
-                    token_idf,
-                    params,
-                );
-                *scores.entry(id).or_insert(0.0) += score;
-            }
+                    let entry = match scores.entry(id) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let len = rtxn
+                                .get(&len_table, &id)?
+                                .map(|b| decode_doc_len(&b))
+                                .unwrap_or(0);
+                            entry.insert((0.0, len))
+                        }
+                    };
+                    entry.0 += crate::bm25::term_score(
+                        crate::fts::decode_tf(value),
+                        entry.1,
+                        avg_len,
+                        token_idf,
+                        params,
+                    );
+                    Ok(ScanFlow::Continue)
+                },
+            )?;
         }
 
-        let mut ranked: Vec<([u8; 16], f32)> = scores.into_iter().collect();
-        // Ties break on ULID so results are stable across identical queries.
-        ranked.sort_by(|a, b| {
+        let mut ranked: Vec<([u8; 16], f32)> = scores
+            .into_iter()
+            .map(|(id, (score, _))| (id, score))
+            .collect();
+        let compare = |a: &([u8; 16], f32), b: &([u8; 16], f32)| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.0.cmp(&b.0))
-        });
+        };
+        // Selection requires a total order. Keep the historical full sort for
+        // non-finite scores permitted by caller-supplied BM25 parameters.
+        if top_k < ranked.len() && ranked.iter().all(|(_, score)| score.is_finite()) {
+            ranked.select_nth_unstable_by(top_k, compare);
+            ranked.truncate(top_k);
+        }
+        ranked.sort_by(compare);
         ranked.truncate(top_k);
 
         let docs_table = docs_table_name(&self.name);
         let mut out = Vec::with_capacity(ranked.len());
-        for (id, score) in ranked {
-            if let Some(bytes) = rtxn.get(&docs_table, &id)? {
-                let mut document: Document = postcard::from_bytes(&bytes)?;
-                self.decrypt_doc(&mut document)?;
-                out.push(TextSearchResult { document, score });
+        for chunk in ranked.chunks(WRITE_BATCH_DOCS) {
+            let keys: Vec<&[u8]> = chunk.iter().map(|(id, _)| id.as_slice()).collect();
+            for ((_, score), bytes) in chunk.iter().zip(rtxn.get_many(&docs_table, &keys)?) {
+                if let Some(bytes) = bytes {
+                    let mut document: Document = postcard::from_bytes(&bytes)?;
+                    self.decrypt_doc(&mut document)?;
+                    out.push(TextSearchResult {
+                        document,
+                        score: *score,
+                    });
+                }
             }
         }
         Ok(out)
@@ -1030,26 +1024,24 @@ impl Collection {
 
         // Backfill existing documents
         let docs_table = docs_table_name(&self.name);
-        let existing = wtxn.range(
-            &docs_table,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
         let ctable = compound_table_name(&self.name, fields);
-        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(existing.len());
-        for (_, doc_bytes) in existing {
-            let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            let vals: Option<Vec<&crate::document::Value>> =
-                fields.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                keys.extend(encode_compound_keys(&v, doc.id)?);
+        for_each_document_batch(wtxn.as_mut(), &docs_table, &mut |wtxn, docs| {
+            let mut keys = Vec::new();
+            for doc in docs {
+                let vals: Option<Vec<&crate::document::Value>> =
+                    fields.iter().map(|f| doc.get(f)).collect();
+                if let Some(v) = vals {
+                    keys.extend(encode_compound_keys(&v, doc.id)?);
+                }
             }
-        }
-        let ops: Vec<crate::engine::KvOp<'_>> = keys
-            .iter()
-            .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
-            .collect();
-        wtxn.apply_batch(&ctable, &ops)?;
+            let ops: Vec<crate::engine::KvOp<'_>> = keys
+                .iter()
+                .map(|k| crate::engine::KvOp::Put(k.as_slice(), &[]))
+                .collect();
+            wtxn.apply_batch(&ctable, &ops)?;
+
+            Ok(())
+        })?;
 
         bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
@@ -1069,17 +1061,7 @@ impl Collection {
             return Err(TalaDbError::IndexNotFound(format!("compound:{meta_key}")));
         }
 
-        let ctable = compound_table_name(&self.name, fields);
-        let all = wtxn.range(
-            &ctable,
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )?;
-        let ops: Vec<crate::engine::KvOp<'_>> = all
-            .iter()
-            .map(|(k, _)| crate::engine::KvOp::Delete(k.as_slice()))
-            .collect();
-        wtxn.apply_batch(&ctable, &ops)?;
+        wtxn.delete_table(&compound_table_name(&self.name, fields))?;
         wtxn.delete(META_COMPOUND_TABLE, meta_key.as_bytes())?;
         bump_revision(wtxn.as_mut(), &format!("schema::{}", self.name))?;
         wtxn.commit()?;
@@ -1799,6 +1781,11 @@ impl Collection {
             .map(|(k, v)| KvOp::Put(k.as_slice(), v.as_slice()))
             .collect();
         wtxn.apply_batch(&tables.docs, &body_ops)?;
+        // Storage has copied these bytes. Release the serialized bodies before
+        // allocating scalar/FTS/vector index operations for the same batch.
+        drop(body_ops);
+        drop(doc_bodies);
+        drop(doc_keys);
 
         // --- secondary indexes ---
         for (idx, table) in cache.indexes.iter().zip(&tables.btree) {
@@ -2069,6 +2056,7 @@ impl Collection {
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let ts = now_ms() as i64;
         let mut supplied_ids: Vec<Ulid> = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut docs: Vec<Document> = Vec::with_capacity(items.len());
         for mut fields in items {
             let supplied = take_supplied_id(&mut fields)?;
@@ -2080,7 +2068,7 @@ impl Collection {
                     // carrying one id would otherwise have the second silently
                     // overwrite the first, and `insert_many` would report two
                     // ids for one stored document.
-                    if supplied_ids.contains(&id) {
+                    if !seen_ids.insert(id) {
                         return Err(TalaDbError::DuplicateId(id.to_string()));
                     }
                     supplied_ids.push(id);
@@ -2209,14 +2197,27 @@ impl Collection {
         } else {
             None
         };
-        let mut docs = crate::query::executor::execute_limited(
-            &qplan,
-            &filter,
-            rtxn.as_ref(),
-            &self.name,
-            deadline,
-            pushdown,
-        )?;
+        let indexed = if matches!(filter, Filter::All) && options.timeout.is_none() {
+            if let (Some(spec), Some(limit)) = (options.sort.first(), options.limit) {
+                let keep = clamp_to_usize(options.skip).saturating_add(clamp_to_usize(limit));
+                self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut docs = match indexed {
+            Some(docs) => docs,
+            None => crate::query::executor::execute_limited(
+                &qplan,
+                &filter,
+                rtxn.as_ref(),
+                &self.name,
+                deadline,
+                pushdown,
+            )?,
+        };
         // Decrypt encrypted fields before sorting/projecting.
         docs = self.decrypt_docs(docs)?;
 
@@ -2304,11 +2305,37 @@ impl Collection {
 
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
+        let Some(docs) = self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)? else {
+            return Ok(None);
+        };
+        Ok(Some(execute_pipeline(docs, pipeline)?))
+    }
+
+    fn sorted_index_candidates(
+        &self,
+        rtxn: &dyn ReadTxn,
+        cache: &CachedIndexes,
+        spec: &crate::query::options::SortSpec,
+        keep: usize,
+    ) -> Result<Option<Vec<Document>>, TalaDbError> {
+        #[cfg(feature = "encryption")]
+        if self.field_encryption.is_some() {
+            return Ok(None);
+        }
         if !cache.indexes.iter().any(|i| i.field == spec.field) {
             return Ok(None);
         }
+        // Entry count alone cannot prove completeness: multiple array entries
+        // can conceal a missing field, and array sort compares whole values.
+        let arrays = rtxn.get(
+            META_INDEX_ARRAYS_TABLE,
+            meta_key(&self.name, &spec.field).as_bytes(),
+        )?;
+        if arrays.as_deref() != Some(0u64.to_le_bytes().as_slice()) {
+            return Ok(None);
+        }
 
-        let mut entries = index_ordered_entries(rtxn.as_ref(), &self.name, &spec.field)?;
+        let mut entries = index_ordered_entries(rtxn, &self.name, &spec.field)?;
 
         // A document whose sort field is absent has no index entry, so the index
         // is not a faithful ordering of the collection. Bail out rather than
@@ -2328,7 +2355,28 @@ impl Collection {
         for entry in &entries {
             match entry.value_prefix.first() {
                 Some(&crate::index::TAG_INT) => has_int = true,
-                Some(&crate::index::TAG_FLOAT) => has_float = true,
+                Some(&crate::index::TAG_FLOAT) => {
+                    has_float = true;
+                    let Some(bytes) = entry
+                        .value_prefix
+                        .get(1..)
+                        .and_then(|v| <[u8; 8]>::try_from(v).ok())
+                    else {
+                        return Ok(None);
+                    };
+                    let sortable = u64::from_be_bytes(bytes);
+                    let bits = if sortable >> 63 == 1 {
+                        sortable ^ (1 << 63)
+                    } else {
+                        !sortable
+                    };
+                    let value = f64::from_bits(bits);
+                    // NaN and signed zero have index ordering that differs
+                    // from the comparator's equality and ULID tie-breaking.
+                    if value.is_nan() || value == 0.0 {
+                        return Ok(None);
+                    }
+                }
                 _ => {}
             }
             if has_int && has_float {
@@ -2343,18 +2391,16 @@ impl Collection {
         // Take the page, then extend through the end of the tie-run it lands in.
         let mut take = keep.min(entries.len());
         if take > 0 {
-            let boundary = entries[take - 1].value_prefix.clone();
-            while take < entries.len() && entries[take].value_prefix == boundary {
+            let boundary = &entries[take - 1].value_prefix;
+            while take < entries.len() && &entries[take].value_prefix == boundary {
                 take += 1;
             }
         }
 
         let ulids = entries.into_iter().take(take).map(|e| e.id).collect();
-        let docs = fetch_documents(rtxn.as_ref(), &self.name, ulids)?;
+        let docs = fetch_documents(rtxn, &self.name, ulids)?;
 
-        // Hand the (small) candidate set to the normal pipeline: it applies the
-        // full multi-key sort, then the same $skip/$limit/$project as always.
-        Ok(Some(execute_pipeline(docs, pipeline)?))
+        Ok(Some(docs))
     }
 
     /// Execute an aggregation pipeline against the collection.
@@ -2461,7 +2507,8 @@ impl Collection {
             &cache.compound_indexes,
         );
 
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates =
+            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
 
         // Candidates were collected in a read snapshot that is now released;
@@ -2473,7 +2520,7 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         for candidate in candidates {
-            let stored_old: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+            let stored_old: Document = match wtxn.get(&docs_table, &candidate.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
                 None => continue, // deleted since the snapshot
             };
@@ -2484,9 +2531,8 @@ impl Collection {
             // ciphertext to compute matching old-index entries. Re-encrypting
             // with fresh nonces would produce different bytes and leak stale
             // index entries on any encrypted-field index.
-            let mut old_doc = stored_old.clone();
-            self.decrypt_doc(&mut old_doc)?;
-            let mut new_doc = old_doc.clone();
+            let mut new_doc = stored_old.clone();
+            self.decrypt_doc(&mut new_doc)?;
             apply_update(&mut new_doc, update)?;
             self.encrypt_doc(&mut new_doc)?;
             self.write_doc_and_indexes_with_compound(
@@ -2501,7 +2547,7 @@ impl Collection {
                     wtxn.as_mut(),
                     &self.name,
                     AuditOp::Update,
-                    &old_doc.id.to_string(),
+                    &stored_old.id.to_string(),
                     caller,
                 )?;
             }
@@ -2513,6 +2559,27 @@ impl Collection {
     }
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
+        self.update_many_result(filter, update, Ok)
+    }
+
+    /// Binding adapter: prepare the narrow result before committing any writes.
+    #[doc(hidden)]
+    pub fn update_many_u32(&self, filter: Filter, update: Update) -> Result<u32, TalaDbError> {
+        self.update_many_result(filter, update, mutation_count_u32)
+    }
+
+    /// C binding adapter: keep the signed result distinct from its error sentinel.
+    #[doc(hidden)]
+    pub fn update_many_i32(&self, filter: Filter, update: Update) -> Result<i32, TalaDbError> {
+        self.update_many_result(filter, update, mutation_count_i32)
+    }
+
+    fn update_many_result<T>(
+        &self,
+        filter: Filter,
+        update: Update,
+        convert_count: impl FnOnce(u64) -> Result<T, TalaDbError>,
+    ) -> Result<T, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
@@ -2522,7 +2589,8 @@ impl Collection {
             &cache.compound_indexes,
         );
 
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates =
+            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
 
         let mut count = 0u64;
@@ -2533,46 +2601,42 @@ impl Collection {
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
         let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
-        // Re-read every candidate in one batched pass. Candidate ids are
-        // distinct (index keys embed the ULID, and the Or/In plans deduplicate),
-        // so reading them all before writing any is equivalent to interleaving —
-        // and costs one table open instead of one per candidate.
-        let cand_keys: Vec<[u8; 16]> = candidates.iter().map(|c| c.id.to_bytes()).collect();
-        let cand_refs: Vec<&[u8]> = cand_keys.iter().map(<[u8; 16]>::as_slice).collect();
-        let stored: Vec<Option<Vec<u8>>> = wtxn.get_many(&docs_table, &cand_refs)?;
-        // Both versions of each updated document, held until the whole set is
-        // computed so the index maintenance can run as one batched pass.
-        let mut pairs: Vec<(Document, Document)> = Vec::new(); // (new, stored_old)
-        for bytes in stored.into_iter() {
-            let Some(bytes) = bytes else { continue };
-            let stored_old: Document = postcard::from_bytes(&bytes)?;
-            if !filter.matches_with_cache(&stored_old, &regex_cache)? {
-                continue;
+        for chunk in candidates.chunks(WRITE_BATCH_DOCS) {
+            let cand_keys: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
+            let cand_refs: Vec<&[u8]> = cand_keys.iter().map(<[u8; 16]>::as_slice).collect();
+            let stored = wtxn.get_many(&docs_table, &cand_refs)?;
+            let mut pairs = Vec::with_capacity(chunk.len());
+            for bytes in stored.into_iter().flatten() {
+                let stored_old: Document = postcard::from_bytes(&bytes)?;
+                if !filter.matches_with_cache(&stored_old, &regex_cache)? {
+                    continue;
+                }
+                let mut new_doc = stored_old.clone();
+                self.decrypt_doc(&mut new_doc)?;
+                apply_update(&mut new_doc, update.clone())?;
+                self.encrypt_doc(&mut new_doc)?;
+                if let Some(caller) = &self.audit_caller {
+                    write_audit_entry(
+                        wtxn.as_mut(),
+                        &self.name,
+                        AuditOp::Update,
+                        &stored_old.id.to_string(),
+                        caller,
+                    )?;
+                }
+                pairs.push((new_doc, stored_old));
+                count += 1;
             }
-            let mut plain_old = stored_old.clone();
-            self.decrypt_doc(&mut plain_old)?;
-            let mut new_doc = plain_old.clone();
-            apply_update(&mut new_doc, update.clone())?;
-            self.encrypt_doc(&mut new_doc)?;
-            // Audit row commits atomically with the batch.
-            if let Some(caller) = &self.audit_caller {
-                write_audit_entry(
-                    wtxn.as_mut(),
-                    &self.name,
-                    AuditOp::Update,
-                    &stored_old.id.to_string(),
-                    caller,
-                )?;
-            }
-            pairs.push((new_doc, stored_old));
-            count += 1;
+            let batch: Vec<(&Document, Option<&Document>)> =
+                pairs.iter().map(|(new, old)| (new, Some(old))).collect();
+            self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         }
-        let batch: Vec<(&Document, Option<&Document>)> =
-            pairs.iter().map(|(new, old)| (new, Some(old))).collect();
-        self.write_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
+        // Conversion belongs to the transaction: an unrepresentable binding
+        // result must roll back bodies, indexes and audit rows together.
+        let result = convert_count(count)?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        Ok(count)
+        Ok(result)
     }
 
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
@@ -2585,7 +2649,8 @@ impl Collection {
             &cache.compound_indexes,
         );
 
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates =
+            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
 
         // Re-fetch and re-check inside the write transaction (see update_one).
@@ -2594,7 +2659,7 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
         for candidate in candidates {
-            let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+            let current: Document = match wtxn.get(&docs_table, &candidate.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
                 None => continue,
             };
@@ -2615,6 +2680,26 @@ impl Collection {
     }
 
     pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
+        self.delete_many_result(filter, Ok)
+    }
+
+    /// Binding adapter: prepare the narrow result before committing any writes.
+    #[doc(hidden)]
+    pub fn delete_many_u32(&self, filter: Filter) -> Result<u32, TalaDbError> {
+        self.delete_many_result(filter, mutation_count_u32)
+    }
+
+    /// C binding adapter: keep the signed result distinct from its error sentinel.
+    #[doc(hidden)]
+    pub fn delete_many_i32(&self, filter: Filter) -> Result<i32, TalaDbError> {
+        self.delete_many_result(filter, mutation_count_i32)
+    }
+
+    fn delete_many_result<T>(
+        &self,
+        filter: Filter,
+        convert_count: impl FnOnce(u64) -> Result<T, TalaDbError>,
+    ) -> Result<T, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
         let qplan = plan_full(
@@ -2624,7 +2709,8 @@ impl Collection {
             &cache.compound_indexes,
         );
 
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates =
+            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
 
         let mut count = 0u64;
@@ -2633,36 +2719,36 @@ impl Collection {
         // hooks/audit fire only for those.
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
-        let mut deleted: Vec<Document> = Vec::with_capacity(candidates.len());
         let mut wtxn = self.backend.begin_write()?;
         let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
-        for candidate in &candidates {
-            let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
-                Some(bytes) => postcard::from_bytes(&bytes)?,
-                None => continue,
-            };
-            if !filter.matches_with_cache(&current, &regex_cache)? {
-                continue;
+        for chunk in candidates.chunks(WRITE_BATCH_DOCS) {
+            let keys: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
+            let refs: Vec<&[u8]> = keys.iter().map(<[u8; 16]>::as_slice).collect();
+            let mut deleted = Vec::with_capacity(chunk.len());
+            for bytes in wtxn.get_many(&docs_table, &refs)?.into_iter().flatten() {
+                let current: Document = postcard::from_bytes(&bytes)?;
+                if !filter.matches_with_cache(&current, &regex_cache)? {
+                    continue;
+                }
+                if let Some(caller) = &self.audit_caller {
+                    write_audit_entry(
+                        wtxn.as_mut(),
+                        &self.name,
+                        AuditOp::Delete,
+                        &current.id.to_string(),
+                        caller,
+                    )?;
+                }
+                deleted.push(current);
+                count += 1;
             }
-            // Audit row commits atomically with the batch.
-            if let Some(caller) = &self.audit_caller {
-                write_audit_entry(
-                    wtxn.as_mut(),
-                    &self.name,
-                    AuditOp::Delete,
-                    &current.id.to_string(),
-                    caller,
-                )?;
-            }
-            deleted.push(current);
-            count += 1;
+            let batch: Vec<&Document> = deleted.iter().collect();
+            self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
         }
-        // One batched pass: each index table is opened once, not once per doc.
-        let batch: Vec<&Document> = deleted.iter().collect();
-        self.delete_docs_and_indexes(&batch, &cache, wtxn.as_mut())?;
+        let result = convert_count(count)?;
         wtxn.commit()?;
         crate::watch::notify(&self.watch_registry);
-        Ok(count)
+        Ok(result)
     }
 
     pub fn count(&self, filter: Filter) -> Result<u64, TalaDbError> {
@@ -2750,9 +2836,6 @@ impl Collection {
                     len_keys.push(doc.id.to_bytes());
                 }
             }
-            if posting_keys.is_empty() {
-                continue;
-            }
             let ops: Vec<KvOp<'_>> = posting_keys
                 .iter()
                 .map(|k| KvOp::Delete(k.as_slice()))
@@ -2797,6 +2880,55 @@ impl Collection {
     }
 }
 
+fn mutation_count_u32(count: u64) -> Result<u32, TalaDbError> {
+    u32::try_from(count)
+        .map_err(|_| TalaDbError::InvalidOperation("result count exceeds u32 range".into()))
+}
+
+fn mutation_count_i32(count: u64) -> Result<i32, TalaDbError> {
+    i32::try_from(count)
+        .map_err(|_| TalaDbError::InvalidOperation("result count exceeds i32 range".into()))
+}
+
+/// Scan the writer's snapshot between batches, releasing borrowed storage
+/// before editing index tables. All batches share the caller's transaction.
+fn for_each_document_batch(
+    txn: &mut dyn crate::engine::WriteTxn,
+    table: &str,
+    apply: &mut impl FnMut(&mut dyn crate::engine::WriteTxn, &[Document]) -> Result<(), TalaDbError>,
+) -> Result<(), TalaDbError> {
+    use crate::engine::ScanFlow;
+    use std::ops::Bound;
+    let mut last: Option<Vec<u8>> = None;
+    let mut docs = Vec::with_capacity(WRITE_BATCH_DOCS);
+    loop {
+        let mut bytes = 0usize;
+        let start = last.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+        let mut next = None;
+        txn.scan(table, start, Bound::Unbounded, &mut |key, value| {
+            docs.push(postcard::from_bytes(value)?);
+            let cursor = next.get_or_insert_with(Vec::new);
+            cursor.clear();
+            cursor.extend_from_slice(key);
+            bytes = bytes.saturating_add(value.len());
+            Ok(
+                if docs.len() >= WRITE_BATCH_DOCS || bytes >= WRITE_BATCH_BYTES {
+                    ScanFlow::Stop
+                } else {
+                    ScanFlow::Continue
+                },
+            )
+        })?;
+        if docs.is_empty() {
+            break;
+        }
+        apply(txn, &docs)?;
+        last = next;
+        docs.clear();
+    }
+    Ok(())
+}
+
 /// A document's running fusion state while the two rankings are merged.
 #[derive(Default)]
 struct FusedEntry {
@@ -2825,12 +2957,7 @@ fn adjust_fts_stats_batch(
     if removed_lens.is_empty() && added_lens.is_empty() {
         return Ok(());
     }
-    let mut stats: FtsStats = match wtxn.get(stats_table, FTS_STATS_KEY)? {
-        // A corrupt or truncated stats record must not fail the write; the
-        // worst case is a slightly wrong average until the index is rebuilt.
-        Some(bytes) => postcard::from_bytes(&bytes).unwrap_or_default(),
-        None => FtsStats::default(),
-    };
+    let mut stats = decode_fts_stats(wtxn.get(stats_table, FTS_STATS_KEY)?, stats_table)?;
     for len in removed_lens {
         stats.remove_doc(*len);
     }
@@ -2839,6 +2966,24 @@ fn adjust_fts_stats_batch(
     }
     wtxn.put(stats_table, FTS_STATS_KEY, &postcard::to_allocvec(&stats)?)?;
     Ok(())
+}
+
+fn decode_fts_stats(bytes: Option<Vec<u8>>, table: &str) -> Result<FtsStats, TalaDbError> {
+    // Missing stats are legitimate for empty/legacy indexes. Existing bytes
+    // must decode completely: replacing corruption with zeros damages ranking
+    // and would let a subsequent write persist fabricated corpus statistics.
+    let Some(bytes) = bytes else {
+        return Ok(FtsStats::default());
+    };
+    let (stats, rest) = postcard::take_from_bytes::<FtsStats>(&bytes).map_err(|e| {
+        TalaDbError::Serialization(format!("corrupt FTS statistics in '{table}': {e}"))
+    })?;
+    if !rest.is_empty() {
+        return Err(TalaDbError::Serialization(format!(
+            "corrupt FTS statistics in '{table}': trailing bytes"
+        )));
+    }
+    Ok(stats)
 }
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
@@ -2913,4 +3058,154 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     // Auto-advance _changed_at on every mutation so LWW always has a fresh timestamp.
     doc.set("_changed_at", Value::Int(now_ms() as i64));
     Ok(())
+}
+
+#[cfg(test)]
+mod mutation_result_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn narrow_test_count(count: u64) -> Result<u8, TalaDbError> {
+        u8::try_from(count)
+            .map_err(|_| TalaDbError::InvalidOperation("test count exceeds u8 range".into()))
+    }
+
+    #[test]
+    fn count_conversion_failure_rolls_back_all_batches_and_emits_no_watch_event() {
+        let db = crate::Database::open_in_memory().unwrap();
+        let col = db.collection("docs").unwrap().with_audit_log("test".into());
+        col.insert_many(
+            (0..257)
+                .map(|i| {
+                    vec![
+                        ("n".into(), Value::Int(i)),
+                        ("bucket".into(), Value::Int(i % 3)),
+                        ("body".into(), Value::Str("original text".into())),
+                        (
+                            "v".into(),
+                            Value::Array(vec![Value::Float(1.0), Value::Float(i as f64 / 257.0)]),
+                        ),
+                    ]
+                })
+                .collect(),
+        )
+        .unwrap();
+        col.create_index("n").unwrap();
+        col.create_compound_index(&["bucket", "n"]).unwrap();
+        col.create_fts_index("body").unwrap();
+        col.create_vector_index(
+            "v",
+            2,
+            None,
+            Some(HnswOptions {
+                m: 4,
+                ef_construction: 16,
+            }),
+        )
+        .unwrap();
+        let snapshot = db.export_snapshot().unwrap();
+        let before_hits = col.find_nearest("v", &[1.0, 0.0], 10, None).unwrap();
+        let watch = crate::watch::create_watch(&col.watch_registry, Filter::All, |_| Ok(vec![]));
+        for (delete, signed) in [(false, false), (true, false), (false, true), (true, true)] {
+            let converted = Cell::new(false);
+            let convert = |count| {
+                assert_eq!(
+                    count, 257,
+                    "conversion must follow all three mutation batches"
+                );
+                converted.set(true);
+                if signed {
+                    i8::try_from(count).map(i32::from).map_err(|_| {
+                        TalaDbError::InvalidOperation("test count exceeds i8 range".into())
+                    })
+                } else {
+                    narrow_test_count(count).map(i32::from)
+                }
+            };
+            let result = if delete {
+                col.delete_many_result(Filter::All, convert)
+            } else {
+                col.update_many_result(
+                    Filter::All,
+                    Update::Many(vec![
+                        Update::Inc(vec![("n".into(), Value::Int(1))]),
+                        Update::Set(vec![
+                            ("body".into(), Value::Str("replacement text".into())),
+                            (
+                                "v".into(),
+                                Value::Array(vec![Value::Float(0.0), Value::Float(1.0)]),
+                            ),
+                        ]),
+                    ]),
+                    convert,
+                )
+            };
+            assert!(converted.get());
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("test count exceeds")
+            );
+            assert_eq!(
+                db.export_snapshot().unwrap(),
+                snapshot,
+                "body, scalar/compound/FTS/vector/graph indexes, generations and audit must roll back"
+            );
+            assert!(watch.try_next().unwrap().is_none());
+            let after_hits = col.find_nearest("v", &[1.0, 0.0], 10, None).unwrap();
+            assert_eq!(
+                before_hits
+                    .iter()
+                    .map(|h| (h.document.id, h.score.to_bits()))
+                    .collect::<Vec<_>>(),
+                after_hits
+                    .iter()
+                    .map(|h| (h.document.id, h.score.to_bits()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_counts_commit_and_notify_and_empty_mutations_return_zero() {
+        let db = crate::Database::open_in_memory().unwrap();
+        let col = db.collection("docs").unwrap();
+        col.insert_many(vec![vec![("n".into(), Value::Int(1))]; 2])
+            .unwrap();
+        let watch = crate::watch::create_watch(&col.watch_registry, Filter::All, |_| Ok(vec![]));
+        assert_eq!(
+            col.update_many_u32(Filter::All, Update::Inc(vec![("n".into(), Value::Int(1))]))
+                .unwrap(),
+            2
+        );
+        assert_eq!(col.count(Filter::Eq("n".into(), Value::Int(2))).unwrap(), 2);
+        assert!(watch.try_next().unwrap().is_some());
+        assert_eq!(col.delete_many_u32(Filter::All).unwrap(), 2);
+        assert_eq!(col.count(Filter::All).unwrap(), 0);
+        assert!(watch.try_next().unwrap().is_some());
+        assert_eq!(col.delete_many_u32(Filter::All).unwrap(), 0);
+        assert_eq!(
+            col.update_many_u32(Filter::All, Update::Set(vec![("n".into(), Value::Int(9))]))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn binding_count_conversion_has_an_exact_u32_boundary() {
+        assert_eq!(mutation_count_u32(0).unwrap(), 0);
+        assert_eq!(mutation_count_u32(u64::from(u32::MAX)).unwrap(), u32::MAX);
+        assert!(mutation_count_u32(u64::from(u32::MAX) + 1).is_err());
+        assert!(mutation_count_u32(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn c_binding_count_conversion_has_an_exact_i32_boundary() {
+        assert_eq!(mutation_count_i32(0).unwrap(), 0);
+        assert_eq!(mutation_count_i32(i32::MAX as u64).unwrap(), i32::MAX);
+        for count in [i32::MAX as u64 + 1, u64::from(u32::MAX), 1 << 32, u64::MAX] {
+            assert!(mutation_count_i32(count).is_err());
+        }
+    }
 }

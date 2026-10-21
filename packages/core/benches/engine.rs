@@ -9,6 +9,9 @@
 //! Run with `cargo bench -p taladb-core`. Add `-- --save-baseline before` and
 //! `-- --baseline before` around a change to get a like-for-like comparison.
 
+#[path = "support/stabilization.rs"]
+mod stabilization;
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use taladb::vector::{VectorMetric, l2_norm, score_with_query_norm};
@@ -189,6 +192,7 @@ criterion_group!(
     bench_vector_scoring,
     bench_find_nearest,
     bench_query,
-    bench_writes_and_snapshot
+    bench_writes_and_snapshot,
+    stabilization::bench_stabilization
 );
 criterion_main!(benches);

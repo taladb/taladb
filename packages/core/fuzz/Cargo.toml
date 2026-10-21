@@ -16,7 +16,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-postcard = { version = "1.0", features = ["alloc"] }
+# Match core: the fuzz targets decode documents and do not use heapless APIs.
+# Postcard's default heapless feature pulls in unmaintained atomic-polyfill.
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_json = "1.0"
 taladb-core = { package = "taladb", path = "..", features = ["encryption"] }
 # The JSON→Filter/Update parsers live in the bindings, not the core. This is the

@@ -1,7 +1,18 @@
 # Changelog
 
 
-## 0.12.0 — Unreleased
+## 0.12.1 — Unreleased
+
+- Validate bulk mutation counts before commit in Node, WASM, and direct C bindings. An unrepresentable result rolls back document, index, statistics, and audit changes without emitting a watch event.
+- Correct FTS statistics for tokenless documents, reject malformed statistics, and validate snapshot boundaries during restore.
+- Bound index-backfill and bulk-mutation intermediate buffers, reduce query result retention, and preserve single-transaction atomicity and existing query ordering.
+- Share filter/update parsing across bindings and preserve useful worker parser error messages.
+- Update the locked QUIC/TLS dependencies to patched versions and replace the unmaintained YAML parser dependency chain with a configuration-compatible maintained fork.
+- Add regression coverage for count overflow/rollback, concurrent candidate invalidation, parser parity, index/query consistency, snapshots, and YAML configuration compatibility.
+
+Existing public operations, document/index/snapshot/vector formats, cache defaults, and Rust MSRV 1.90 are preserved. Platform runtime validation and constrained-memory deployment limits remain release prerequisites.
+
+## 0.12.0
 
 ### Performance
 
