@@ -46,27 +46,11 @@ sha2             = { version = "0.11", optional = true }
 zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
 # Config parsing — JSON always; YAML only behind `config-yaml`.
 serde_json = { version = "1.0", features = ["preserve_order"] }
-# `serde_yaml_ng`, not `serde_yaml`: the original was deprecated by its author and
-# is no longer maintained, so a YAML parsing bug would never be fixed upstream —
-# and this parses a file off disk. `serde_yaml_ng` is the maintained continuation
-# and is API-compatible, so the swap is one call site.
-#
-# (Not `serde_yml`, which crates.io now marks "DEPRECATED — unmaintained, a thin
-# compatibility shim". The fork landscape here is littered; `serde_yaml_ng` and
-# `serde_norway` are the two live ones.)
-#
-# Caveat worth knowing: this swaps the *wrapper* for a maintained one, but
-# `serde_yaml_ng` still depends on the original `unsafe-libyaml`, which was
-# deprecated alongside `serde_yaml`. So the unsafe parsing code in the tree is
-# unchanged. `serde_norway` is the alternative that also forked the parser
-# (`unsafe-libyaml-norway`); switching is the same one-line change if that ever
-# matters. It is judged not to today: this parses `taladb.config.yml`, a file the
-# application ships, not untrusted input, and `cargo audit` flags neither crate.
-#
-# Still optional: browser and React Native builds receive their config as a JSON
-# string and never read a file off disk, so a YAML parser there is pure bundle
-# weight — hence the feature gate.
-serde_yaml_ng = { version = "0.10", optional = true }
+# This fork maintains both the Serde wrapper and its low-level YAML parser.
+# serde_yaml_ng still uses unsafe-libyaml (RUSTSEC-2024-0449, unmaintained).
+# Configuration compatibility is covered by tests/config_yaml_compat.rs.
+# Browser and React Native builds receive JSON and leave this feature disabled.
+serde_norway = { version = "0.9.42", optional = true }
 # WASM-compatible SystemTime — re-exports std::time on native, uses js_sys::Date on wasm32.
 web-time = "1"
 # Random bytes — used for ULID generation. wasm_js feature enabled by taladb-web for WASM targets.
@@ -84,9 +68,9 @@ default      = ["config-yaml", "legacy-migration"]
 encryption   = ["dep:aes-gcm", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = [] # Compatibility alias; portable HNSW is now always available.
 # Parse `taladb.config.yml`. On by default for native/CLI use; browser and React
-# Native builds turn it off (`default-features = false`) to drop serde_yaml and
-# unsafe-libyaml from the bundle. JSON config works either way.
-config-yaml  = ["dep:serde_yaml_ng"]
+# Native builds turn it off (`default-features = false`) to drop the YAML
+# parser from the bundle. JSON config works either way.
+config-yaml  = ["dep:serde_norway"]
 # Read and upgrade databases written before the redb 4 bump.
 #
 # On native this is unconditional — `RedbBackend::open` owns a real file and there

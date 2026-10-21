@@ -1,0 +1,26 @@
+{
+  "filters": [
+    {"input": null, "valid": true},
+    {"input": {}, "valid": true},
+    {"input": {"tenant": "a", "$or": [{"n": {"$gte": 2, "$lt": 9}}, {"tags": {"$in": ["rust", "db"]}}]}, "valid": true},
+    {"input": {"$not": {"name": {"$regex": "^a"}}, "body": {"$contains": "rust"}, "active": {"$exists": true}}, "valid": true},
+    {"input": {"n": {"$nin": [1, 2], "$ne": 3}}, "valid": true},
+    {"input": [], "valid": false},
+    {"input": {"n": {}}, "valid": false},
+    {"input": {"n": {"$in": 1}}, "valid": false},
+    {"input": {"n": {"$exists": 1}}, "valid": false},
+    {"input": {"$unknown": []}, "valid": false},
+    {"input": {"$and": {}}, "valid": false}
+  ],
+  "updates": [
+    {"input": {"$set": {"n": 1, "obj": {"nested": [1, 2]}}}, "valid": true},
+    {"input": {"$set": {"a": 1}, "$unset": {"b": true}, "$inc": {"n": 2}, "$push": {"x": 1, "y": 2}, "$pull": {"z": 3}}, "valid": true},
+    {"input": {"$set": {}}, "valid": true},
+    {"input": {}, "valid": false},
+    {"input": null, "valid": false},
+    {"input": {"$set": {"a": 1}, "$typo": {}}, "valid": false},
+    {"input": {"$set": []}, "valid": false},
+    {"input": {"$push": {}}, "valid": false},
+    {"input": {"$unset": ["a"]}, "valid": false}
+  ]
+}

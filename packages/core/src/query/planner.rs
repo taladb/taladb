@@ -119,12 +119,14 @@ fn plan_inner(
         }
 
         Filter::In(field, values) if field == "_id" => {
+            let mut seen = std::collections::HashSet::new();
             let ids = values
                 .iter()
                 .filter_map(|v| match v {
                     crate::document::Value::Str(s) => ulid::Ulid::from_string(s).ok(),
                     _ => None,
                 })
+                .filter(|id| seen.insert(*id))
                 .collect();
             QueryPlan::ById { ids }
         }

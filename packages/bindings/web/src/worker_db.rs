@@ -410,8 +410,7 @@ impl WorkerDB {
         let update = parse_update(update_json)?;
         self.get_collection(collection)
             .map_err(|e| JsValue::from_str(&e.to_string()))?
-            .update_many(filter, update)
-            .map(|n| n as u32)
+            .update_many_u32(filter, update)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -431,8 +430,7 @@ impl WorkerDB {
         let filter = parse_filter(filter_json)?;
         self.get_collection(collection)
             .map_err(|e| JsValue::from_str(&e.to_string()))?
-            .delete_many(filter)
-            .map(|n| n as u32)
+            .delete_many_u32(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -443,8 +441,8 @@ impl WorkerDB {
             .collection(collection)
             .map_err(|e| JsValue::from_str(&e.to_string()))?
             .count(filter)
-            .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
+            .and_then(super::count_to_u32)
     }
 
     /// This collection's write generation — a counter bumped once per committed
@@ -618,7 +616,9 @@ impl WorkerDB {
             .as_ref()
             .and_then(|o| o.get("candidates"))
             .and_then(serde_json::Value::as_u64)
-            .map(|v| v as usize);
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| JsValue::from_str("candidates exceeds platform size"))?;
 
         let results = self
             .db
@@ -962,174 +962,25 @@ fn rrf_from_options(options: Option<&serde_json::Value>) -> taladb_core::bm25::R
 fn parse_filter(json: &str) -> Result<Filter, JsValue> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    // `serde_json`'s parser caps at 128 levels; the engine's ceiling is 64. This
-    // keeps the worker in step with the main-thread binding, which checks the
-    // same way in `js_to_json`.
-    taladb_core::json_depth::check_json_depth(&v).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    if v.is_null() {
-        return Ok(Filter::All);
-    }
-    json_to_filter_val(&v).ok_or_else(|| JsValue::from_str("invalid filter"))
+    taladb_core::json::filter_from_json(&v).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 fn parse_update(json: &str) -> Result<Update, JsValue> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    // See `parse_filter` above.
-    taladb_core::json_depth::check_json_depth(&v).map_err(|e| JsValue::from_str(&e.to_string()))?;
     json_to_update_val(&v)
 }
 
 fn json_to_core_value(j: &serde_json::Value) -> Value {
-    match j {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => Value::Str(s.clone()),
-        serde_json::Value::Array(arr) => Value::Array(arr.iter().map(json_to_core_value).collect()),
-        serde_json::Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), json_to_core_value(v)))
-                .collect(),
-        ),
-    }
+    taladb_core::json::to_value(j)
 }
 
 fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
-    let obj = v.as_object()?;
-
-    let mut filters: Vec<Filter> = Vec::new();
-    for (field, expr) in obj {
-        if field.starts_with('$') {
-            let logical = match field.as_str() {
-                "$and" => Filter::And(
-                    expr.as_array()?
-                        .iter()
-                        .map(json_to_filter_val)
-                        .collect::<Option<_>>()?,
-                ),
-                "$or" => Filter::Or(
-                    expr.as_array()?
-                        .iter()
-                        .map(json_to_filter_val)
-                        .collect::<Option<_>>()?,
-                ),
-                "$not" => Filter::Not(Box::new(json_to_filter_val(expr)?)),
-                _ => return None,
-            };
-            filters.push(logical);
-            continue;
-        }
-        if !expr.is_object() {
-            filters.push(Filter::Eq(field.clone(), json_to_core_value(expr)));
-            continue;
-        }
-        let ops = expr.as_object()?;
-        if ops.is_empty() {
-            // `{field: {}}` is ambiguous (error on node, match-all
-            // historically here) — rejected on every platform as of 0.8.1.
-            return None;
-        }
-        for (op, val) in ops {
-            let v = json_to_core_value(val);
-            let f = match op.as_str() {
-                "$eq" => Filter::Eq(field.clone(), v),
-                "$ne" => Filter::Ne(field.clone(), v),
-                "$gt" => Filter::Gt(field.clone(), v),
-                "$gte" => Filter::Gte(field.clone(), v),
-                "$lt" => Filter::Lt(field.clone(), v),
-                "$lte" => Filter::Lte(field.clone(), v),
-                "$in" => Filter::In(
-                    field.clone(),
-                    val.as_array()?.iter().map(json_to_core_value).collect(),
-                ),
-                "$nin" => Filter::Nin(
-                    field.clone(),
-                    val.as_array()?.iter().map(json_to_core_value).collect(),
-                ),
-                "$exists" => Filter::Exists(field.clone(), val.as_bool()?),
-                "$contains" => Filter::Contains(field.clone(), val.as_str()?.to_string()),
-                "$regex" => Filter::Regex(field.clone(), val.as_str()?.to_string()),
-                _ => return None,
-            };
-            filters.push(f);
-        }
-    }
-    match filters.len() {
-        0 => Some(Filter::All),
-        1 => Some(filters.remove(0)),
-        _ => Some(Filter::And(filters)),
-    }
+    taladb_core::json::filter_from_json_object(v)
 }
 
 fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
-    let obj = v
-        .as_object()
-        .ok_or_else(|| JsValue::from_str("update must be an object"))?;
-
-    let mut updates = Vec::new();
-    if let Some(set) = obj.get("$set") {
-        let pairs = set
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$set must be object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_core_value(v)))
-            .collect();
-        updates.push(Update::Set(pairs));
-    }
-    if let Some(unset) = obj.get("$unset") {
-        let keys = unset
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$unset must be object"))?
-            .keys()
-            .cloned()
-            .collect();
-        updates.push(Update::Unset(keys));
-    }
-    if let Some(inc) = obj.get("$inc") {
-        let pairs = inc
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$inc must be object"))?
-            .iter()
-            .map(|(k, v)| (k.clone(), json_to_core_value(v)))
-            .collect();
-        updates.push(Update::Inc(pairs));
-    }
-    if let Some(push) = obj.get("$push") {
-        let map = push
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$push must be object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Push(k.clone(), json_to_core_value(v))),
-        );
-    }
-    if let Some(pull) = obj.get("$pull") {
-        let map = pull
-            .as_object()
-            .ok_or_else(|| JsValue::from_str("$pull must be object"))?;
-        updates.extend(
-            map.iter()
-                .map(|(k, v)| Update::Pull(k.clone(), json_to_core_value(v))),
-        );
-    }
-    if obj
-        .keys()
-        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
-    {
-        return Err(JsValue::from_str("unsupported update operator"));
-    }
-    match updates.len() {
-        0 => Err(JsValue::from_str("update must contain an operator")),
-        1 => Ok(updates.remove(0)),
-        _ => Ok(Update::Many(updates)),
-    }
+    taladb_core::json::update_from_json(v).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 // ---------------------------------------------------------------------------

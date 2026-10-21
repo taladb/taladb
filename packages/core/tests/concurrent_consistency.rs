@@ -252,3 +252,96 @@ fn invalid_hnsw_connectivity_is_rejected() {
     );
     assert!(col.list_indexes().unwrap().vector.is_empty());
 }
+
+#[test]
+fn single_mutations_revalidate_and_continue_to_the_next_snapshot_candidate() {
+    for delete in [false, true] {
+        let (db, gate, entered, resume) = controlled(false);
+        let col = db.collection("docs").unwrap();
+        let ids = col
+            .insert_many(
+                (0..3)
+                    .map(|_| vec![("status".into(), Value::Str("eligible".into()))])
+                    .collect(),
+            )
+            .unwrap();
+        let filter = Filter::Eq("status".into(), Value::Str("eligible".into()));
+        let first = col.find(filter.clone()).unwrap()[0].id;
+        gate.armed.store(true, Ordering::SeqCst);
+        let writer = db.collection("docs").unwrap();
+        let writing = std::thread::spawn(move || {
+            if delete {
+                writer.delete_one(filter).unwrap()
+            } else {
+                writer
+                    .update_one(
+                        filter,
+                        Update::Set(vec![("done".into(), Value::Bool(true))]),
+                    )
+                    .unwrap()
+            }
+        });
+        wait(&entered);
+        col.update_one(
+            Filter::Eq("_id".into(), Value::Str(first.to_string())),
+            Update::Set(vec![("status".into(), Value::Str("ineligible".into()))]),
+        )
+        .unwrap();
+        resume.send(()).unwrap();
+        assert!(writing.join().unwrap());
+        assert_eq!(col.find_by_id(first).unwrap().unwrap().get("done"), None);
+        assert_eq!(col.count(Filter::All).unwrap(), if delete { 2 } else { 3 });
+        if !delete {
+            assert_eq!(
+                col.count(Filter::Eq("done".into(), Value::Bool(true)))
+                    .unwrap(),
+                1
+            );
+        }
+        assert!(ids.contains(&first));
+    }
+}
+
+#[test]
+fn narrow_bulk_results_count_only_candidates_still_eligible_in_the_writer() {
+    for (delete, signed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (db, gate, entered, resume) = controlled(false);
+        let col = db.collection("docs").unwrap();
+        let ids = col
+            .insert_many(
+                (0..3)
+                    .map(|_| vec![("status".into(), Value::Str("eligible".into()))])
+                    .collect(),
+            )
+            .unwrap();
+        let filter = Filter::Eq("status".into(), Value::Str("eligible".into()));
+        gate.armed.store(true, Ordering::SeqCst);
+        let writer = db.collection("docs").unwrap();
+        let writing = std::thread::spawn(move || {
+            let update = Update::Set(vec![("done".into(), Value::Bool(true))]);
+            match (delete, signed) {
+                (true, true) => writer.delete_many_i32(filter).map(i64::from).unwrap(),
+                (true, false) => writer.delete_many_u32(filter).map(i64::from).unwrap(),
+                (false, true) => writer
+                    .update_many_i32(filter, update)
+                    .map(i64::from)
+                    .unwrap(),
+                (false, false) => writer
+                    .update_many_u32(filter, update)
+                    .map(i64::from)
+                    .unwrap(),
+            }
+        });
+        wait(&entered);
+        col.update_one(
+            Filter::Eq("_id".into(), Value::Str(ids[0].to_string())),
+            Update::Set(vec![("status".into(), Value::Str("ineligible".into()))]),
+        )
+        .unwrap();
+        col.delete_by_id(ids[1]).unwrap();
+        resume.send(()).unwrap();
+        assert_eq!(writing.join().unwrap(), 1i64);
+        assert_eq!(col.count(Filter::All).unwrap(), if delete { 1 } else { 2 });
+        assert_eq!(col.find_by_id(ids[0]).unwrap().unwrap().get("done"), None);
+    }
+}

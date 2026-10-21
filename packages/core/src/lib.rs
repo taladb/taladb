@@ -560,6 +560,10 @@ impl Database {
         let mut cursor: usize = 8;
 
         let table_count = read_u32(data, &mut cursor)? as usize;
+        // A table requires a name prefix, a nonempty name and an entry count.
+        if table_count > (data.len() - cursor) / 13 {
+            return Err(TalaDbError::InvalidSnapshot);
+        }
         for _ in 0..table_count {
             let name_len = read_u32(data, &mut cursor)? as usize;
             // redb documents "name must not be empty" as an invariant of
@@ -580,10 +584,14 @@ impl Database {
                 return Err(TalaDbError::InvalidSnapshot);
             }
             let name = std::str::from_utf8(read_slice(data, &mut cursor, name_len)?)
-                .map_err(|_| TalaDbError::InvalidSnapshot)?
-                .to_string();
+                .map_err(|_| TalaDbError::InvalidSnapshot)?;
 
-            let entry_count = clamp_to_usize(read_u64(data, &mut cursor)?);
+            let entry_count = usize::try_from(read_u64(data, &mut cursor)?)
+                .map_err(|_| TalaDbError::InvalidSnapshot)?;
+            // Even an empty key/value pair consumes two length prefixes.
+            if entry_count > (data.len() - cursor) / 8 {
+                return Err(TalaDbError::InvalidSnapshot);
+            }
 
             // Write all entries for this table in a single transaction.
             let mut wtxn = db.backend.begin_write()?;
@@ -592,17 +600,20 @@ impl Database {
                 if key_len > MAX_SNAPSHOT_ENTRY_BYTES {
                     return Err(TalaDbError::InvalidSnapshot);
                 }
-                let key = read_slice(data, &mut cursor, key_len)?.to_vec();
+                let key = read_slice(data, &mut cursor, key_len)?;
                 let val_len = read_u32(data, &mut cursor)? as usize;
                 if val_len > MAX_SNAPSHOT_ENTRY_BYTES {
                     return Err(TalaDbError::InvalidSnapshot);
                 }
-                let val = read_slice(data, &mut cursor, val_len)?.to_vec();
-                wtxn.put(&name, &key, &val)?;
+                let val = read_slice(data, &mut cursor, val_len)?;
+                wtxn.put(name, key, val)?;
             }
             wtxn.commit()?;
         }
 
+        if cursor != data.len() {
+            return Err(TalaDbError::InvalidSnapshot);
+        }
         Ok(db)
     }
 }
