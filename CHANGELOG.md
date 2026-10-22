@@ -1,7 +1,7 @@
 # Changelog
 
 
-## 0.12.1 — Unreleased
+## 0.12.1 — 2026-10-22
 
 - Validate bulk mutation counts before commit in Node, WASM, and direct C bindings. An unrepresentable result rolls back document, index, statistics, and audit changes without emitting a watch event.
 - Correct FTS statistics for tokenless documents, reject malformed statistics, and validate snapshot boundaries during restore.
@@ -12,7 +12,7 @@
 
 Existing public operations, document/index/snapshot/vector formats, cache defaults, and Rust MSRV 1.90 are preserved. Platform runtime validation and constrained-memory deployment limits remain release prerequisites.
 
-## 0.12.0
+## 0.12.0 - 026-10-03
 
 ### Performance
 
