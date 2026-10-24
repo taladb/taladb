@@ -1,7 +1,12 @@
 {
+  "evidence": {
+    "asset": "taladb-v0.12.1-baseline-evidence.tar.gz",
+    "release": "v0.12.1",
+    "sha256": "0a14198979f17a36585c43bacbad0b26c4a5a49424c20a8e2f8ca7f505857c64"
+  },
   "harness": {
     "benches_tree": "3a02d43c35aa0740c9c367047c24bf4f45d76217",
-    "commit": "2965eaac86fc5f5e4384b1048ca39b8354377daf",
+    "commit": "925160ad27ae3294e849c82900652117f09d8ed1",
     "engine_identical_to_source": true,
     "examples_tree": "b5574d0a5562223cf46a88dadac219f2b5ececc3",
     "scripts": {
