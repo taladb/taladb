@@ -189,8 +189,10 @@ jobs:
           if [ "$BENCH_SIZE" != pr ]; then count=10000; fi
           echo "BENCH_COUNT=$count" >> "$GITHUB_ENV"
           echo "BENCH_PROFILE=ci-linux-$(uname -m)" >> "$GITHUB_ENV"
+      # Each comparison runs even when an earlier one failed, so a PR sees every
+      # regressed configuration at once; the job still fails.
       - name: Compare graph builds and search, 8 MiB budget (phones, WASM)
-        if: steps.baseline.outputs.compatible == 'true'
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 8388608 \
@@ -199,19 +201,19 @@ jobs:
       # the same 10k graph builds ~2.6x faster and searches ~7x faster, so a
       # change can help one budget and hurt the other.
       - name: Compare graph builds and search, 64 MiB budget (native default)
-        if: steps.baseline.outputs.compatible == 'true'
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 67108864 \
             --output vector-benchmark-64mib.json
       - name: Compare resumable builds
-        if: steps.baseline.outputs.compatible == 'true'
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" \
             --batch-size 128 --output vector-benchmark-staged.json
       - name: Compare filtered workloads
-        if: matrix.quantization == 'none' && steps.baseline.outputs.compatible == 'true'
+        if: ${{ !cancelled() && matrix.quantization == 'none' && steps.baseline.outputs.compatible == 'true' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --workload filtered --count "$BENCH_COUNT" --repeats 3 --queries 20 \
@@ -219,13 +221,13 @@ jobs:
       # CONC-2, report only: steady-state throughput and CPU per request at
       # 1/2/4 threads, both sides interleaved.
       - name: Compare concurrent search (report only)
-        if: matrix.quantization == 'none' && env.BENCH_SIZE != 'pr' && steps.baseline.outputs.compatible == 'true'
+        if: ${{ !cancelled() && matrix.quantization == 'none' && env.BENCH_SIZE != 'pr' && steps.baseline.outputs.compatible == 'true' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --workload concurrency --count 2000 --repeats 3 --steady 400 --cache-bytes 8388608 \
             --output vector-benchmark-concurrency.json
       - name: Check concurrent search memory at phone budgets
-        if: matrix.quantization == 'none'
+        if: ${{ !cancelled() && matrix.quantization == 'none' }}
         run: |
           for budget in 1048576 8388608; do
             cargo run --locked --release -p taladb --example vector_memory_profile -- \
@@ -292,7 +294,7 @@ jobs:
       # 100k documents, read-only families: where the v0.13 range and
       # sorted-page work claims its largest factors.
       - name: Compare engine benchmarks at 100k (release size)
-        if: env.BENCH_SIZE != 'pr'
+        if: ${{ !cancelled() && env.BENCH_SIZE != 'pr' }}
         run: |
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/criterion-baseline" "$GITHUB_WORKSPACE" \
             --workload criterion --repeats 3 --criterion-groups doc --criterion-sizes 100000 \
