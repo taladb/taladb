@@ -507,11 +507,15 @@ def compare(args):
     kinds = {"hnsw": Hnsw, "filtered": Filtered, "concurrency": Concurrency, "criterion": CriterionWorkload}
     workload = kinds[args.workload](args)
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
-    # Separate artifacts: a shared target directory can reuse a library from the
-    # other checkout when its source timestamps predate that checkout's build.
+    # One target directory per checkout path. Cargo's artifact names do not
+    # depend on where a workspace lives, and its freshness check compares the
+    # mtimes of the sources it last built from: a directory reused by another
+    # checkout can report "fresh" and hand back the previous checkout's binary.
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", args.candidate.resolve() / "target")).resolve()
-    sides = [Side("baseline", args.baseline.resolve(), target_root / "vector-baseline"),
-             Side("candidate", args.candidate.resolve(), target_root / "vector-candidate")]
+    def target(label, repo):
+        return target_root / f"vector-{label}-{hashlib.sha256(str(repo).encode()).hexdigest()[:8]}"
+    sides = [Side(label, repo.resolve(), target(label, repo.resolve()))
+             for label, repo in (("baseline", args.baseline), ("candidate", args.candidate))]
     if isinstance(workload, CriterionWorkload):
         benches = args.candidate.resolve() / "packages/core/benches"
         harness = tree_sha256(benches)

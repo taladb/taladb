@@ -1,0 +1,27 @@
+{
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "schema": 1,
+  "targets": {
+    "aarch64-apple-ios": {
+      "dot_similarity": 10,
+      "euclidean_similarity": 12,
+      "score_with_query_norm": 20
+    },
+    "aarch64-unknown-linux-gnu": {
+      "dot_similarity": 10,
+      "euclidean_similarity": 12,
+      "score_with_query_norm": 20
+    },
+    "wasm32-unknown-unknown": {
+      "dot_similarity": 34,
+      "euclidean_similarity": 40,
+      "score_with_query_norm": 74
+    },
+    "x86_64-unknown-linux-gnu": {
+      "dot_similarity": 41,
+      "euclidean_similarity": 48,
+      "score_with_query_norm": 115
+    }
+  },
+  "unit": "vector instructions per function"
+}
