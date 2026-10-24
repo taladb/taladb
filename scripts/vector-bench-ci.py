@@ -41,15 +41,20 @@ EXCEPTIONS = REPO / "benchmarks/gates/exceptions.json"
 # recalibrate in the same change.
 CRITERION_PROTOCOL = {"warm_up_s": 1, "measurement_s": 3, "samples": 30, "sampling": "flat"}
 
-# Per-request vector gates keep their historical rules: single-request p50s are
-# far noisier than Criterion sample means. Relative tolerance and absolute floor;
-# a regression must exceed both.
+# Per-request vector gates: relative tolerance and absolute floor (ms); a
+# regression must exceed both. The tolerances are the historical ones, which the
+# A/A runs support. The floors here are only fallbacks: calibrated floors, per
+# rule, collection size and runner, live in the tolerance file (`vector`), because
+# one fixed floor was both too high at 2k (0.25 ms against a 0.26 ms exact
+# search, so the gate could not fire below +96%) and below the A/A noise at 10k.
 VECTOR_RULES = {
     "build_ms": (0.30, 500.0),
     "exact_mean_ms": (0.30, 0.25),
     "ann_p50_ms": (0.50, 0.25),
     "filtered_p50_ms": (0.50, 0.25),
 }
+# Calibrated floors never go below these (timer and scheduler granularity).
+MIN_FLOOR = {"build_ms": 50.0, "exact_mean_ms": 0.01, "ann_p50_ms": 0.01, "filtered_p50_ms": 0.01}
 RECALL_ALLOWANCE = 0.03
 # A cold-cache p50 is close to one sample per query: gate it only over this many
 # interleaved pairs (the v0.12.1 release was blocked by a one-run cold case).
@@ -382,6 +387,22 @@ def load_tolerances(profile):
     return data["default"], table["cases"]
 
 
+def vector_key(arguments, rule):
+    """A floor belongs to one step configuration: an 8 MiB 10k graph build and a
+    binary 64 MiB one differ by 7x in time and in absolute noise."""
+    if arguments["workload"] == "filtered":
+        return f"{rule}/{arguments['count']}"
+    mode = "sync" if arguments.get("batch_size") is None else "staged"
+    return f"{rule}/{arguments['count']}/{arguments['quantization']}/{mode}/{arguments.get('cache_bytes') or 8388608}"
+
+
+def vector_floor(profile, key, rule):
+    """Calibrated absolute floor for a per-request rule, or the historical one."""
+    data = json.loads(TOLERANCES.read_text()).get("vector", {}).get("profiles", {}).get(profile, {})
+    entry = data.get(key)
+    return (entry["floor"], True) if entry else (VECTOR_RULES[rule][1], False)
+
+
 def load_exceptions(gate_kind, profile):
     if not EXCEPTIONS.exists():
         return []
@@ -450,13 +471,14 @@ def evaluate(workload, pairs, args, exceptions):
             rows.append({"case": name, "baseline": b, "candidate": c, "ratio": c / b if b else float("nan"),
                          "pair_ratios": ratios, "verdict": "report", "gated": False, "pairs": len(ratios)})
             continue
-        tolerance, floor = VECTOR_RULES[spec[0]]
+        tolerance = VECTOR_RULES[spec[0]][0]
+        floor, calibrated = vector_floor(args.tolerances_profile, vector_key(vars(args), spec[0]), spec[0])
         cold = len(spec) > 2 and not spec[2]
         gated = not (cold and len(pairs) < COLD_GATE_MIN_RUNS) and name not in args.excluded_cases
-        v = verdict(before, after, tolerance, floor) | {"case": name, "gated": gated}
+        v = verdict(before, after, tolerance, floor) | {"case": name, "gated": gated, "calibrated": calibrated}
         rows.append(v)
         message = (f"{name}: {v['baseline']:.3f} -> {v['candidate']:.3f} ({v['ratio'] - 1:+.1%}, "
-                   f"limit +{tolerance:.0%} and {floor}, {v['pairs_over_half_t']}/{v['pairs']} pairs over T/2)")
+                   f"limit +{tolerance:.0%} and {floor:g} ms, {v['pairs_over_half_t']}/{v['pairs']} pairs over T/2)")
         judge(v, message, gated, exceptions, failures, warnings, applied,
               f"cold cache, {len(pairs)} pairs < {COLD_GATE_MIN_RUNS}")
     return rows, failures, warnings, applied
@@ -584,6 +606,88 @@ def compare(args):
         raise SystemExit(1)
 
 
+def calibrate_vector(args):
+    """Absolute floors for the per-request rules from A/A results: for each rule
+    and collection size, 3 x the largest |median(C) - median(B)| over every A/A
+    case of that rule. The relative tolerances stay as they are; the calibration
+    records whether 3 x the largest A/A ratio deviation stays inside them."""
+    worst, ratio, sources = {}, {}, []
+    for path in args.results:
+        result = json.loads(path.read_text())
+        sides = result["sides"]
+        if result["workload"] not in ("hnsw", "filtered"):
+            continue
+        if sides["baseline"]["commit"] != sides["candidate"]["commit"]:
+            raise SystemExit(f"{path}: not an A/A run")
+        workload = {"hnsw": Hnsw, "filtered": Filtered}[result["workload"]](None)
+        pairs = result["attempts"][0]["pairs"]
+        count = result["arguments"]["count"]
+        sources.append({"file": str(path.relative_to(path.parents[1])), "workload": result["workload"], "count": count,
+                        "pairs": len(pairs), "runner": result["environment"]["runner"]})
+        arguments = result["arguments"]
+        for name, spec in workload.metrics(pairs[0][0]).items():
+            if spec[0] == "report":
+                continue
+            b = statistics.median(workload.metrics(p[0])[name][1] for p in pairs)
+            c = statistics.median(workload.metrics(p[1])[name][1] for p in pairs)
+            key = vector_key(arguments, spec[0])
+            worst[key] = max(worst.get(key, 0.0), abs(c - b))
+            ratio[key] = max(ratio.get(key, 0.0), abs(c / b - 1))
+    data = json.loads(args.output.read_text())
+    table = {}
+    for key in sorted(worst):
+        rule = key.split("/")[0]
+        table[key] = {"floor": round(max(MIN_FLOOR[rule], 3 * worst[key]), 3), "aa_max_abs_diff": round(worst[key], 4),
+                      "aa_max_ratio_dev": round(ratio[key], 4),
+                      "relative_tolerance_holds": 3 * ratio[key] <= VECTOR_RULES[rule][0]}
+    vector = data.setdefault("vector", {"profiles": {}, "calibration": {}})
+    vector["profiles"][args.profile] = table
+    vector["calibration"][args.profile] = {
+        "rule": "floor = max(minimum, 3 x largest A/A |median(C) - median(B)|) per rule and step configuration; relative tolerances unchanged",
+        "minimum_floor_ms": MIN_FLOOR, "relative_tolerances": {k: v[0] for k, v in VECTOR_RULES.items()},
+        "sources": sources, "calibrated_at": time.strftime("%Y-%m-%d", time.gmtime())}
+    args.output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    for key, entry in table.items():
+        print(f"{args.profile} {key}: floor {entry['floor']} ms (A/A max diff {entry['aa_max_abs_diff']}, "
+              f"ratio dev {entry['aa_max_ratio_dev']:.1%}{'' if entry['relative_tolerance_holds'] else ', 3x exceeds the relative tolerance'})")
+
+
+def reevaluate(args):
+    """Judge a stored result again under the current tolerance tables, from its
+    recorded runs (nothing is re-measured). Prints the verdicts that changed."""
+    result = json.loads(args.result.read_text())
+    stored = result["arguments"]
+    ns = argparse.Namespace(**{**stored, "tolerances_profile": args.tolerances_profile or result["tolerances_profile"],
+                               "excluded_cases": set(stored.get("excluded_cases", [])),
+                               "evidence_dir": Path("."), "output": Path(".")})
+    kinds = {"hnsw": Hnsw, "filtered": Filtered, "concurrency": Concurrency, "criterion": CriterionWorkload}
+    workload = kinds[result["workload"]](ns)
+    exceptions = load_exceptions(result["gate_kind"], ns.tolerances_profile)
+    attempts = [[tuple(p) for p in a["pairs"]] for a in result["attempts"]]
+    rows, failures, warnings, _ = evaluate(workload, attempts[0], ns, exceptions)
+    first = list(failures)
+    suspects = [r["case"] for r in rows if r["verdict"] == "regression" and r.get("gated")]
+    confirmed = None
+    if suspects:
+        if len(attempts) > 1:
+            if result["workload"] == "criterion":
+                only = set(suspects) & set(attempts[1][0][0])
+                combined = [({k: v for k, v in b.items() if k in only}, {k: v for k, v in c.items() if k in only})
+                            for b, c in attempts[0]] + attempts[1]
+                _, confirmed, _, _ = evaluate(workload, combined, ns, exceptions)
+                missing = sorted(set(suspects) - only)
+                confirmed += [f"{c}: suspected now, never confirmed when measured" for c in missing]
+            else:
+                _, confirmed, _, _ = evaluate(workload, attempts[0] + attempts[1], ns, exceptions)
+    final = confirmed if confirmed is not None else first
+    report = {"result": str(args.result), "workload": result["workload"], "profile": ns.tolerances_profile,
+              "stored_failures": result["failures"], "first_attempt_failures": first,
+              "confirmation_available": len(attempts) > 1, "final_failures": final,
+              "unconfirmed": bool(first) and confirmed is None}
+    print(json.dumps(report, indent=1))
+    return report
+
+
 def calibrate(args):
     """Tolerances from A/A results (the same commit on both sides). N is the
     largest deviation of one run's median from the median of its side, over
@@ -630,12 +734,20 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "calibrate":
         parser = argparse.ArgumentParser(prog="vector-bench-ci.py calibrate")
         parser.add_argument("results", type=Path, nargs="+")
-        parser.add_argument("--profile", required=True, help="tolerance profile to write, e.g. linux-x86_64")
+        parser.add_argument("--profile", required=True, help="tolerance profile to write, e.g. ci-linux-x86_64")
+        parser.add_argument("--vector", action="store_true", help="calibrate the per-request vector floors instead")
         parser.add_argument("--output", type=Path, default=TOLERANCES)
         parser.add_argument("--t-min", type=float, default=0.05)
         parser.add_argument("--t-cap", type=float, default=0.25)
         parser.add_argument("--small-cap", type=float, default=0.10)
-        return calibrate(parser.parse_args(sys.argv[2:]))
+        args = parser.parse_args(sys.argv[2:])
+        return calibrate_vector(args) if args.vector else calibrate(args)
+    if len(sys.argv) > 1 and sys.argv[1] == "reevaluate":
+        parser = argparse.ArgumentParser(prog="vector-bench-ci.py reevaluate")
+        parser.add_argument("result", type=Path)
+        parser.add_argument("--tolerances-profile")
+        report = reevaluate(parser.parse_args(sys.argv[2:]))
+        raise SystemExit(1 if report["final_failures"] else 0)
     parser = argparse.ArgumentParser()
     parser.add_argument("baseline", type=Path)
     parser.add_argument("candidate", type=Path)

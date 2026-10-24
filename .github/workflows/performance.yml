@@ -188,10 +188,11 @@ jobs:
           count=2000
           if [ "$BENCH_SIZE" != pr ]; then count=10000; fi
           echo "BENCH_COUNT=$count" >> "$GITHUB_ENV"
+          echo "BENCH_PROFILE=ci-linux-$(uname -m)" >> "$GITHUB_ENV"
       - name: Compare graph builds and search, 8 MiB budget (phones, WASM)
         if: steps.baseline.outputs.compatible == 'true'
         run: |
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 8388608 \
             --output vector-benchmark.json
       # hnsw_profile defaults to the 8 MiB budget; at the 64 MiB native default
@@ -200,19 +201,19 @@ jobs:
       - name: Compare graph builds and search, 64 MiB budget (native default)
         if: steps.baseline.outputs.compatible == 'true'
         run: |
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 67108864 \
             --output vector-benchmark-64mib.json
       - name: Compare resumable builds
         if: steps.baseline.outputs.compatible == 'true'
         run: |
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" \
             --batch-size 128 --output vector-benchmark-staged.json
       - name: Compare filtered workloads
         if: matrix.quantization == 'none' && steps.baseline.outputs.compatible == 'true'
         run: |
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --workload filtered --count "$BENCH_COUNT" --repeats 3 --queries 20 \
             --output vector-benchmark-filtered.json
       # CONC-2, report only: steady-state throughput and CPU per request at
@@ -220,7 +221,7 @@ jobs:
       - name: Compare concurrent search (report only)
         if: matrix.quantization == 'none' && env.BENCH_SIZE != 'pr' && steps.baseline.outputs.compatible == 'true'
         run: |
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --workload concurrency --count 2000 --repeats 3 --steady 400 --cache-bytes 8388608 \
             --output vector-benchmark-concurrency.json
       - name: Check concurrent search memory at phone budgets

@@ -2626,5 +2626,1137 @@
       }
     }
   },
-  "schema": 1
+  "schema": 1,
+  "vector": {
+    "calibration": {
+      "ci-linux-aarch64": {
+        "calibrated_at": "2026-10-24",
+        "minimum_floor_ms": {
+          "ann_p50_ms": 0.01,
+          "build_ms": 50.0,
+          "exact_mean_ms": 0.01,
+          "filtered_p50_ms": 0.01
+        },
+        "relative_tolerances": {
+          "ann_p50_ms": 0.5,
+          "build_ms": 0.3,
+          "exact_mean_ms": 0.3,
+          "filtered_p50_ms": 0.5
+        },
+        "rule": "floor = max(minimum, 3 x largest A/A |median(C) - median(B)|) per rule and step configuration; relative tolerances unchanged",
+        "sources": [
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          }
+        ]
+      },
+      "ci-linux-x86_64": {
+        "calibrated_at": "2026-10-24",
+        "minimum_floor_ms": {
+          "ann_p50_ms": 0.01,
+          "build_ms": 50.0,
+          "exact_mean_ms": 0.01,
+          "filtered_p50_ms": 0.01
+        },
+        "relative_tolerances": {
+          "ann_p50_ms": 0.5,
+          "build_ms": 0.3,
+          "exact_mean_ms": 0.3,
+          "filtered_p50_ms": 0.5
+        },
+        "rule": "floor = max(minimum, 3 x largest A/A |median(C) - median(B)|) per rule and step configuration; relative tolerances unchanged",
+        "sources": [
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          }
+        ]
+      }
+    },
+    "profiles": {
+      "ci-linux-aarch64": {
+        "ann_p50_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0912,
+          "aa_max_ratio_dev": 0.0314,
+          "floor": 0.274,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.1026,
+          "aa_max_ratio_dev": 0.0515,
+          "floor": 0.308,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.232,
+          "aa_max_ratio_dev": 0.1155,
+          "floor": 0.696,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.9716,
+          "aa_max_ratio_dev": 0.0555,
+          "floor": 2.915,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.4926,
+          "aa_max_ratio_dev": 0.544,
+          "floor": 1.478,
+          "relative_tolerance_holds": false
+        },
+        "ann_p50_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1.3883,
+          "aa_max_ratio_dev": 0.1055,
+          "floor": 4.165,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0188,
+          "aa_max_ratio_dev": 0.0143,
+          "floor": 0.056,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0114,
+          "aa_max_ratio_dev": 0.0106,
+          "floor": 0.034,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0091,
+          "aa_max_ratio_dev": 0.0086,
+          "floor": 0.027,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0097,
+          "aa_max_ratio_dev": 0.0101,
+          "floor": 0.029,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0146,
+          "aa_max_ratio_dev": 0.0204,
+          "floor": 0.044,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0366,
+          "aa_max_ratio_dev": 0.0411,
+          "floor": 0.11,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 404.3375,
+          "aa_max_ratio_dev": 0.035,
+          "floor": 1213.013,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 85.2968,
+          "aa_max_ratio_dev": 0.0083,
+          "floor": 255.89,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 83.9384,
+          "aa_max_ratio_dev": 0.0081,
+          "floor": 251.815,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 958.6924,
+          "aa_max_ratio_dev": 0.0104,
+          "floor": 2876.077,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 128.44,
+          "aa_max_ratio_dev": 0.0046,
+          "floor": 385.32,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 3951.1349,
+          "aa_max_ratio_dev": 0.0592,
+          "floor": 11853.405,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 1.2096,
+          "aa_max_ratio_dev": 0.001,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 2.0656,
+          "aa_max_ratio_dev": 0.0016,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 8.2478,
+          "aa_max_ratio_dev": 0.0065,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 18.4279,
+          "aa_max_ratio_dev": 0.0051,
+          "floor": 55.284,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 5.2436,
+          "aa_max_ratio_dev": 0.0015,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 11.9651,
+          "aa_max_ratio_dev": 0.0034,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.357,
+          "aa_max_ratio_dev": 0.0973,
+          "floor": 1.071,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0215,
+          "aa_max_ratio_dev": 0.0193,
+          "floor": 0.065,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.2486,
+          "aa_max_ratio_dev": 0.0763,
+          "floor": 0.746,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0353,
+          "aa_max_ratio_dev": 0.0129,
+          "floor": 0.106,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0462,
+          "aa_max_ratio_dev": 0.0444,
+          "floor": 0.139,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.1494,
+          "aa_max_ratio_dev": 0.0513,
+          "floor": 0.448,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0021,
+          "aa_max_ratio_dev": 0.0081,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0003,
+          "aa_max_ratio_dev": 0.0012,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0021,
+          "aa_max_ratio_dev": 0.0084,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0004,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0014,
+          "aa_max_ratio_dev": 0.0052,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0002,
+          "aa_max_ratio_dev": 0.0009,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/10000": {
+          "aa_max_abs_diff": 0.5206,
+          "aa_max_ratio_dev": 0.1116,
+          "floor": 1.562,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/2000": {
+          "aa_max_abs_diff": 0.0185,
+          "aa_max_ratio_dev": 0.038,
+          "floor": 0.056,
+          "relative_tolerance_holds": true
+        }
+      },
+      "ci-linux-x86_64": {
+        "ann_p50_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0294,
+          "aa_max_ratio_dev": 0.0136,
+          "floor": 0.088,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0461,
+          "aa_max_ratio_dev": 0.0467,
+          "floor": 0.138,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.1193,
+          "aa_max_ratio_dev": 0.0728,
+          "floor": 0.358,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.8769,
+          "aa_max_ratio_dev": 0.0461,
+          "floor": 2.631,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.7735,
+          "aa_max_ratio_dev": 0.3612,
+          "floor": 2.321,
+          "relative_tolerance_holds": false
+        },
+        "ann_p50_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1.219,
+          "aa_max_ratio_dev": 0.105,
+          "floor": 3.657,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0062,
+          "aa_max_ratio_dev": 0.0071,
+          "floor": 0.018,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0093,
+          "aa_max_ratio_dev": 0.0084,
+          "floor": 0.028,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0084,
+          "aa_max_ratio_dev": 0.0095,
+          "floor": 0.025,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0134,
+          "aa_max_ratio_dev": 0.0257,
+          "floor": 0.04,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0334,
+          "aa_max_ratio_dev": 0.0644,
+          "floor": 0.1,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0235,
+          "aa_max_ratio_dev": 0.0494,
+          "floor": 0.071,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 25.1295,
+          "aa_max_ratio_dev": 0.0023,
+          "floor": 75.389,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 29.9078,
+          "aa_max_ratio_dev": 0.0049,
+          "floor": 89.724,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 120.7276,
+          "aa_max_ratio_dev": 0.0194,
+          "floor": 362.183,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 814.875,
+          "aa_max_ratio_dev": 0.0083,
+          "floor": 2444.625,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 557.2568,
+          "aa_max_ratio_dev": 0.0215,
+          "floor": 1671.77,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1282.6526,
+          "aa_max_ratio_dev": 0.0193,
+          "floor": 3847.958,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 1.0139,
+          "aa_max_ratio_dev": 0.0007,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 2.4858,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 4.5228,
+          "aa_max_ratio_dev": 0.003,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 2.0881,
+          "aa_max_ratio_dev": 0.0008,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 6.3961,
+          "aa_max_ratio_dev": 0.0026,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 38.0763,
+          "aa_max_ratio_dev": 0.0156,
+          "floor": 114.229,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0258,
+          "aa_max_ratio_dev": 0.0099,
+          "floor": 0.077,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.002,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.1406,
+          "aa_max_ratio_dev": 0.0437,
+          "floor": 0.422,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.1645,
+          "aa_max_ratio_dev": 0.0656,
+          "floor": 0.493,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0046,
+          "aa_max_ratio_dev": 0.0039,
+          "floor": 0.014,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.1594,
+          "aa_max_ratio_dev": 0.0516,
+          "floor": 0.478,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0005,
+          "aa_max_ratio_dev": 0.0016,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0026,
+          "aa_max_ratio_dev": 0.0085,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.004,
+          "aa_max_ratio_dev": 0.0128,
+          "floor": 0.012,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0095,
+          "aa_max_ratio_dev": 0.0337,
+          "floor": 0.028,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0201,
+          "aa_max_ratio_dev": 0.0708,
+          "floor": 0.06,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0016,
+          "aa_max_ratio_dev": 0.0057,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/10000": {
+          "aa_max_abs_diff": 0.0779,
+          "aa_max_ratio_dev": 0.0239,
+          "floor": 0.234,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/2000": {
+          "aa_max_abs_diff": 0.0079,
+          "aa_max_ratio_dev": 0.02,
+          "floor": 0.024,
+          "relative_tolerance_holds": true
+        }
+      }
+    }
+  }
 }

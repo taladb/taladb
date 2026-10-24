@@ -42,6 +42,8 @@ Every Criterion case is declared once (`benches/support/suite.rs`). `TALADB_BENC
 
 Every harness must compile against v0.12.1 (`a2ef466`) unchanged, because the cumulative gate builds it there. A harness that calls newer API breaks the baseline build. Reject it in review.
 
+**Tier 0 references belong to the CI runner image.** Score bits pass through the C math library (BM25's idf uses `ln_1p`), and glibc versions differ in the last ulp for some inputs. With the same source, toolchain and CPU, a BM25 control produced identical IDs but a top score one ulp apart under glibc 2.43 (Fedora) and 2.39 (Ubuntu 24.04). The v0.12.1 fingerprints happen to agree on both, and on x86_64 and arm64. Record the references on CI, re-record them when the runner image changes its C library, and expect a local check on another distribution to disagree on some score bits. A/B comparisons are unaffected: both sides run on one machine.
+
 ## Decision rules
 
 For each case, with per-run statistics *Bᵢ*, *Cᵢ* from interleaved pairs (B C B C B C), *B*, *C* their medians and *T* the case tolerance:
@@ -54,12 +56,16 @@ For each case, with per-run statistics *Bᵢ*, *Cᵢ* from interleaved pairs (B 
 
 ## Tolerances and recalibration
 
+**Per-request vector gates** keep their relative limits (build and exact search +30%, ANN and filtered p50 +50%; the A/A runs stay inside a third of them, except unquantized 10k ANN at 64 MiB, which relies on confirmation). Their absolute floors are calibrated for each step configuration (rule, size, quantization, sync or staged, budget) as 3 × the largest A/A difference between the sides' medians, in `criterion-tolerances.json` under `vector`. One fixed 0.25 ms floor had made the 2k exact-search gate blind: exact search takes ~0.26 ms there, so a +56% regression passed. Recalibrate with `vector-bench-ci.py calibrate --vector <A/A vector-benchmark*.json…> --profile <profile>`. `vector-bench-ci.py reevaluate <result.json>` re-judges a stored result under the current tables without re-measuring it.
+
+**Criterion:**
+
 `T = max(5%, 3N)`, where *N* is the case's A/A noise: the largest deviation of one run's median from its side's median, over both sides of every A/A run. Cases are reported, not gated, when *T* exceeds 25%, or for 1k cases when it exceeds 10%. Uncalibrated cases use the default (10%).
 
 Recalibrate whenever the runner image, toolchain pin, Criterion protocol or a fixture changes:
 
 1. Dispatch **Vector performance** on the branch with `baseline` set to the branch's own commit and `suites` = `criterion`, at least three times. Each run is an A/A comparison: the same commit is built twice and interleaved.
-2. Download the `criterion-benchmark-*` artifacts, then run `python3 scripts/vector-bench-ci.py calibrate <A/A JSONs…> --profile ci-linux-x86_64`, and the same with `ci-linux-aarch64` for the arm64 runs.
+2. Download the `criterion-benchmark-*` artifacts, then run `python3 scripts/vector-bench-ci.py calibrate <A/A JSONs…> --profile ci-linux-x86_64`, and the same with `ci-linux-aarch64` for the arm64 runs. For the vector floors, dispatch with `suites` = `vector` at both sizes and run `calibrate --vector`.
 3. Validate the result: one more A/A run must pass, and a positive control must fail (below). Commit the tolerance file together with the A/A evidence summary.
 
 ## Positive controls
