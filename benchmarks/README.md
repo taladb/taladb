@@ -71,7 +71,7 @@ A gate that never fires cannot be told apart from one that cannot fire. Before t
 | Sorted pages | fixed `black_box` spin in `index_ordered_entries` | `stabilization/sorted_page/*`, `doc/sorted_page_asc/*` only |
 | Cosine kernel | redundant norm pass in `score_with_query_norm` (scores unchanged) | `vector/score_one/Cosine/*`, `vector/find_nearest/*`, HNSW exact |
 | Fused kernel | the 2026-09-20 fused `dot_and_norm_sq` loop | VEC-6 on aarch64 and wasm32 |
-| BM25 parameters | `k1` 1.2 → 1.25 | fingerprints of every BM25 and hybrid case |
+| BM25 parameters | `k1` 1.2 → 1.25 | fingerprint of `fts/bm25_zipf` (the stabilization corpus cannot show it: with every term once per equal-length document, `k1` cancels out of the score) |
 | Extra allocations | two allocations per updated document | MEM-2 `update` |
 
 ## Exceptions

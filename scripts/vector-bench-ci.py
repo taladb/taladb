@@ -90,6 +90,16 @@ def read_first(path):
         return None
 
 
+def pinned():
+    """Measured runs only (builds keep every core): `--pin 5` on a quiet local
+    machine. CI runners cannot pin reliably; interleaving carries the load there."""
+    cpus = PIN.get("cpus")
+    return (lambda: os.sched_setaffinity(0, cpus)) if cpus else None
+
+
+PIN = {}
+
+
 def environment():
     cpu = None
     for line in (read_first("/proc/cpuinfo") or "").splitlines():
@@ -102,6 +112,7 @@ def environment():
         "cpu_model": cpu,
         "cpus": os.cpu_count(),
         "affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "measured_runs_pinned_to": sorted(PIN["cpus"]) if PIN.get("cpus") else None,
         "governor": read_first("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
         "loadavg": read_first("/proc/loadavg"),
         "rustc": subprocess.check_output(["rustc", "-vV"], cwd=REPO, text=True).strip().splitlines(),
@@ -190,7 +201,7 @@ class ExampleWorkload:
 
     def run(self, side, attempt, index, cases=None):
         result = subprocess.run([str(side.executable), *self.command()], cwd=side.repo, env=side.env(),
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, preexec_fn=pinned())
         if result.returncode:
             raise RuntimeError(f"{side.label} run failed:\n{result.stderr}")
         path = self.args.evidence_dir / f"attempt{attempt}" / f"{side.label}-{index}.json"
@@ -318,7 +329,7 @@ class CriterionWorkload:
         started = time.monotonic()
         with open(home / "stdout.txt", "w") as out:
             result = subprocess.run(command, cwd=side.repo, env=side.env(self.env(home, cases)),
-                                    stdout=out, stderr=subprocess.STDOUT)
+                                    stdout=out, stderr=subprocess.STDOUT, preexec_fn=pinned())
         if result.returncode:
             raise RuntimeError(f"{side.label} criterion run failed; see {home / 'stdout.txt'}")
         log(f"{side.label} run {index}: {time.monotonic() - started:.0f} s")
@@ -642,6 +653,7 @@ def main():
     parser.add_argument("--gate-kind", choices=("pr", "cumulative"), default="pr",
                         help="which approved exceptions apply: against the PR base, or against v0.12.1")
     parser.add_argument("--only-changed", action="store_true", help="summary lists only non-neutral cases")
+    parser.add_argument("--pin", help="CPU list for the measured runs, e.g. 5 or 2-5 (Linux)")
     parser.add_argument("--output", type=Path, default=Path("vector-benchmark.json"))
     parser.add_argument("--evidence-dir", type=Path, help="raw per-run output (default: <output>-evidence/)")
     args = parser.parse_args()
@@ -653,6 +665,12 @@ def main():
         parser.error("filtered workloads use a fixed binary graph and their own cache budgets")
     if args.evidence_dir is None:
         args.evidence_dir = args.output.with_name(args.output.stem + "-evidence")
+    # Absolute: the harnesses run with the checkout under test as their working
+    # directory, and write fingerprints and Criterion output into this path.
+    args.output, args.evidence_dir = args.output.resolve(), args.evidence_dir.resolve()
+    if args.pin:
+        PIN["cpus"] = {c for part in args.pin.split(",") for c in
+                       (range(int(part.split("-")[0]), int(part.split("-")[-1]) + 1))}
     compare(args)
 
 
