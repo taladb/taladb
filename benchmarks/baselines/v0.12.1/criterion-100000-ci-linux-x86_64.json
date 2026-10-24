@@ -1,0 +1,144 @@
+{
+  "binary_sha256": "f3c3e277c1ffa4216b3a620709623fd26ad00898e5764954546a4da1754adb4d",
+  "cases": {
+    "doc/aggregate_group/100000": {
+      "median": 154138558.5,
+      "runs": [
+        154138558.5,
+        147224224.5,
+        154454527.0
+      ],
+      "unit": "ns"
+    },
+    "doc/compound_eq_range/100000": {
+      "median": 1823420.1818,
+      "runs": [
+        1823420.1818,
+        1974014.0196,
+        1814430.9286
+      ],
+      "unit": "ns"
+    },
+    "doc/count_indexed_eq/100000": {
+      "median": 35465.0538,
+      "runs": [
+        35595.6964,
+        35383.8501,
+        35465.0538
+      ],
+      "unit": "ns"
+    },
+    "doc/count_indexed_range/100000": {
+      "median": 61758775.5,
+      "runs": [
+        64643232.5,
+        61728312.75,
+        61758775.5
+      ],
+      "unit": "ns"
+    },
+    "doc/count_unindexed/100000": {
+      "median": 58975377.25,
+      "runs": [
+        58975377.25,
+        58658454.5,
+        59250519.75
+      ],
+      "unit": "ns"
+    },
+    "doc/find_by_id/100000": {
+      "median": 53801.9059,
+      "runs": [
+        53486.8986,
+        53801.9059,
+        53931.0461
+      ],
+      "unit": "ns"
+    },
+    "doc/indexed_eq/100000": {
+      "median": 1997499.84,
+      "runs": [
+        1997499.84,
+        2012653.6122,
+        1933845.4904
+      ],
+      "unit": "ns"
+    },
+    "doc/page_full/100000": {
+      "median": 182343.2696,
+      "runs": [
+        183127.6883,
+        182343.2696,
+        181820.7745
+      ],
+      "unit": "ns"
+    },
+    "doc/page_projected/100000": {
+      "median": 184872.4825,
+      "runs": [
+        184872.4825,
+        185101.5093,
+        182579.0849
+      ],
+      "unit": "ns"
+    },
+    "doc/range_window/100000": {
+      "median": 78251265.5,
+      "runs": [
+        78251265.5,
+        68196208.25,
+        78721696.5
+      ],
+      "unit": "ns"
+    },
+    "doc/sorted_page_asc/100000": {
+      "median": 7384088.9643,
+      "runs": [
+        7384088.9643,
+        6869964.8667,
+        7499146.5357
+      ],
+      "unit": "ns"
+    }
+  },
+  "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+  "environment": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpus": 4,
+    "governor": null,
+    "measured_runs_pinned_to": null,
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "runner": {
+      "GITHUB_JOB": "criterion",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "GITHUB_RUN_ID": "40104289158",
+      "ImageOS": "ubuntu24",
+      "ImageVersion": "20261012.334.1",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_OS": "Linux"
+    },
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "started_at": "2026-10-24T15:31:45Z"
+  },
+  "harness_sha256": "71197e59bc6a24bbb9294be033f14ea1be76886f95d3557fec86eb97fd35060e",
+  "pairs": 3,
+  "protocol": {
+    "measurement_s": 3,
+    "samples": 30,
+    "sampling": "flat",
+    "warm_up_s": 1
+  },
+  "provenance": "built from the baseline commit",
+  "schema": 1,
+  "side": "baseline",
+  "source_result": "run 40104289158 attempt 1, artifact criterion-benchmark-Linux-X64-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, criterion-benchmark-100k.json",
+  "workload": "criterion"
+}

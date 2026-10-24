@@ -1,0 +1,205 @@
+{
+  "binary_sha256": "4dece9c45bc90e9b0391b992a784b69a8afc010af1de720cd7d3c5e59c282d6c",
+  "cases": {
+    "ann dense cold p50_ms": {
+      "median": 3.0419,
+      "runs": [
+        3.0419,
+        3.1357,
+        3.0153
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann dense warm p50_ms": {
+      "median": 1.7364,
+      "runs": [
+        1.71,
+        1.7611,
+        1.7364
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann moderate cold p50_ms": {
+      "median": 8.456,
+      "runs": [
+        8.456,
+        8.9676,
+        8.3163
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann moderate warm p50_ms": {
+      "median": 2.0475,
+      "runs": [
+        2.0046,
+        2.0475,
+        2.0579
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann range cold p50_ms": {
+      "median": 3.773,
+      "runs": [
+        3.773,
+        3.9051,
+        3.7509
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann range warm p50_ms": {
+      "median": 1.6741,
+      "runs": [
+        1.6425,
+        1.7088,
+        1.6741
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann sparse cold p50_ms": {
+      "median": 2.5986,
+      "runs": [
+        2.5986,
+        2.756,
+        2.579
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann sparse warm p50_ms": {
+      "median": 4.2587,
+      "runs": [
+        4.2099,
+        4.2587,
+        4.3391
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact dense cold p50_ms": {
+      "median": 2.0571,
+      "runs": [
+        2.0724,
+        2.0571,
+        2.0542
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact dense warm p50_ms": {
+      "median": 1.4907,
+      "runs": [
+        1.4907,
+        1.4904,
+        1.5001
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact moderate cold p50_ms": {
+      "median": 0.8902,
+      "runs": [
+        0.9025,
+        0.8875,
+        0.8902
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact moderate warm p50_ms": {
+      "median": 0.4372,
+      "runs": [
+        0.4433,
+        0.4372,
+        0.4333
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact range cold p50_ms": {
+      "median": 2.2087,
+      "runs": [
+        2.2087,
+        2.2175,
+        2.1523
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact range warm p50_ms": {
+      "median": 1.2992,
+      "runs": [
+        1.2821,
+        1.3268,
+        1.2992
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact sparse cold p50_ms": {
+      "median": 0.1895,
+      "runs": [
+        0.1881,
+        0.1899,
+        0.1895
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact sparse warm p50_ms": {
+      "median": 0.187,
+      "runs": [
+        0.187,
+        0.1872,
+        0.187
+      ],
+      "unit": "ms, or as named"
+    }
+  },
+  "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+  "environment": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpus": 4,
+    "governor": null,
+    "measured_runs_pinned_to": null,
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "runner": {
+      "GITHUB_JOB": "compare",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "GITHUB_RUN_ID": "40104289158",
+      "ImageOS": "ubuntu24",
+      "ImageVersion": "20261012.334.1",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_OS": "Linux"
+    },
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "started_at": "2026-10-24T15:15:45Z"
+  },
+  "harness_sha256": "30860f63520cf2610f2cdb0f2682ded2190a0c811e45ed413c5ccfc5ad768be0",
+  "pairs": 3,
+  "protocol": {
+    "cold_gate_min_runs": 5,
+    "recall_allowance": 0.03,
+    "vector_rules": {
+      "ann_p50_ms": [
+        0.5,
+        0.25
+      ],
+      "build_ms": [
+        0.3,
+        500.0
+      ],
+      "exact_mean_ms": [
+        0.3,
+        0.25
+      ],
+      "filtered_p50_ms": [
+        0.5,
+        0.25
+      ]
+    }
+  },
+  "provenance": "built from the baseline commit",
+  "schema": 1,
+  "side": "baseline",
+  "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-filtered.json",
+  "workload": "filtered"
+}

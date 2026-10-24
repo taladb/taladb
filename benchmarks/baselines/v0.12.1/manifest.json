@@ -1,0 +1,132 @@
+{
+  "harness": {
+    "benches_tree": "3a02d43c35aa0740c9c367047c24bf4f45d76217",
+    "commit": "2965eaac86fc5f5e4384b1048ca39b8354377daf",
+    "engine_identical_to_source": true,
+    "examples_tree": "b5574d0a5562223cf46a88dadac219f2b5ececc3",
+    "scripts": {
+      "bench-baseline.py": "15267dd5d507ba3d61cf27a5fc302e614804a18f",
+      "bench-tier0.py": "69ec946c48a90ff872177c5660a72933d882ee66",
+      "vector-bench-ci.py": "d96134009543f6ef60831b7d6f963ca107126cdb",
+      "vector-web-bench-compare.mjs": "e13b6a58a4fe84a5c79eb16a56769ac1861f7b59"
+    }
+  },
+  "references": {
+    "concurrency-2000-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-concurrency.json",
+      "workload": "concurrency"
+    },
+    "concurrency-2000-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-concurrency.json",
+      "workload": "concurrency"
+    },
+    "criterion-100000-ci-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact criterion-benchmark-Linux-ARM64-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, criterion-benchmark-100k.json",
+      "workload": "criterion"
+    },
+    "criterion-100000-ci-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact criterion-benchmark-Linux-X64-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, criterion-benchmark-100k.json",
+      "workload": "criterion"
+    },
+    "criterion-ci-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact criterion-benchmark-Linux-ARM64-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, criterion-benchmark.json",
+      "workload": "criterion"
+    },
+    "criterion-ci-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact criterion-benchmark-Linux-X64-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, criterion-benchmark.json",
+      "workload": "criterion"
+    },
+    "filtered-10000-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-filtered.json",
+      "workload": "filtered"
+    },
+    "filtered-10000-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-filtered.json",
+      "workload": "filtered"
+    },
+    "hnsw-10000-binary-staged-8388608-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-staged.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-binary-staged-8388608-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-staged.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-binary-sync-67108864-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-64mib.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-binary-sync-67108864-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-64mib.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-binary-sync-8388608-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-binary-sync-8388608-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-staged-8388608-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-staged.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-staged-8388608-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-staged.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-sync-67108864-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-64mib.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-sync-67108864-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-64mib.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-sync-8388608-linux-aarch64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark.json",
+      "workload": "hnsw"
+    },
+    "hnsw-10000-none-sync-8388608-linux-x86_64.json": {
+      "provenance": "built from the baseline commit",
+      "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark.json",
+      "workload": "hnsw"
+    }
+  },
+  "schema": 1,
+  "source": {
+    "cargo_lock_sha256": "67ab983eb53ba4aa9c7f0533e322a76bd8cf28b47c39f8300be83dc884e1541d",
+    "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+    "committed_at": "2026-10-22T22:32:54+08:00",
+    "core_tree": "fb40eee2270ea41e47839ff0ff2721244bb2f6f2",
+    "subject": "chore: changelogs for 0.12.1",
+    "tag": "v0.12.1",
+    "tag_object": "lightweight",
+    "tag_points_at_commit": true
+  },
+  "toolchain": {
+    "msrv": "1.90",
+    "rust_toolchain_toml": "1.98.0"
+  },
+  "version": "0.12.1"
+}
