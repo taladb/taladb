@@ -14,9 +14,9 @@ The harnesses themselves live where they always have: `packages/core/benches/` (
 
 | Tier | Runs | Checks | Blocks |
 |---|---|---|---|
-| 0 | `ci.yml` → `benchmark-tier0.yml`, x86_64 and arm64, every PR touching code | Result fingerprints of every Criterion workload; MEM-2 allocation counts (+2%); VEC-6 vector instructions per scoring kernel on x86_64, aarch64 Linux/iOS and wasm32 (must not fall) | Yes (`ci-pass`) |
-| 1 | `performance.yml`, PRs touching the engine | Criterion A/B at 1k and 10k; HNSW at 8 MiB and 64 MiB budgets; resumable builds; filtered search; browser worker + OPFS, all at PR sizes | Yes |
-| 2 | `performance.yml` on push to `main`, the weekly schedule and every release | Tier 1 at release sizes (10k vectors, 5k browser, 100k documents for read-only families) plus IDX write amplification and CONC-2 concurrency (report only). On schedule and release, also the **cumulative comparison against v0.12.1** | Release: yes. Schedule: a red run |
+| 0 | `ci.yml` → `benchmark-tier0.yml`, x86_64 and arm64, every PR touching code | Result fingerprints of every Criterion workload; MEM-2 allocation counts (+2%); VEC-6: every scoring kernel still vectorised (packed f32 multiply and add) on x86_64, aarch64 Linux/iOS and wasm32; instruction counts against v0.12.1 are recorded, not gated | Yes (`ci-pass`) |
+| 1 | `performance.yml`, PRs touching the engine | Criterion A/B on the 10k collections plus the kernel and fixed-size cases (47 cases); HNSW at 8 MiB and 64 MiB budgets; resumable builds; filtered search; browser worker + OPFS, all at PR sizes | Yes |
+| 2 | `performance.yml` on push to `main`, the weekly schedule, every release and manual runs (default) | Tier 1 at release sizes: Criterion at 1k and 10k (77 cases) and 100k for the read-only `doc/` family, 10k vectors, 5k browser, plus IDX write amplification and CONC-2 concurrency (report only). On schedule and release, also the **cumulative comparison against v0.12.1** | Release: yes. Schedule: a red run |
 
 Tier 0 compares against `baselines/v0.12.1/`. Tiers 1 and 2 build the baseline commit next to the candidate.
 
@@ -76,7 +76,7 @@ A gate that never fires cannot be told apart from one that cannot fire. Before t
 |---|---|---|
 | Sorted pages | fixed `black_box` spin in `index_ordered_entries` | `stabilization/sorted_page/*`, `doc/sorted_page_asc/*` only |
 | Cosine kernel | redundant norm pass in `score_with_query_norm` (scores unchanged) | `vector/score_one/Cosine/*`, `vector/find_nearest/*`, HNSW exact |
-| Fused kernel | the 2026-09-20 fused `dot_and_norm_sq` loop | VEC-6 on aarch64 and wasm32 |
+| Fused kernel | the 2026-09-20 fused `dot_and_norm_sq` loop | VEC-6 on aarch64 Linux, iOS and wasm32 (scalar there); x86_64 stays vectorised, so its −20 instructions are recorded, not failed |
 | BM25 parameters | `k1` 1.2 → 1.25 | fingerprint of `fts/bm25_zipf` (the stabilization corpus cannot show it: with every term once per equal-length document, `k1` cancels out of the score) |
 | Extra allocations | two allocations per updated document | MEM-2 `update` |
 
@@ -89,7 +89,22 @@ A justified regression, for example a correctness fix that costs time, is accept
   "max_ratio": 1.12, "reason": "…", "approved_by": "<reviewer>", "approved_in": "<PR URL>" }
 ```
 
-`gate` is `pr`, `cumulative` (against v0.12.1) or `any`; `platform` is a tolerance profile or `*`. An exception covers the case only up to `max_ratio`, so a larger regression still fails. The gate refuses an entry without a reason or approver, and the step summary lists every exception it applied. The approval itself is a review of this file: protect `benchmarks/gates/` with a code-owner review rule so an author cannot approve their own exception. Every `cumulative` exception must also be named in the release's changelog.
+`gate` is `pr`, `cumulative` (against v0.12.1) or `any`; `platform` is a tolerance profile or `*`. An exception covers the case only up to `max_ratio`, so a larger regression still fails. The gate refuses an entry without a reason or approver, and the step summary lists every exception it applied. The approval itself is a review of this file, which `.github/CODEOWNERS` assigns to the repository owner together with the references, the gate scripts and the gate workflows; branch protection must require code-owner review for that to block a merge (below). Every `cumulative` exception must also be named in the release's changelog.
+
+## Repository settings
+
+These live in GitHub, not in the repository, and must be set by an admin. Without them, CODEOWNERS only *requests* a review.
+
+| Branch | Setting | Why |
+|---|---|---|
+| `dev`, `main` | Require a pull request before merging, with 1 approval and **Require review from Code Owners** | A change to references, tolerances, exceptions or gate code needs the owner's approval |
+| `dev`, `main` | Required status check: `CI — all checks passed` (`ci-pass`), which includes Benchmark Tier 0 | Fingerprints, allocations and vectorisation block a merge |
+| `dev`, `main` | Dismiss stale approvals when new commits are pushed | An approved exception cannot be widened afterwards |
+| `main` | Keep "Require signed commits"; merge `dev` into `main` with GitHub's merge or squash button, whose commits are signed | Commits pushed from a workstation are unsigned in this repository |
+
+Do not make the `Vector performance` jobs required checks: the workflow only starts for engine paths, so a required check on another PR would wait forever, and its matrix job names depend on the baseline. Releases already depend on it through `release.yml`.
+
+With a single maintainer, GitHub cannot enforce a second person's review: the author cannot approve their own pull request, and an admin can bypass protection (`enforce_admins` is off). Code-owner review then protects against changes from other contributors. For the owner's own changes to `benchmarks/gates/` or the references, the review is the PR description's justification plus the gate's own output. A second maintainer with write access is needed for real two-person review.
 
 ## Evidence
 
