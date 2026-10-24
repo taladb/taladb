@@ -1,0 +1,9 @@
+{
+  "calibration": {},
+  "default": {
+    "T": 0.1,
+    "gate": true
+  },
+  "profiles": {},
+  "schema": 1
+}

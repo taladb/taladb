@@ -1,6 +1,43 @@
 //! Standalone workload for `/usr/bin/time -v` and Valgrind memory profiles.
 //! Run: cargo run -p taladb --release --example stabilization_memory -- 10000 update
+//!
+//! Each checkpoint also prints the cumulative heap allocation count and bytes
+//! (MEM-2). For a fixed fixture those are deterministic, so unlike RSS they can
+//! be gated tightly (`scripts/bench-tier0.py allocations`).
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering};
 use taladb::{Database, Filter, Update, Value};
+
+struct Counting;
+
+static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+// SAFETY: forwards every call to `System` unchanged; the counters are
+// side effects only.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -68,6 +105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn checkpoint(phase: &str) {
+    println!(
+        "phase={phase} allocations={} allocated_bytes={}",
+        ALLOCATIONS.load(Ordering::Relaxed),
+        ALLOCATED_BYTES.load(Ordering::Relaxed)
+    );
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
         for field in ["VmRSS:", "VmHWM:"] {
             if let Some(line) = status.lines().find(|line| line.starts_with(field)) {

@@ -14,11 +14,92 @@
 //! --batch-size (1..=1024) for staged
 //! builds. JSON mode uses queries independent of
 //! the collection size, so recall can be compared across larger collections.
+//!
+//! Storage point reads (`get` keys) are counted per query through a wrapping
+//! backend, as a node-cache miss proxy: a change that moves ANN latency at one
+//! cache budget but not the other usually moves this count too.
 
+use std::ops::Bound;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use taladb::engine::{KvPairs, ReadTxn, ScanFn, WriteTxn};
 use taladb::{
-    Database, GraphOptions, Quantization, Value, VectorMetric, VectorQueryOptions, VectorSearchMode,
+    Database, GraphOptions, Quantization, RedbBackend, StorageBackend, TalaDbError, Value,
+    VectorMetric, VectorQueryOptions, VectorSearchMode,
 };
+
+/// `RedbBackend::open_in_memory` — what `Database::open_in_memory` opens — with
+/// read transactions that count point reads. Every other call is forwarded,
+/// including the streaming and batched overrides, so the engine takes the same
+/// paths it takes unwrapped.
+struct CountingBackend {
+    inner: RedbBackend,
+    reads: Arc<AtomicU64>,
+}
+
+impl StorageBackend for CountingBackend {
+    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
+        self.inner.begin_write()
+    }
+    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError> {
+        Ok(Box::new(CountingRead {
+            inner: self.inner.begin_read()?,
+            reads: &self.reads,
+        }))
+    }
+    fn compact(&self) -> Result<(), TalaDbError> {
+        self.inner.compact()
+    }
+    fn set_durability(&self, eventual: bool) {
+        self.inner.set_durability(eventual);
+    }
+    fn flush(&self) -> Result<(), TalaDbError> {
+        self.inner.flush()
+    }
+}
+
+struct CountingRead<'a> {
+    inner: Box<dyn ReadTxn + 'a>,
+    reads: &'a AtomicU64,
+}
+
+impl ReadTxn for CountingRead<'_> {
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.get(table, key)
+    }
+    fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
+        self.reads.fetch_add(keys.len() as u64, Ordering::Relaxed);
+        self.inner.get_many(table, keys)
+    }
+    fn range(
+        &self,
+        table: &str,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+    ) -> Result<KvPairs, TalaDbError> {
+        self.inner.range(table, start, end)
+    }
+    fn scan(
+        &self,
+        table: &str,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+        f: ScanFn<'_>,
+    ) -> Result<(), TalaDbError> {
+        self.inner.scan(table, start, end, f)
+    }
+    fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError> {
+        self.inner.scan_all(table)
+    }
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
+        self.inner.list_tables()
+    }
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        self.inner.count_entries(table)
+    }
+}
 
 const DIMS: usize = 384;
 const CLUSTERS: usize = 512;
@@ -146,7 +227,12 @@ fn main() {
         .map(|q| make_point(rng, &centroids[(q * 7) % CLUSTERS], spread))
         .collect();
 
-    let db = Database::open_in_memory().unwrap();
+    let reads = Arc::new(AtomicU64::new(0));
+    let db = Database::open_with_backend(Box::new(CountingBackend {
+        inner: RedbBackend::open_in_memory().unwrap(),
+        reads: reads.clone(),
+    }))
+    .unwrap();
     db.set_vector_cache_budget(cache_bytes);
     let col = db.collection("docs").unwrap();
 
@@ -222,6 +308,7 @@ fn main() {
         ..Default::default()
     };
     let mut exact_times = Vec::new();
+    let reads_before = reads.load(Ordering::Relaxed);
     let truth: Vec<Vec<String>> = probes
         .iter()
         .map(|q| {
@@ -234,6 +321,7 @@ fn main() {
         })
         .collect();
     let exact_ms = exact_times.iter().sum::<f64>() / queries as f64;
+    let exact_reads = (reads.load(Ordering::Relaxed) - reads_before) as f64 / queries as f64;
     if !json_output {
         println!("\nexact              {exact_ms:>8.3} ms/query");
     }
@@ -254,6 +342,7 @@ fn main() {
             }
         }
         let t = Instant::now();
+        let reads_before = reads.load(Ordering::Relaxed);
         let mut query_times = Vec::new();
         let mut recall = 0.0;
         let mut distances = 0usize;
@@ -272,6 +361,7 @@ fn main() {
             recall += found as f64 / TOP_K as f64;
         }
         let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0 / queries as f64;
+        let storage_reads = (reads.load(Ordering::Relaxed) - reads_before) as f64 / queries as f64;
         if !json_output {
             println!(
                 "ann ef={ef:<4}        {:>8.3} ms/query   recall@{TOP_K} {:>5.1}%   {:>6} distances",
@@ -284,6 +374,7 @@ fn main() {
         measurements.push(serde_json::json!({ "ef_search": ef, "mean_ms": elapsed_ms,
             "p50_ms": query_times[queries / 2], "p95_ms": query_times[queries * 95 / 100],
             "recall_at_10": recall / queries as f64, "distances": distances / queries,
+            "storage_reads": storage_reads,
             "retained_cache_bytes": db.vector_cache_stats().retained_bytes }));
     }
     if json_output {
@@ -308,7 +399,7 @@ fn main() {
             "cache_bytes": cache_bytes,
             "batch_size": batch_size, "build_steps": step_times.len(), "step_p95_ms": step_p95_ms,
             "insert_ms": insert_ms, "build_ms": build.as_secs_f64() * 1000.0,
-            "exact_mean_ms": exact_ms, "ann": measurements, "peak_rss_bytes": peak_rss_bytes })
+            "exact_mean_ms": exact_ms, "exact_storage_reads": exact_reads, "ann": measurements, "peak_rss_bytes": peak_rss_bytes })
         );
     }
 }

@@ -859,6 +859,22 @@ jobs:
       - name: Stage installer
         run: cp install.sh /tmp/release-assets/install.sh
 
+      # The performance gate's raw results, every attempt included, as one
+      # archive with a checksum. Workflow artifacts expire after 90 days; the
+      # release is where a later version's comparison finds this one's evidence
+      # (benchmarks/README.md).
+      - name: Download benchmark evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '{vector-*,criterion-*}'
+          path: /tmp/benchmark-evidence/${{ github.ref_name }}
+
+      - name: Stage benchmark evidence
+        run: |
+          archive="taladb-${{ github.ref_name }}-benchmark-evidence.tar.gz"
+          tar -C /tmp/benchmark-evidence -czf "/tmp/release-assets/$archive" "${{ github.ref_name }}"
+          (cd /tmp/release-assets && sha256sum "$archive" > "$archive.sha256")
+
       - name: List assets
         run: ls -lh /tmp/release-assets/
 
