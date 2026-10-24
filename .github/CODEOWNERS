@@ -1,0 +1,18 @@
+# Code owners. With "Require review from Code Owners" enabled in branch
+# protection (see benchmarks/README.md, "Repository settings"), a pull request
+# that touches these paths cannot merge without the owner's approval.
+#
+# Benchmark gates: the committed references, the calibrated tolerances and the
+# approved exceptions decide what the performance and Tier 0 gates accept, and
+# the gate scripts and workflows decide how they judge. Changing any of them can
+# hide a regression as surely as a slower engine can cause one.
+/benchmarks/                             @akosidencio
+/scripts/vector-bench-ci.py              @akosidencio
+/scripts/bench-tier0.py                  @akosidencio
+/scripts/bench-baseline.py               @akosidencio
+/scripts/vector-web-bench-compare.mjs    @akosidencio
+/.github/workflows/performance.yml       @akosidencio
+/.github/workflows/benchmark-tier0.yml   @akosidencio
+
+# This file.
+/.github/CODEOWNERS                      @akosidencio

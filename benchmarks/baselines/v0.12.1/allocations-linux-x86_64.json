@@ -1,0 +1,25 @@
+{
+  "documents": 1000,
+  "platform": "linux-x86_64",
+  "schema": 1,
+  "workloads": {
+    "delete": {
+      "export_allocations": 178,
+      "export_bytes": 10148,
+      "mutation_allocations": 71241,
+      "mutation_bytes": 79636501
+    },
+    "index": {
+      "export_allocations": 134,
+      "export_bytes": 17098331,
+      "mutation_allocations": 48859,
+      "mutation_bytes": 62099975
+    },
+    "update": {
+      "export_allocations": 190,
+      "export_bytes": 17100423,
+      "mutation_allocations": 71595,
+      "mutation_bytes": 121809375
+    }
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "binary_sha256": "fb0c3e16884b0bbb018c8c7b318c80fcb345ef1a8eb894b724970bca48931085",
+  "cases": {
+    "ann ef=100 p50_ms": {
+      "median": 5.7423,
+      "runs": [
+        5.7423,
+        5.6141,
+        6.2292
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=100 storage_reads": {
+      "median": 2345.62,
+      "runs": [
+        2345.62,
+        2345.62,
+        2345.62
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=200 p50_ms": {
+      "median": 10.7509,
+      "runs": [
+        10.7509,
+        10.2634,
+        11.0039
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=200 storage_reads": {
+      "median": 4343.8,
+      "runs": [
+        4343.8,
+        4343.8,
+        4343.8
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=400 p50_ms": {
+      "median": 16.9268,
+      "runs": [
+        18.0434,
+        16.6735,
+        16.9268
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=400 storage_reads": {
+      "median": 7154.53,
+      "runs": [
+        7154.53,
+        7154.53,
+        7154.53
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=50 p50_ms": {
+      "median": 3.1485,
+      "runs": [
+        3.1485,
+        3.1396,
+        3.4381
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=50 storage_reads": {
+      "median": 1281.77,
+      "runs": [
+        1281.77,
+        1281.77,
+        1281.77
+      ],
+      "unit": "ms, or as named"
+    },
+    "build step p95_ms": {
+      "median": 2066.4342,
+      "runs": [
+        2083.4888,
+        2040.8478,
+        2066.4342
+      ],
+      "unit": "ms, or as named"
+    },
+    "build_ms": {
+      "median": 88284.6473,
+      "runs": [
+        91685.5694,
+        88143.3403,
+        88284.6473
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact_mean_ms": {
+      "median": 2.6329,
+      "runs": [
+        2.6329,
+        2.4959,
+        2.6744
+      ],
+      "unit": "ms, or as named"
+    }
+  },
+  "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+  "environment": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpus": 4,
+    "governor": null,
+    "measured_runs_pinned_to": null,
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "runner": {
+      "GITHUB_JOB": "compare",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "GITHUB_RUN_ID": "40104289158",
+      "ImageOS": "ubuntu24",
+      "ImageVersion": "20261012.334.1",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_OS": "Linux"
+    },
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "started_at": "2026-10-24T15:05:31Z"
+  },
+  "harness_sha256": "41f06cfc189e02c28939607ea3b80ecf22f36303281a89a11571efe7e8f92982",
+  "pairs": 3,
+  "protocol": {
+    "cold_gate_min_runs": 5,
+    "recall_allowance": 0.03,
+    "vector_rules": {
+      "ann_p50_ms": [
+        0.5,
+        0.25
+      ],
+      "build_ms": [
+        0.3,
+        500.0
+      ],
+      "exact_mean_ms": [
+        0.3,
+        0.25
+      ],
+      "filtered_p50_ms": [
+        0.5,
+        0.25
+      ]
+    }
+  },
+  "provenance": "built from the baseline commit",
+  "schema": 1,
+  "side": "baseline",
+  "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-staged.json",
+  "workload": "hnsw"
+}

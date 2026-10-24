@@ -1,0 +1,4015 @@
+{
+  "calibration": {
+    "ci-linux-aarch64": {
+      "calibrated_at": "2026-10-24",
+      "protocol": {
+        "measurement_s": 3,
+        "samples": 30,
+        "sampling": "flat",
+        "warm_up_s": 1
+      },
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
+      "sources": [
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089969692",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089969692",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089974304",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089974304",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089979284",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": null,
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089979284",
+            "ImageOS": "ubuntu24-arm64",
+            "ImageVersion": "20261023.149.3",
+            "RUNNER_ARCH": "ARM64",
+            "RUNNER_OS": "Linux"
+          }
+        }
+      ]
+    },
+    "ci-linux-x86_64": {
+      "calibrated_at": "2026-10-24",
+      "protocol": {
+        "measurement_s": 3,
+        "samples": 30,
+        "sampling": "flat",
+        "warm_up_s": 1
+      },
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
+      "sources": [
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 7763 64-Core Processor",
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089969692",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261023.334.3",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 7763 64-Core Processor",
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089969692",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261023.334.3",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 7763 64-Core Processor",
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089974304",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261012.334.1",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 7763 64-Core Processor",
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089974304",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261012.334.1",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+          "file": "criterion-benchmark-100k.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089979284",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261012.334.1",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        },
+        {
+          "commit": "d931950eeacecf0d3644010498a619e618998e36",
+          "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+          "file": "criterion-benchmark.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": "criterion",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "40089979284",
+            "ImageOS": "ubuntu24",
+            "ImageVersion": "20261012.334.1",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux"
+          }
+        }
+      ]
+    },
+    "local-i5-9400f": {
+      "calibrated_at": "2026-10-24",
+      "protocol": {
+        "measurement_s": 3,
+        "samples": 30,
+        "sampling": "flat",
+        "warm_up_s": 1
+      },
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
+      "sources": [
+        {
+          "commit": "9d96682208f6f3d19d78466d8b46facd6999a379",
+          "cpu_model": "Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz",
+          "file": "criterion-aa-1.json",
+          "pairs": 3,
+          "runner": {
+            "GITHUB_JOB": null,
+            "GITHUB_RUN_ATTEMPT": null,
+            "GITHUB_RUN_ID": null,
+            "ImageOS": null,
+            "ImageVersion": null,
+            "RUNNER_ARCH": null,
+            "RUNNER_OS": null
+          }
+        }
+      ]
+    }
+  },
+  "default": {
+    "T": 0.1,
+    "gate": true
+  },
+  "profiles": {
+    "ci-linux-aarch64": {
+      "cases": {
+        "bulk/delete_one_by_id/10000": {
+          "A_ns": 12989.1,
+          "N": 0.036,
+          "T": 0.108,
+          "aa_ratios": [
+            1.0,
+            0.974,
+            1.0008
+          ],
+          "gate": true
+        },
+        "bulk/insert_many_indexed/10000": {
+          "A_ns": 550702.5,
+          "N": 0.0729,
+          "T": 0.219,
+          "aa_ratios": [
+            1.0079,
+            1.0098,
+            1.0049
+          ],
+          "gate": true
+        },
+        "bulk/update_one_by_id/10000": {
+          "A_ns": 770.7,
+          "N": 0.0241,
+          "T": 0.072,
+          "aa_ratios": [
+            1.0029,
+            0.9999,
+            1.0063
+          ],
+          "gate": true
+        },
+        "doc/aggregate_group/1000": {
+          "A_ns": 13263.9,
+          "N": 0.0322,
+          "T": 0.097,
+          "aa_ratios": [
+            1.004,
+            0.9988,
+            1.0034
+          ],
+          "gate": true
+        },
+        "doc/aggregate_group/10000": {
+          "A_ns": 1786730.1,
+          "N": 0.1969,
+          "T": 0.591,
+          "aa_ratios": [
+            1.0255,
+            0.945,
+            0.9825
+          ],
+          "gate": false
+        },
+        "doc/aggregate_group/100000": {
+          "A_ns": 3996123.0,
+          "N": 0.0561,
+          "T": 0.168,
+          "aa_ratios": [
+            0.9939,
+            1.0099,
+            1.0011
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/1000": {
+          "A_ns": 487.0,
+          "N": 0.0074,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9894,
+            1.0003,
+            1.0011
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/10000": {
+          "A_ns": 8996.9,
+          "N": 0.0243,
+          "T": 0.073,
+          "aa_ratios": [
+            0.9981,
+            1.018,
+            1.0056
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/100000": {
+          "A_ns": 229395.1,
+          "N": 0.0305,
+          "T": 0.091,
+          "aa_ratios": [
+            0.9668,
+            0.9928,
+            0.9903
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/1000": {
+          "A_ns": 8.7,
+          "N": 0.0097,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9988,
+            0.9998,
+            1.0
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/10000": {
+          "A_ns": 117.9,
+          "N": 0.0213,
+          "T": 0.064,
+          "aa_ratios": [
+            0.9964,
+            0.9936,
+            0.9984
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/100000": {
+          "A_ns": 934.0,
+          "N": 0.005,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9926,
+            0.9993,
+            0.9977
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/1000": {
+          "A_ns": 21595.3,
+          "N": 0.022,
+          "T": 0.066,
+          "aa_ratios": [
+            1.0161,
+            0.9863,
+            1.0115
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/10000": {
+          "A_ns": 272836.1,
+          "N": 0.0668,
+          "T": 0.201,
+          "aa_ratios": [
+            1.0148,
+            0.9809,
+            1.0025
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/100000": {
+          "A_ns": 6148608.8,
+          "N": 0.0183,
+          "T": 0.055,
+          "aa_ratios": [
+            0.9671,
+            0.9792,
+            1.002
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/1000": {
+          "A_ns": 11479.2,
+          "N": 0.009,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9927,
+            1.0,
+            0.9991
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/10000": {
+          "A_ns": 232728.6,
+          "N": 0.0705,
+          "T": 0.212,
+          "aa_ratios": [
+            1.0003,
+            0.9857,
+            0.9962
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/100000": {
+          "A_ns": 3881428.5,
+          "N": 0.0674,
+          "T": 0.202,
+          "aa_ratios": [
+            1.0029,
+            1.0196,
+            1.0223
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/1000": {
+          "A_ns": 993.6,
+          "N": 0.0066,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9933,
+            0.9977,
+            1.0015
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/10000": {
+          "A_ns": 730.8,
+          "N": 0.0102,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9972,
+            1.0049,
+            0.9993
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/100000": {
+          "A_ns": 596.6,
+          "N": 0.0078,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9982,
+            1.0027,
+            1.0038
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/1000": {
+          "A_ns": 342.7,
+          "N": 0.0134,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9986,
+            1.0072,
+            0.998
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/10000": {
+          "A_ns": 6131.2,
+          "N": 0.0328,
+          "T": 0.099,
+          "aa_ratios": [
+            0.9947,
+            1.0108,
+            1.0023
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/100000": {
+          "A_ns": 216478.3,
+          "N": 0.0826,
+          "T": 0.248,
+          "aa_ratios": [
+            0.9712,
+            0.9914,
+            1.0061
+          ],
+          "gate": true
+        },
+        "doc/page_full/1000": {
+          "A_ns": 5567.8,
+          "N": 0.0204,
+          "T": 0.061,
+          "aa_ratios": [
+            1.0098,
+            0.9969,
+            0.9877
+          ],
+          "gate": true
+        },
+        "doc/page_full/10000": {
+          "A_ns": 12867.0,
+          "N": 0.0253,
+          "T": 0.076,
+          "aa_ratios": [
+            0.9747,
+            1.0095,
+            0.9958
+          ],
+          "gate": true
+        },
+        "doc/page_full/100000": {
+          "A_ns": 3894.6,
+          "N": 0.0315,
+          "T": 0.095,
+          "aa_ratios": [
+            0.9951,
+            0.9991,
+            1.0064
+          ],
+          "gate": true
+        },
+        "doc/page_projected/1000": {
+          "A_ns": 7156.8,
+          "N": 0.0117,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0155,
+            0.9934,
+            0.9951
+          ],
+          "gate": true
+        },
+        "doc/page_projected/10000": {
+          "A_ns": 3789.5,
+          "N": 0.0207,
+          "T": 0.062,
+          "aa_ratios": [
+            0.9971,
+            1.0074,
+            1.0058
+          ],
+          "gate": true
+        },
+        "doc/page_projected/100000": {
+          "A_ns": 5141.4,
+          "N": 0.0208,
+          "T": 0.062,
+          "aa_ratios": [
+            0.9919,
+            0.995,
+            1.0042
+          ],
+          "gate": true
+        },
+        "doc/range_window/1000": {
+          "A_ns": 27586.4,
+          "N": 0.0185,
+          "T": 0.055,
+          "aa_ratios": [
+            1.0021,
+            1.004,
+            1.0043
+          ],
+          "gate": true
+        },
+        "doc/range_window/10000": {
+          "A_ns": 228994.1,
+          "N": 0.0265,
+          "T": 0.079,
+          "aa_ratios": [
+            0.9943,
+            0.9909,
+            0.9918
+          ],
+          "gate": true
+        },
+        "doc/range_window/100000": {
+          "A_ns": 3395502.0,
+          "N": 0.0292,
+          "T": 0.088,
+          "aa_ratios": [
+            0.9838,
+            0.9985,
+            1.0063
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/1000": {
+          "A_ns": 1663.1,
+          "N": 0.0152,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0017,
+            0.9954,
+            0.9974
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/10000": {
+          "A_ns": 63500.9,
+          "N": 0.0324,
+          "T": 0.097,
+          "aa_ratios": [
+            1.001,
+            1.0249,
+            1.0158
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/100000": {
+          "A_ns": 156961.6,
+          "N": 0.0196,
+          "T": 0.059,
+          "aa_ratios": [
+            0.9934,
+            0.9962,
+            1.0055
+          ],
+          "gate": true
+        },
+        "fts/bm25_zipf/10000": {
+          "A_ns": 30944.4,
+          "N": 0.0094,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9962,
+            0.9999,
+            0.9973
+          ],
+          "gate": true
+        },
+        "fts/insert_indexed/10000": {
+          "A_ns": 900222.0,
+          "N": 0.0417,
+          "T": 0.125,
+          "aa_ratios": [
+            1.0075,
+            0.9944,
+            1.0032
+          ],
+          "gate": true
+        },
+        "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 7219.3,
+          "N": 0.0043,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0035,
+            0.9985,
+            1.003
+          ],
+          "gate": true
+        },
+        "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 120196.3,
+          "N": 0.0317,
+          "T": 0.095,
+          "aa_ratios": [
+            1.0031,
+            0.9932,
+            1.0025
+          ],
+          "gate": true
+        },
+        "idx/insert_amplification/none": {
+          "A_ns": 231640.5,
+          "N": 0.1199,
+          "T": 0.36,
+          "aa_ratios": [
+            0.9926,
+            0.9867,
+            0.9833
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar1": {
+          "A_ns": 215026.5,
+          "N": 0.0843,
+          "T": 0.253,
+          "aa_ratios": [
+            1.0072,
+            0.9883,
+            0.9879
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3": {
+          "A_ns": 762489.0,
+          "N": 0.0967,
+          "T": 0.29,
+          "aa_ratios": [
+            1.0049,
+            0.9736,
+            0.991
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 2927335.5,
+          "N": 0.0804,
+          "T": 0.241,
+          "aa_ratios": [
+            1.006,
+            0.9785,
+            0.9448
+          ],
+          "gate": true
+        },
+        "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 2079183.0,
+          "N": 0.049,
+          "T": 0.147,
+          "aa_ratios": [
+            1.0018,
+            0.9617,
+            0.9911
+          ],
+          "gate": true
+        },
+        "query/equality": {
+          "A_ns": 134008.8,
+          "N": 0.0156,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9858,
+            1.0,
+            0.9855
+          ],
+          "gate": true
+        },
+        "query/range_scan_mixed_numeric": {
+          "A_ns": 85738.0,
+          "N": 0.0101,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0084,
+            1.0031,
+            0.996
+          ],
+          "gate": true
+        },
+        "query/range_scan_unindexed": {
+          "A_ns": 46222.7,
+          "N": 0.018,
+          "T": 0.054,
+          "aa_ratios": [
+            0.9982,
+            1.0028,
+            0.9954
+          ],
+          "gate": true
+        },
+        "stabilization/bm25/1000": {
+          "A_ns": 5551.1,
+          "N": 0.0384,
+          "T": 0.115,
+          "aa_ratios": [
+            1.0036,
+            0.9978,
+            1.0007
+          ],
+          "gate": false
+        },
+        "stabilization/bm25/10000": {
+          "A_ns": 15174.9,
+          "N": 0.0307,
+          "T": 0.092,
+          "aa_ratios": [
+            1.0009,
+            0.9991,
+            1.0
+          ],
+          "gate": true
+        },
+        "stabilization/bm25_selective/1000": {
+          "A_ns": 9096.8,
+          "N": 0.0184,
+          "T": 0.055,
+          "aa_ratios": [
+            0.9905,
+            0.9982,
+            0.9872
+          ],
+          "gate": true
+        },
+        "stabilization/bm25_selective/10000": {
+          "A_ns": 117424.5,
+          "N": 0.015,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9836,
+            0.9979,
+            0.985
+          ],
+          "gate": true
+        },
+        "stabilization/delete_many/1000": {
+          "A_ns": 389541.8,
+          "N": 0.0118,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0007,
+            1.0093,
+            1.0032
+          ],
+          "gate": true
+        },
+        "stabilization/delete_many/10000": {
+          "A_ns": 4557996.0,
+          "N": 0.0155,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0001,
+            0.9902,
+            1.0016
+          ],
+          "gate": true
+        },
+        "stabilization/exact_vector/1000": {
+          "A_ns": 218.6,
+          "N": 0.0177,
+          "T": 0.053,
+          "aa_ratios": [
+            1.0022,
+            1.0009,
+            1.0018
+          ],
+          "gate": true
+        },
+        "stabilization/exact_vector/10000": {
+          "A_ns": 1331.0,
+          "N": 0.0073,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0015,
+            1.0005,
+            1.0027
+          ],
+          "gate": true
+        },
+        "stabilization/fts_index_cycle/1000": {
+          "A_ns": 183550.5,
+          "N": 0.0158,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9959,
+            1.0083,
+            1.0088
+          ],
+          "gate": true
+        },
+        "stabilization/fts_index_cycle/10000": {
+          "A_ns": 1144550.2,
+          "N": 0.0143,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9952,
+            0.9979,
+            0.9989
+          ],
+          "gate": true
+        },
+        "stabilization/hnsw/1000": {
+          "A_ns": 114.4,
+          "N": 0.01,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9988,
+            1.0014,
+            0.9993
+          ],
+          "gate": true
+        },
+        "stabilization/hnsw/10000": {
+          "A_ns": 269.9,
+          "N": 0.0068,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0001,
+            0.9969,
+            0.9992
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/1000": {
+          "A_ns": 3743.4,
+          "N": 0.0209,
+          "T": 0.063,
+          "aa_ratios": [
+            1.0036,
+            1.002,
+            1.0048
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/10000": {
+          "A_ns": 111552.5,
+          "N": 0.0291,
+          "T": 0.087,
+          "aa_ratios": [
+            1.003,
+            0.995,
+            1.0144
+          ],
+          "gate": true
+        },
+        "stabilization/index_cycle/1000": {
+          "A_ns": 165908.0,
+          "N": 0.0246,
+          "T": 0.074,
+          "aa_ratios": [
+            0.9881,
+            0.9958,
+            0.9967
+          ],
+          "gate": true
+        },
+        "stabilization/index_cycle/10000": {
+          "A_ns": 1843731.5,
+          "N": 0.0149,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9876,
+            1.0064,
+            0.9902
+          ],
+          "gate": true
+        },
+        "stabilization/indexed_page/1000": {
+          "A_ns": 258.5,
+          "N": 0.014,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9972,
+            1.0055,
+            0.998
+          ],
+          "gate": true
+        },
+        "stabilization/indexed_page/10000": {
+          "A_ns": 659.7,
+          "N": 0.013,
+          "T": 0.05,
+          "aa_ratios": [
+            1.001,
+            1.0033,
+            0.9865
+          ],
+          "gate": true
+        },
+        "stabilization/sorted_page/1000": {
+          "A_ns": 5644.4,
+          "N": 0.0149,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9844,
+            1.0125,
+            0.9939
+          ],
+          "gate": true
+        },
+        "stabilization/sorted_page/10000": {
+          "A_ns": 58781.0,
+          "N": 0.0301,
+          "T": 0.09,
+          "aa_ratios": [
+            1.018,
+            1.01,
+            1.023
+          ],
+          "gate": true
+        },
+        "stabilization/unindexed_selective/1000": {
+          "A_ns": 41708.1,
+          "N": 0.0141,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9867,
+            1.0037,
+            0.983
+          ],
+          "gate": true
+        },
+        "stabilization/unindexed_selective/10000": {
+          "A_ns": 1048179.8,
+          "N": 0.0287,
+          "T": 0.086,
+          "aa_ratios": [
+            0.982,
+            1.0424,
+            0.9776
+          ],
+          "gate": true
+        },
+        "stabilization/update_many/1000": {
+          "A_ns": 80363.3,
+          "N": 0.051,
+          "T": 0.153,
+          "aa_ratios": [
+            1.001,
+            1.0018,
+            0.9949
+          ],
+          "gate": false
+        },
+        "stabilization/update_many/10000": {
+          "A_ns": 1482478.5,
+          "N": 0.0407,
+          "T": 0.122,
+          "aa_ratios": [
+            0.9925,
+            1.004,
+            0.9912
+          ],
+          "gate": true
+        },
+        "vector/find_nearest/1000": {
+          "A_ns": 5008.7,
+          "N": 0.0263,
+          "T": 0.079,
+          "aa_ratios": [
+            1.0013,
+            0.9902,
+            0.9893
+          ],
+          "gate": true
+        },
+        "vector/find_nearest/10000": {
+          "A_ns": 29277.2,
+          "N": 0.0947,
+          "T": 0.284,
+          "aa_ratios": [
+            1.01,
+            1.0033,
+            1.0015
+          ],
+          "gate": false
+        },
+        "vector/score_one/Cosine/128": {
+          "A_ns": 0.6,
+          "N": 0.0089,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0011,
+            1.0052,
+            0.9952
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/1536": {
+          "A_ns": 2.3,
+          "N": 0.004,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9999,
+            0.9972,
+            1.0015
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/384": {
+          "A_ns": 0.4,
+          "N": 0.0027,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0003,
+            0.9994,
+            0.9982
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/768": {
+          "A_ns": 0.5,
+          "N": 0.0142,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9997,
+            1.0011,
+            1.0006
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/128": {
+          "A_ns": 0.3,
+          "N": 0.0329,
+          "T": 0.099,
+          "aa_ratios": [
+            1.0054,
+            0.9989,
+            1.001
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/1536": {
+          "A_ns": 10.9,
+          "N": 0.0247,
+          "T": 0.074,
+          "aa_ratios": [
+            0.9762,
+            0.9998,
+            1.0005
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/384": {
+          "A_ns": 0.0,
+          "N": 0.0019,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9999,
+            0.9996,
+            0.9997
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/768": {
+          "A_ns": 0.5,
+          "N": 0.0119,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9987,
+            1.0023,
+            0.9997
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/128": {
+          "A_ns": 0.4,
+          "N": 0.0035,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9999,
+            1.0007,
+            1.0042
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.2,
+          "N": 0.0014,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0,
+            1.0,
+            1.0003
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/384": {
+          "A_ns": 0.1,
+          "N": 0.0008,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0004,
+            0.9998,
+            0.9999
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/768": {
+          "A_ns": 0.4,
+          "N": 0.0031,
+          "T": 0.05,
+          "aa_ratios": [
+            0.9998,
+            0.9988,
+            0.9998
+          ],
+          "gate": true
+        },
+        "write/export_snapshot_10k": {
+          "A_ns": 3936.7,
+          "N": 0.0195,
+          "T": 0.059,
+          "aa_ratios": [
+            1.0002,
+            0.9985,
+            0.9975
+          ],
+          "gate": true
+        },
+        "write/insert_many_1k": {
+          "A_ns": 48690.0,
+          "N": 0.0205,
+          "T": 0.061,
+          "aa_ratios": [
+            1.0061,
+            1.0108,
+            0.9969
+          ],
+          "gate": true
+        }
+      }
+    },
+    "ci-linux-x86_64": {
+      "cases": {
+        "bulk/delete_one_by_id/10000": {
+          "A_ns": 7932.5,
+          "N": 0.1029,
+          "T": 0.309,
+          "aa_ratios": [
+            1.0123,
+            0.9907,
+            0.9702
+          ],
+          "gate": false
+        },
+        "bulk/insert_many_indexed/10000": {
+          "A_ns": 1317579.0,
+          "N": 0.1065,
+          "T": 0.32,
+          "aa_ratios": [
+            1.0006,
+            0.9968,
+            0.9603
+          ],
+          "gate": false
+        },
+        "bulk/update_one_by_id/10000": {
+          "A_ns": 2118.3,
+          "N": 0.0439,
+          "T": 0.132,
+          "aa_ratios": [
+            0.9875,
+            0.9922,
+            0.9728
+          ],
+          "gate": true
+        },
+        "doc/aggregate_group/1000": {
+          "A_ns": 84344.4,
+          "N": 0.0214,
+          "T": 0.064,
+          "aa_ratios": [
+            0.998,
+            1.0061,
+            1.0451
+          ],
+          "gate": true
+        },
+        "doc/aggregate_group/10000": {
+          "A_ns": 2732060.6,
+          "N": 0.2435,
+          "T": 0.73,
+          "aa_ratios": [
+            1.0009,
+            0.9144,
+            1.0751
+          ],
+          "gate": false
+        },
+        "doc/aggregate_group/100000": {
+          "A_ns": 5811781.5,
+          "N": 0.0347,
+          "T": 0.104,
+          "aa_ratios": [
+            1.0079,
+            0.9909,
+            1.0157
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/1000": {
+          "A_ns": 470.1,
+          "N": 0.0366,
+          "T": 0.11,
+          "aa_ratios": [
+            1.0051,
+            0.9967,
+            0.9825
+          ],
+          "gate": false
+        },
+        "doc/compound_eq_range/10000": {
+          "A_ns": 2784.6,
+          "N": 0.0286,
+          "T": 0.086,
+          "aa_ratios": [
+            0.9979,
+            1.006,
+            1.0109
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/100000": {
+          "A_ns": 96261.6,
+          "N": 0.034,
+          "T": 0.102,
+          "aa_ratios": [
+            1.0014,
+            1.0054,
+            0.9699
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/1000": {
+          "A_ns": 74.4,
+          "N": 0.0348,
+          "T": 0.105,
+          "aa_ratios": [
+            1.0095,
+            1.0008,
+            1.0157
+          ],
+          "gate": false
+        },
+        "doc/count_indexed_eq/10000": {
+          "A_ns": 533.4,
+          "N": 0.0393,
+          "T": 0.118,
+          "aa_ratios": [
+            1.0124,
+            1.0019,
+            0.9633
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/100000": {
+          "A_ns": 1631.8,
+          "N": 0.0451,
+          "T": 0.135,
+          "aa_ratios": [
+            0.9982,
+            1.0155,
+            1.0017
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/1000": {
+          "A_ns": 19364.4,
+          "N": 0.0253,
+          "T": 0.076,
+          "aa_ratios": [
+            1.0073,
+            0.9862,
+            1.0045
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/10000": {
+          "A_ns": 508950.2,
+          "N": 0.0857,
+          "T": 0.257,
+          "aa_ratios": [
+            1.0115,
+            0.9714,
+            1.0609
+          ],
+          "gate": false
+        },
+        "doc/count_indexed_range/100000": {
+          "A_ns": 4256356.5,
+          "N": 0.0294,
+          "T": 0.088,
+          "aa_ratios": [
+            1.023,
+            0.9846,
+            1.0101
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/1000": {
+          "A_ns": 28454.0,
+          "N": 0.0431,
+          "T": 0.129,
+          "aa_ratios": [
+            1.0142,
+            1.0056,
+            1.0335
+          ],
+          "gate": false
+        },
+        "doc/count_unindexed/10000": {
+          "A_ns": 293763.8,
+          "N": 0.0436,
+          "T": 0.131,
+          "aa_ratios": [
+            1.0075,
+            1.0009,
+            0.9672
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/100000": {
+          "A_ns": 7048347.8,
+          "N": 0.0375,
+          "T": 0.113,
+          "aa_ratios": [
+            0.9981,
+            0.9605,
+            1.0016
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/1000": {
+          "A_ns": 1094.2,
+          "N": 0.0426,
+          "T": 0.128,
+          "aa_ratios": [
+            1.007,
+            1.0035,
+            0.9945
+          ],
+          "gate": false
+        },
+        "doc/find_by_id/10000": {
+          "A_ns": 2575.6,
+          "N": 0.0225,
+          "T": 0.067,
+          "aa_ratios": [
+            1.0165,
+            1.0045,
+            1.0134
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/100000": {
+          "A_ns": 3523.0,
+          "N": 0.0286,
+          "T": 0.086,
+          "aa_ratios": [
+            1.0217,
+            1.0106,
+            1.0094
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/1000": {
+          "A_ns": 821.9,
+          "N": 0.0322,
+          "T": 0.097,
+          "aa_ratios": [
+            0.9989,
+            1.0116,
+            0.9707
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/10000": {
+          "A_ns": 6178.4,
+          "N": 0.0482,
+          "T": 0.144,
+          "aa_ratios": [
+            1.0019,
+            0.9905,
+            0.9776
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/100000": {
+          "A_ns": 52756.7,
+          "N": 0.0378,
+          "T": 0.113,
+          "aa_ratios": [
+            1.0089,
+            0.998,
+            0.9937
+          ],
+          "gate": true
+        },
+        "doc/page_full/1000": {
+          "A_ns": 7846.9,
+          "N": 0.0342,
+          "T": 0.103,
+          "aa_ratios": [
+            1.0159,
+            0.9931,
+            1.0121
+          ],
+          "gate": false
+        },
+        "doc/page_full/10000": {
+          "A_ns": 4698.8,
+          "N": 0.0265,
+          "T": 0.08,
+          "aa_ratios": [
+            1.0033,
+            1.0093,
+            1.0159
+          ],
+          "gate": true
+        },
+        "doc/page_full/100000": {
+          "A_ns": 7161.0,
+          "N": 0.0253,
+          "T": 0.076,
+          "aa_ratios": [
+            1.0024,
+            0.9982,
+            0.9759
+          ],
+          "gate": true
+        },
+        "doc/page_projected/1000": {
+          "A_ns": 10466.9,
+          "N": 0.0529,
+          "T": 0.159,
+          "aa_ratios": [
+            1.0207,
+            0.9934,
+            0.9978
+          ],
+          "gate": false
+        },
+        "doc/page_projected/10000": {
+          "A_ns": 6564.7,
+          "N": 0.0241,
+          "T": 0.072,
+          "aa_ratios": [
+            1.0127,
+            1.012,
+            1.0014
+          ],
+          "gate": true
+        },
+        "doc/page_projected/100000": {
+          "A_ns": 6118.6,
+          "N": 0.0308,
+          "T": 0.092,
+          "aa_ratios": [
+            1.004,
+            0.994,
+            0.9797
+          ],
+          "gate": true
+        },
+        "doc/range_window/1000": {
+          "A_ns": 102467.0,
+          "N": 0.0266,
+          "T": 0.08,
+          "aa_ratios": [
+            1.0054,
+            1.0098,
+            1.0257
+          ],
+          "gate": true
+        },
+        "doc/range_window/10000": {
+          "A_ns": 406450.1,
+          "N": 0.027,
+          "T": 0.081,
+          "aa_ratios": [
+            1.0009,
+            0.9964,
+            1.0233
+          ],
+          "gate": true
+        },
+        "doc/range_window/100000": {
+          "A_ns": 10498849.5,
+          "N": 0.1478,
+          "T": 0.443,
+          "aa_ratios": [
+            1.0087,
+            0.9587,
+            0.9357
+          ],
+          "gate": false
+        },
+        "doc/sorted_page_asc/1000": {
+          "A_ns": 5242.6,
+          "N": 0.0157,
+          "T": 0.05,
+          "aa_ratios": [
+            1.0124,
+            1.0014,
+            1.0218
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/10000": {
+          "A_ns": 21512.7,
+          "N": 0.0173,
+          "T": 0.052,
+          "aa_ratios": [
+            0.9954,
+            1.0092,
+            1.0009
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/100000": {
+          "A_ns": 424402.7,
+          "N": 0.0733,
+          "T": 0.22,
+          "aa_ratios": [
+            0.9995,
+            0.9928,
+            0.9755
+          ],
+          "gate": true
+        },
+        "fts/bm25_zipf/10000": {
+          "A_ns": 60821.0,
+          "N": 0.0547,
+          "T": 0.164,
+          "aa_ratios": [
+            1.002,
+            0.9941,
+            1.0108
+          ],
+          "gate": true
+        },
+        "fts/insert_indexed/10000": {
+          "A_ns": 1515523.5,
+          "N": 0.1145,
+          "T": 0.344,
+          "aa_ratios": [
+            0.9869,
+            1.0117,
+            0.9857
+          ],
+          "gate": false
+        },
+        "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 7408.5,
+          "N": 0.0418,
+          "T": 0.126,
+          "aa_ratios": [
+            1.0027,
+            0.9978,
+            1.0053
+          ],
+          "gate": false
+        },
+        "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 311854.9,
+          "N": 0.0644,
+          "T": 0.193,
+          "aa_ratios": [
+            1.001,
+            1.0042,
+            0.9744
+          ],
+          "gate": true
+        },
+        "idx/insert_amplification/none": {
+          "A_ns": 542964.0,
+          "N": 0.1155,
+          "T": 0.347,
+          "aa_ratios": [
+            1.0041,
+            1.0485,
+            0.9499
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar1": {
+          "A_ns": 644442.0,
+          "N": 0.1089,
+          "T": 0.327,
+          "aa_ratios": [
+            1.0082,
+            1.0423,
+            0.9422
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3": {
+          "A_ns": 4358203.5,
+          "N": 0.1754,
+          "T": 0.526,
+          "aa_ratios": [
+            0.9904,
+            1.1672,
+            1.0226
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 4236279.0,
+          "N": 0.0865,
+          "T": 0.259,
+          "aa_ratios": [
+            1.088,
+            0.98,
+            0.9932
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 1097422.5,
+          "N": 0.0699,
+          "T": 0.21,
+          "aa_ratios": [
+            1.0123,
+            1.0057,
+            0.9648
+          ],
+          "gate": true
+        },
+        "query/equality": {
+          "A_ns": 181196.7,
+          "N": 0.0583,
+          "T": 0.175,
+          "aa_ratios": [
+            1.0125,
+            1.0221,
+            1.0251
+          ],
+          "gate": true
+        },
+        "query/range_scan_mixed_numeric": {
+          "A_ns": 155982.8,
+          "N": 0.0596,
+          "T": 0.179,
+          "aa_ratios": [
+            0.9996,
+            1.0166,
+            1.0155
+          ],
+          "gate": true
+        },
+        "query/range_scan_unindexed": {
+          "A_ns": 205950.9,
+          "N": 0.0314,
+          "T": 0.094,
+          "aa_ratios": [
+            1.002,
+            1.0222,
+            1.0278
+          ],
+          "gate": true
+        },
+        "stabilization/bm25/1000": {
+          "A_ns": 16540.6,
+          "N": 0.0683,
+          "T": 0.205,
+          "aa_ratios": [
+            1.0054,
+            0.9892,
+            1.0055
+          ],
+          "gate": false
+        },
+        "stabilization/bm25/10000": {
+          "A_ns": 180378.0,
+          "N": 0.0448,
+          "T": 0.134,
+          "aa_ratios": [
+            0.9933,
+            0.9886,
+            1.0021
+          ],
+          "gate": true
+        },
+        "stabilization/bm25_selective/1000": {
+          "A_ns": 11315.7,
+          "N": 0.0693,
+          "T": 0.208,
+          "aa_ratios": [
+            0.9989,
+            0.9824,
+            0.9906
+          ],
+          "gate": false
+        },
+        "stabilization/bm25_selective/10000": {
+          "A_ns": 207130.1,
+          "N": 0.0503,
+          "T": 0.151,
+          "aa_ratios": [
+            0.9942,
+            1.0006,
+            0.9622
+          ],
+          "gate": true
+        },
+        "stabilization/delete_many/1000": {
+          "A_ns": 828947.7,
+          "N": 0.0351,
+          "T": 0.105,
+          "aa_ratios": [
+            1.0019,
+            0.9864,
+            0.9689
+          ],
+          "gate": false
+        },
+        "stabilization/delete_many/10000": {
+          "A_ns": 3052632.0,
+          "N": 0.031,
+          "T": 0.093,
+          "aa_ratios": [
+            0.9976,
+            0.9934,
+            0.9915
+          ],
+          "gate": true
+        },
+        "stabilization/exact_vector/1000": {
+          "A_ns": 490.9,
+          "N": 0.0521,
+          "T": 0.156,
+          "aa_ratios": [
+            1.0038,
+            0.9955,
+            0.9973
+          ],
+          "gate": false
+        },
+        "stabilization/exact_vector/10000": {
+          "A_ns": 5822.4,
+          "N": 0.0411,
+          "T": 0.123,
+          "aa_ratios": [
+            1.0051,
+            0.995,
+            1.0239
+          ],
+          "gate": true
+        },
+        "stabilization/fts_index_cycle/1000": {
+          "A_ns": 307172.6,
+          "N": 0.0546,
+          "T": 0.164,
+          "aa_ratios": [
+            0.9944,
+            0.9942,
+            0.9761
+          ],
+          "gate": false
+        },
+        "stabilization/fts_index_cycle/10000": {
+          "A_ns": 3119286.8,
+          "N": 0.021,
+          "T": 0.063,
+          "aa_ratios": [
+            0.9972,
+            0.9867,
+            0.9826
+          ],
+          "gate": true
+        },
+        "stabilization/hnsw/1000": {
+          "A_ns": 1072.1,
+          "N": 0.0415,
+          "T": 0.124,
+          "aa_ratios": [
+            1.0123,
+            0.9953,
+            0.9779
+          ],
+          "gate": false
+        },
+        "stabilization/hnsw/10000": {
+          "A_ns": 2088.2,
+          "N": 0.0573,
+          "T": 0.172,
+          "aa_ratios": [
+            0.9906,
+            0.9893,
+            0.9611
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/1000": {
+          "A_ns": 11007.4,
+          "N": 0.0209,
+          "T": 0.063,
+          "aa_ratios": [
+            1.0068,
+            0.9979,
+            0.9819
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/10000": {
+          "A_ns": 40669.5,
+          "N": 0.0286,
+          "T": 0.086,
+          "aa_ratios": [
+            0.9969,
+            0.994,
+            0.9962
+          ],
+          "gate": true
+        },
+        "stabilization/index_cycle/1000": {
+          "A_ns": 183982.2,
+          "N": 0.0574,
+          "T": 0.172,
+          "aa_ratios": [
+            0.9972,
+            0.9879,
+            1.0223
+          ],
+          "gate": false
+        },
+        "stabilization/index_cycle/10000": {
+          "A_ns": 3472715.2,
+          "N": 0.0628,
+          "T": 0.188,
+          "aa_ratios": [
+            0.9951,
+            0.9795,
+            0.9599
+          ],
+          "gate": true
+        },
+        "stabilization/indexed_page/1000": {
+          "A_ns": 918.5,
+          "N": 0.0607,
+          "T": 0.182,
+          "aa_ratios": [
+            1.0183,
+            1.0061,
+            1.0103
+          ],
+          "gate": false
+        },
+        "stabilization/indexed_page/10000": {
+          "A_ns": 820.9,
+          "N": 0.04,
+          "T": 0.12,
+          "aa_ratios": [
+            1.0068,
+            1.0158,
+            0.9803
+          ],
+          "gate": true
+        },
+        "stabilization/sorted_page/1000": {
+          "A_ns": 1306.7,
+          "N": 0.051,
+          "T": 0.153,
+          "aa_ratios": [
+            0.9964,
+            0.9976,
+            0.9949
+          ],
+          "gate": false
+        },
+        "stabilization/sorted_page/10000": {
+          "A_ns": 17867.3,
+          "N": 0.0289,
+          "T": 0.087,
+          "aa_ratios": [
+            1.0076,
+            0.9966,
+            1.0014
+          ],
+          "gate": true
+        },
+        "stabilization/unindexed_selective/1000": {
+          "A_ns": 36649.4,
+          "N": 0.0903,
+          "T": 0.271,
+          "aa_ratios": [
+            1.0013,
+            0.9854,
+            1.0197
+          ],
+          "gate": false
+        },
+        "stabilization/unindexed_selective/10000": {
+          "A_ns": 644625.5,
+          "N": 0.0896,
+          "T": 0.269,
+          "aa_ratios": [
+            1.0211,
+            0.9985,
+            0.951
+          ],
+          "gate": false
+        },
+        "stabilization/update_many/1000": {
+          "A_ns": 240845.5,
+          "N": 0.0424,
+          "T": 0.127,
+          "aa_ratios": [
+            1.0031,
+            0.9912,
+            0.9727
+          ],
+          "gate": false
+        },
+        "stabilization/update_many/10000": {
+          "A_ns": 6326630.7,
+          "N": 0.0684,
+          "T": 0.205,
+          "aa_ratios": [
+            0.9911,
+            0.9918,
+            0.9373
+          ],
+          "gate": true
+        },
+        "vector/find_nearest/1000": {
+          "A_ns": 22289.3,
+          "N": 0.0807,
+          "T": 0.242,
+          "aa_ratios": [
+            0.9938,
+            0.9642,
+            1.0069
+          ],
+          "gate": false
+        },
+        "vector/find_nearest/10000": {
+          "A_ns": 12467.7,
+          "N": 0.0446,
+          "T": 0.134,
+          "aa_ratios": [
+            1.0025,
+            1.0036,
+            0.9927
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/128": {
+          "A_ns": 0.6,
+          "N": 0.142,
+          "T": 0.426,
+          "aa_ratios": [
+            1.0008,
+            1.0007,
+            0.9883
+          ],
+          "gate": false
+        },
+        "vector/score_one/Cosine/1536": {
+          "A_ns": 5.9,
+          "N": 0.0464,
+          "T": 0.139,
+          "aa_ratios": [
+            0.9997,
+            0.9997,
+            1.011
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/384": {
+          "A_ns": 0.1,
+          "N": 0.0627,
+          "T": 0.188,
+          "aa_ratios": [
+            1.0001,
+            0.9997,
+            0.9991
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/768": {
+          "A_ns": 11.7,
+          "N": 0.0701,
+          "T": 0.21,
+          "aa_ratios": [
+            1.0208,
+            1.0003,
+            0.991
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/128": {
+          "A_ns": 1.3,
+          "N": 0.1219,
+          "T": 0.366,
+          "aa_ratios": [
+            1.0047,
+            0.9798,
+            0.9657
+          ],
+          "gate": false
+        },
+        "vector/score_one/Dot/1536": {
+          "A_ns": 5.0,
+          "N": 0.0429,
+          "T": 0.129,
+          "aa_ratios": [
+            1.0003,
+            1.0009,
+            1.0169
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/384": {
+          "A_ns": 0.6,
+          "N": 0.0666,
+          "T": 0.2,
+          "aa_ratios": [
+            1.0029,
+            0.9988,
+            0.9927
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/768": {
+          "A_ns": 9.6,
+          "N": 0.0331,
+          "T": 0.099,
+          "aa_ratios": [
+            1.0346,
+            1.0001,
+            1.0009
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/128": {
+          "A_ns": 1.3,
+          "N": 0.0556,
+          "T": 0.167,
+          "aa_ratios": [
+            0.989,
+            0.9856,
+            0.9756
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.8,
+          "N": 0.049,
+          "T": 0.147,
+          "aa_ratios": [
+            0.9993,
+            1.0002,
+            0.9972
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/384": {
+          "A_ns": 1.1,
+          "N": 0.0353,
+          "T": 0.106,
+          "aa_ratios": [
+            0.9998,
+            1.0002,
+            1.0128
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/768": {
+          "A_ns": 12.2,
+          "N": 0.0356,
+          "T": 0.107,
+          "aa_ratios": [
+            1.037,
+            1.0021,
+            1.0104
+          ],
+          "gate": true
+        },
+        "write/export_snapshot_10k": {
+          "A_ns": 14475.4,
+          "N": 0.0326,
+          "T": 0.098,
+          "aa_ratios": [
+            1.0092,
+            0.9895,
+            1.0094
+          ],
+          "gate": true
+        },
+        "write/insert_many_1k": {
+          "A_ns": 88993.3,
+          "N": 0.0414,
+          "T": 0.124,
+          "aa_ratios": [
+            0.996,
+            0.9984,
+            0.9706
+          ],
+          "gate": true
+        }
+      }
+    },
+    "local-i5-9400f": {
+      "cases": {
+        "bulk/delete_one_by_id/10000": {
+          "A_ns": 20823.6,
+          "N": 0.0549,
+          "T": 0.165,
+          "aa_ratios": [
+            1.0399
+          ],
+          "gate": true
+        },
+        "bulk/insert_many_indexed/10000": {
+          "A_ns": 744288.0,
+          "N": 0.0638,
+          "T": 0.191,
+          "aa_ratios": [
+            0.9879
+          ],
+          "gate": true
+        },
+        "bulk/update_one_by_id/10000": {
+          "A_ns": 2315.4,
+          "N": 0.0357,
+          "T": 0.107,
+          "aa_ratios": [
+            1.0181
+          ],
+          "gate": true
+        },
+        "doc/aggregate_group/1000": {
+          "A_ns": 31274.3,
+          "N": 0.0379,
+          "T": 0.114,
+          "aa_ratios": [
+            1.0097
+          ],
+          "gate": false
+        },
+        "doc/aggregate_group/10000": {
+          "A_ns": 48932.5,
+          "N": 0.0708,
+          "T": 0.212,
+          "aa_ratios": [
+            1.0014
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/1000": {
+          "A_ns": 170.0,
+          "N": 0.0252,
+          "T": 0.075,
+          "aa_ratios": [
+            0.9961
+          ],
+          "gate": true
+        },
+        "doc/compound_eq_range/10000": {
+          "A_ns": 3516.8,
+          "N": 0.0356,
+          "T": 0.107,
+          "aa_ratios": [
+            1.0081
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_eq/1000": {
+          "A_ns": 66.9,
+          "N": 0.0388,
+          "T": 0.116,
+          "aa_ratios": [
+            1.0093
+          ],
+          "gate": false
+        },
+        "doc/count_indexed_eq/10000": {
+          "A_ns": 181.8,
+          "N": 0.0404,
+          "T": 0.121,
+          "aa_ratios": [
+            0.9917
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/1000": {
+          "A_ns": 5918.5,
+          "N": 0.0295,
+          "T": 0.088,
+          "aa_ratios": [
+            0.9958
+          ],
+          "gate": true
+        },
+        "doc/count_indexed_range/10000": {
+          "A_ns": 87078.9,
+          "N": 0.0778,
+          "T": 0.233,
+          "aa_ratios": [
+            1.0054
+          ],
+          "gate": true
+        },
+        "doc/count_unindexed/1000": {
+          "A_ns": 4032.3,
+          "N": 0.0419,
+          "T": 0.126,
+          "aa_ratios": [
+            0.9974
+          ],
+          "gate": false
+        },
+        "doc/count_unindexed/10000": {
+          "A_ns": 56676.9,
+          "N": 0.0602,
+          "T": 0.181,
+          "aa_ratios": [
+            1.0033
+          ],
+          "gate": true
+        },
+        "doc/find_by_id/1000": {
+          "A_ns": 1312.0,
+          "N": 0.0362,
+          "T": 0.109,
+          "aa_ratios": [
+            1.0102
+          ],
+          "gate": false
+        },
+        "doc/find_by_id/10000": {
+          "A_ns": 1521.2,
+          "N": 0.0316,
+          "T": 0.095,
+          "aa_ratios": [
+            1.0113
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/1000": {
+          "A_ns": 78.4,
+          "N": 0.0303,
+          "T": 0.091,
+          "aa_ratios": [
+            1.0017
+          ],
+          "gate": true
+        },
+        "doc/indexed_eq/10000": {
+          "A_ns": 5285.2,
+          "N": 0.0382,
+          "T": 0.115,
+          "aa_ratios": [
+            1.0105
+          ],
+          "gate": true
+        },
+        "doc/page_full/1000": {
+          "A_ns": 1792.9,
+          "N": 0.0371,
+          "T": 0.111,
+          "aa_ratios": [
+            1.0038
+          ],
+          "gate": false
+        },
+        "doc/page_full/10000": {
+          "A_ns": 5435.2,
+          "N": 0.0328,
+          "T": 0.098,
+          "aa_ratios": [
+            1.0112
+          ],
+          "gate": true
+        },
+        "doc/page_projected/1000": {
+          "A_ns": 1542.7,
+          "N": 0.0349,
+          "T": 0.105,
+          "aa_ratios": [
+            1.0031
+          ],
+          "gate": false
+        },
+        "doc/page_projected/10000": {
+          "A_ns": 10588.3,
+          "N": 0.0387,
+          "T": 0.116,
+          "aa_ratios": [
+            1.0211
+          ],
+          "gate": true
+        },
+        "doc/range_window/1000": {
+          "A_ns": 8739.7,
+          "N": 0.0541,
+          "T": 0.162,
+          "aa_ratios": [
+            1.0013
+          ],
+          "gate": false
+        },
+        "doc/range_window/10000": {
+          "A_ns": 21934.2,
+          "N": 0.0439,
+          "T": 0.132,
+          "aa_ratios": [
+            0.9992
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/1000": {
+          "A_ns": 366.2,
+          "N": 0.0262,
+          "T": 0.078,
+          "aa_ratios": [
+            1.0009
+          ],
+          "gate": true
+        },
+        "doc/sorted_page_asc/10000": {
+          "A_ns": 41078.3,
+          "N": 0.0347,
+          "T": 0.104,
+          "aa_ratios": [
+            1.0148
+          ],
+          "gate": true
+        },
+        "fts/bm25_zipf/10000": {
+          "A_ns": 60412.0,
+          "N": 0.031,
+          "T": 0.093,
+          "aa_ratios": [
+            1.0067
+          ],
+          "gate": true
+        },
+        "fts/insert_indexed/10000": {
+          "A_ns": 1529521.5,
+          "N": 0.0661,
+          "T": 0.198,
+          "aa_ratios": [
+            0.9891
+          ],
+          "gate": true
+        },
+        "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 3619.6,
+          "N": 0.0316,
+          "T": 0.095,
+          "aa_ratios": [
+            1.0016
+          ],
+          "gate": true
+        },
+        "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 79.3,
+          "N": 0.0524,
+          "T": 0.157,
+          "aa_ratios": [
+            1.0
+          ],
+          "gate": true
+        },
+        "idx/insert_amplification/none": {
+          "A_ns": 984015.0,
+          "N": 0.1051,
+          "T": 0.315,
+          "aa_ratios": [
+            0.9299
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar1": {
+          "A_ns": 588990.0,
+          "N": 0.101,
+          "T": 0.303,
+          "aa_ratios": [
+            1.0347
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3": {
+          "A_ns": 272763.0,
+          "N": 0.2177,
+          "T": 0.653,
+          "aa_ratios": [
+            1.0091
+          ],
+          "gate": false
+        },
+        "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 3222510.0,
+          "N": 0.061,
+          "T": 0.183,
+          "aa_ratios": [
+            0.9465
+          ],
+          "gate": true
+        },
+        "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 17580.0,
+          "N": 0.0578,
+          "T": 0.173,
+          "aa_ratios": [
+            1.0003
+          ],
+          "gate": true
+        },
+        "query/equality": {
+          "A_ns": 73202.9,
+          "N": 0.0187,
+          "T": 0.056,
+          "aa_ratios": [
+            0.9904
+          ],
+          "gate": true
+        },
+        "query/range_scan_mixed_numeric": {
+          "A_ns": 5138.2,
+          "N": 0.0374,
+          "T": 0.112,
+          "aa_ratios": [
+            0.9994
+          ],
+          "gate": true
+        },
+        "query/range_scan_unindexed": {
+          "A_ns": 1476.6,
+          "N": 0.0384,
+          "T": 0.115,
+          "aa_ratios": [
+            1.0002
+          ],
+          "gate": true
+        },
+        "stabilization/bm25/1000": {
+          "A_ns": 8304.6,
+          "N": 0.0291,
+          "T": 0.087,
+          "aa_ratios": [
+            1.0048
+          ],
+          "gate": true
+        },
+        "stabilization/bm25/10000": {
+          "A_ns": 290025.3,
+          "N": 0.0569,
+          "T": 0.171,
+          "aa_ratios": [
+            0.9844
+          ],
+          "gate": true
+        },
+        "stabilization/bm25_selective/1000": {
+          "A_ns": 1459.7,
+          "N": 0.0294,
+          "T": 0.088,
+          "aa_ratios": [
+            1.0018
+          ],
+          "gate": true
+        },
+        "stabilization/bm25_selective/10000": {
+          "A_ns": 1044.7,
+          "N": 0.0341,
+          "T": 0.102,
+          "aa_ratios": [
+            1.0001
+          ],
+          "gate": true
+        },
+        "stabilization/delete_many/1000": {
+          "A_ns": 238027.1,
+          "N": 0.0377,
+          "T": 0.113,
+          "aa_ratios": [
+            0.9952
+          ],
+          "gate": false
+        },
+        "stabilization/delete_many/10000": {
+          "A_ns": 203236.5,
+          "N": 0.0397,
+          "T": 0.119,
+          "aa_ratios": [
+            0.9996
+          ],
+          "gate": true
+        },
+        "stabilization/exact_vector/1000": {
+          "A_ns": 5.7,
+          "N": 0.0289,
+          "T": 0.087,
+          "aa_ratios": [
+            0.9999
+          ],
+          "gate": true
+        },
+        "stabilization/exact_vector/10000": {
+          "A_ns": 256.5,
+          "N": 0.0254,
+          "T": 0.076,
+          "aa_ratios": [
+            1.0005
+          ],
+          "gate": true
+        },
+        "stabilization/fts_index_cycle/1000": {
+          "A_ns": 107308.4,
+          "N": 0.0373,
+          "T": 0.112,
+          "aa_ratios": [
+            0.9957
+          ],
+          "gate": false
+        },
+        "stabilization/fts_index_cycle/10000": {
+          "A_ns": 1491322.5,
+          "N": 0.0391,
+          "T": 0.117,
+          "aa_ratios": [
+            0.9945
+          ],
+          "gate": true
+        },
+        "stabilization/hnsw/1000": {
+          "A_ns": 134.5,
+          "N": 0.0291,
+          "T": 0.087,
+          "aa_ratios": [
+            0.9983
+          ],
+          "gate": true
+        },
+        "stabilization/hnsw/10000": {
+          "A_ns": 1388.0,
+          "N": 0.0337,
+          "T": 0.101,
+          "aa_ratios": [
+            1.0157
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/1000": {
+          "A_ns": 2001.0,
+          "N": 0.0263,
+          "T": 0.079,
+          "aa_ratios": [
+            0.9978
+          ],
+          "gate": true
+        },
+        "stabilization/hybrid/10000": {
+          "A_ns": 15486.6,
+          "N": 0.045,
+          "T": 0.135,
+          "aa_ratios": [
+            1.0018
+          ],
+          "gate": true
+        },
+        "stabilization/index_cycle/1000": {
+          "A_ns": 39096.8,
+          "N": 0.0386,
+          "T": 0.116,
+          "aa_ratios": [
+            0.9974
+          ],
+          "gate": false
+        },
+        "stabilization/index_cycle/10000": {
+          "A_ns": 396967.5,
+          "N": 0.0415,
+          "T": 0.124,
+          "aa_ratios": [
+            1.0025
+          ],
+          "gate": true
+        },
+        "stabilization/indexed_page/1000": {
+          "A_ns": 417.7,
+          "N": 0.0268,
+          "T": 0.08,
+          "aa_ratios": [
+            0.9907
+          ],
+          "gate": true
+        },
+        "stabilization/indexed_page/10000": {
+          "A_ns": 288.0,
+          "N": 0.0389,
+          "T": 0.117,
+          "aa_ratios": [
+            1.0061
+          ],
+          "gate": true
+        },
+        "stabilization/sorted_page/1000": {
+          "A_ns": 821.2,
+          "N": 0.0115,
+          "T": 0.05,
+          "aa_ratios": [
+            0.998
+          ],
+          "gate": true
+        },
+        "stabilization/sorted_page/10000": {
+          "A_ns": 28657.4,
+          "N": 0.0453,
+          "T": 0.136,
+          "aa_ratios": [
+            0.9899
+          ],
+          "gate": true
+        },
+        "stabilization/unindexed_selective/1000": {
+          "A_ns": 5379.0,
+          "N": 0.0296,
+          "T": 0.089,
+          "aa_ratios": [
+            1.0028
+          ],
+          "gate": true
+        },
+        "stabilization/unindexed_selective/10000": {
+          "A_ns": 47125.0,
+          "N": 0.0533,
+          "T": 0.16,
+          "aa_ratios": [
+            0.9977
+          ],
+          "gate": true
+        },
+        "stabilization/update_many/1000": {
+          "A_ns": 21219.5,
+          "N": 0.055,
+          "T": 0.165,
+          "aa_ratios": [
+            0.9986
+          ],
+          "gate": false
+        },
+        "stabilization/update_many/10000": {
+          "A_ns": 54138.8,
+          "N": 0.0442,
+          "T": 0.133,
+          "aa_ratios": [
+            0.9997
+          ],
+          "gate": true
+        },
+        "vector/find_nearest/1000": {
+          "A_ns": 1956.5,
+          "N": 0.0421,
+          "T": 0.126,
+          "aa_ratios": [
+            1.0036
+          ],
+          "gate": false
+        },
+        "vector/find_nearest/10000": {
+          "A_ns": 247029.1,
+          "N": 0.0538,
+          "T": 0.161,
+          "aa_ratios": [
+            1.052
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/128": {
+          "A_ns": 0.1,
+          "N": 0.0259,
+          "T": 0.078,
+          "aa_ratios": [
+            0.9994
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/1536": {
+          "A_ns": 0.1,
+          "N": 0.0263,
+          "T": 0.079,
+          "aa_ratios": [
+            0.9999
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/384": {
+          "A_ns": 0.1,
+          "N": 0.0235,
+          "T": 0.071,
+          "aa_ratios": [
+            0.9997
+          ],
+          "gate": true
+        },
+        "vector/score_one/Cosine/768": {
+          "A_ns": 0.2,
+          "N": 0.0265,
+          "T": 0.08,
+          "aa_ratios": [
+            0.9997
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/128": {
+          "A_ns": 0.0,
+          "N": 0.0632,
+          "T": 0.19,
+          "aa_ratios": [
+            0.9994
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/1536": {
+          "A_ns": 0.2,
+          "N": 0.0243,
+          "T": 0.073,
+          "aa_ratios": [
+            1.0004
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/384": {
+          "A_ns": 0.0,
+          "N": 0.0321,
+          "T": 0.096,
+          "aa_ratios": [
+            1.0002
+          ],
+          "gate": true
+        },
+        "vector/score_one/Dot/768": {
+          "A_ns": 0.0,
+          "N": 0.0215,
+          "T": 0.064,
+          "aa_ratios": [
+            0.9999
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/128": {
+          "A_ns": 0.1,
+          "N": 0.0244,
+          "T": 0.073,
+          "aa_ratios": [
+            0.9992
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.0,
+          "N": 0.0269,
+          "T": 0.081,
+          "aa_ratios": [
+            1.0
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/384": {
+          "A_ns": 0.2,
+          "N": 0.0695,
+          "T": 0.208,
+          "aa_ratios": [
+            0.9988
+          ],
+          "gate": true
+        },
+        "vector/score_one/Euclidean/768": {
+          "A_ns": 0.4,
+          "N": 0.0267,
+          "T": 0.08,
+          "aa_ratios": [
+            0.9991
+          ],
+          "gate": true
+        },
+        "write/export_snapshot_10k": {
+          "A_ns": 7002.9,
+          "N": 0.0278,
+          "T": 0.083,
+          "aa_ratios": [
+            0.9964
+          ],
+          "gate": true
+        },
+        "write/insert_many_1k": {
+          "A_ns": 21517.9,
+          "N": 0.0249,
+          "T": 0.075,
+          "aa_ratios": [
+            1.0059
+          ],
+          "gate": true
+        }
+      }
+    }
+  },
+  "schema": 1,
+  "vector": {
+    "calibration": {
+      "ci-linux-aarch64": {
+        "calibrated_at": "2026-10-24",
+        "minimum_floor_ms": {
+          "ann_p50_ms": 0.01,
+          "build_ms": 50.0,
+          "exact_mean_ms": 0.01,
+          "filtered_p50_ms": 0.01
+        },
+        "relative_tolerances": {
+          "ann_p50_ms": 0.5,
+          "build_ms": 0.3,
+          "exact_mean_ms": 0.3,
+          "filtered_p50_ms": 0.5
+        },
+        "rule": "floor = max(minimum, 3 x largest A/A |median(C) - median(B)|) per rule and step configuration; relative tolerances unchanged",
+        "sources": [
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-ARM64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24-arm64",
+              "ImageVersion": "20261023.149.3",
+              "RUNNER_ARCH": "ARM64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          }
+        ]
+      },
+      "ci-linux-x86_64": {
+        "calibrated_at": "2026-10-24",
+        "minimum_floor_ms": {
+          "ann_p50_ms": 0.01,
+          "build_ms": 50.0,
+          "exact_mean_ms": 0.01,
+          "filtered_p50_ms": 0.01
+        },
+        "relative_tolerances": {
+          "ann_p50_ms": 0.5,
+          "build_ms": 0.3,
+          "exact_mean_ms": 0.3,
+          "filtered_p50_ms": 0.5
+        },
+        "rule": "floor = max(minimum, 3 x largest A/A |median(C) - median(B)|) per rule and step configuration; relative tolerances unchanged",
+        "sources": [
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089246132",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 10000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089249863",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-binary-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261012.334.1",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-64mib.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-filtered.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "filtered"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          },
+          {
+            "count": 2000,
+            "file": "vector-benchmark-Linux-X64-none-pr-9d96682208f6f3d19d78466d8b46facd6999a379-1/vector-benchmark-staged.json",
+            "pairs": 3,
+            "runner": {
+              "GITHUB_JOB": "compare",
+              "GITHUB_RUN_ATTEMPT": "1",
+              "GITHUB_RUN_ID": "40089254047",
+              "ImageOS": "ubuntu24",
+              "ImageVersion": "20261023.334.3",
+              "RUNNER_ARCH": "X64",
+              "RUNNER_OS": "Linux"
+            },
+            "workload": "hnsw"
+          }
+        ]
+      }
+    },
+    "profiles": {
+      "ci-linux-aarch64": {
+        "ann_p50_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0912,
+          "aa_max_ratio_dev": 0.0314,
+          "floor": 0.274,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.1026,
+          "aa_max_ratio_dev": 0.0515,
+          "floor": 0.308,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.232,
+          "aa_max_ratio_dev": 0.1155,
+          "floor": 0.696,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.9716,
+          "aa_max_ratio_dev": 0.0555,
+          "floor": 2.915,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.4926,
+          "aa_max_ratio_dev": 0.544,
+          "floor": 1.478,
+          "relative_tolerance_holds": false
+        },
+        "ann_p50_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1.3883,
+          "aa_max_ratio_dev": 0.1055,
+          "floor": 4.165,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0188,
+          "aa_max_ratio_dev": 0.0143,
+          "floor": 0.056,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0114,
+          "aa_max_ratio_dev": 0.0106,
+          "floor": 0.034,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0091,
+          "aa_max_ratio_dev": 0.0086,
+          "floor": 0.027,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0097,
+          "aa_max_ratio_dev": 0.0101,
+          "floor": 0.029,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0146,
+          "aa_max_ratio_dev": 0.0204,
+          "floor": 0.044,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0366,
+          "aa_max_ratio_dev": 0.0411,
+          "floor": 0.11,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 404.3375,
+          "aa_max_ratio_dev": 0.035,
+          "floor": 1213.013,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 85.2968,
+          "aa_max_ratio_dev": 0.0083,
+          "floor": 255.89,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 83.9384,
+          "aa_max_ratio_dev": 0.0081,
+          "floor": 251.815,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 958.6924,
+          "aa_max_ratio_dev": 0.0104,
+          "floor": 2876.077,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 128.44,
+          "aa_max_ratio_dev": 0.0046,
+          "floor": 385.32,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 3951.1349,
+          "aa_max_ratio_dev": 0.0592,
+          "floor": 11853.405,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 1.2096,
+          "aa_max_ratio_dev": 0.001,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 2.0656,
+          "aa_max_ratio_dev": 0.0016,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 8.2478,
+          "aa_max_ratio_dev": 0.0065,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 18.4279,
+          "aa_max_ratio_dev": 0.0051,
+          "floor": 55.284,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 5.2436,
+          "aa_max_ratio_dev": 0.0015,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 11.9651,
+          "aa_max_ratio_dev": 0.0034,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.357,
+          "aa_max_ratio_dev": 0.0973,
+          "floor": 1.071,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0215,
+          "aa_max_ratio_dev": 0.0193,
+          "floor": 0.065,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.2486,
+          "aa_max_ratio_dev": 0.0763,
+          "floor": 0.746,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0353,
+          "aa_max_ratio_dev": 0.0129,
+          "floor": 0.106,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0462,
+          "aa_max_ratio_dev": 0.0444,
+          "floor": 0.139,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.1494,
+          "aa_max_ratio_dev": 0.0513,
+          "floor": 0.448,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0021,
+          "aa_max_ratio_dev": 0.0081,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0003,
+          "aa_max_ratio_dev": 0.0012,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0021,
+          "aa_max_ratio_dev": 0.0084,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0004,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0014,
+          "aa_max_ratio_dev": 0.0052,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0002,
+          "aa_max_ratio_dev": 0.0009,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/10000": {
+          "aa_max_abs_diff": 0.5206,
+          "aa_max_ratio_dev": 0.1116,
+          "floor": 1.562,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/2000": {
+          "aa_max_abs_diff": 0.0185,
+          "aa_max_ratio_dev": 0.038,
+          "floor": 0.056,
+          "relative_tolerance_holds": true
+        }
+      },
+      "ci-linux-x86_64": {
+        "ann_p50_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0294,
+          "aa_max_ratio_dev": 0.0136,
+          "floor": 0.088,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0461,
+          "aa_max_ratio_dev": 0.0467,
+          "floor": 0.138,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.1193,
+          "aa_max_ratio_dev": 0.0728,
+          "floor": 0.358,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.8769,
+          "aa_max_ratio_dev": 0.0461,
+          "floor": 2.631,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.7735,
+          "aa_max_ratio_dev": 0.3612,
+          "floor": 2.321,
+          "relative_tolerance_holds": false
+        },
+        "ann_p50_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1.219,
+          "aa_max_ratio_dev": 0.105,
+          "floor": 3.657,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0062,
+          "aa_max_ratio_dev": 0.0071,
+          "floor": 0.018,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0093,
+          "aa_max_ratio_dev": 0.0084,
+          "floor": 0.028,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.0084,
+          "aa_max_ratio_dev": 0.0095,
+          "floor": 0.025,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0134,
+          "aa_max_ratio_dev": 0.0257,
+          "floor": 0.04,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0334,
+          "aa_max_ratio_dev": 0.0644,
+          "floor": 0.1,
+          "relative_tolerance_holds": true
+        },
+        "ann_p50_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0235,
+          "aa_max_ratio_dev": 0.0494,
+          "floor": 0.071,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 25.1295,
+          "aa_max_ratio_dev": 0.0023,
+          "floor": 75.389,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 29.9078,
+          "aa_max_ratio_dev": 0.0049,
+          "floor": 89.724,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 120.7276,
+          "aa_max_ratio_dev": 0.0194,
+          "floor": 362.183,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 814.875,
+          "aa_max_ratio_dev": 0.0083,
+          "floor": 2444.625,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 557.2568,
+          "aa_max_ratio_dev": 0.0215,
+          "floor": 1671.77,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 1282.6526,
+          "aa_max_ratio_dev": 0.0193,
+          "floor": 3847.958,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 1.0139,
+          "aa_max_ratio_dev": 0.0007,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 2.4858,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 4.5228,
+          "aa_max_ratio_dev": 0.003,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 2.0881,
+          "aa_max_ratio_dev": 0.0008,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 6.3961,
+          "aa_max_ratio_dev": 0.0026,
+          "floor": 50.0,
+          "relative_tolerance_holds": true
+        },
+        "build_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 38.0763,
+          "aa_max_ratio_dev": 0.0156,
+          "floor": 114.229,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0258,
+          "aa_max_ratio_dev": 0.0099,
+          "floor": 0.077,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.002,
+          "aa_max_ratio_dev": 0.0017,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.1406,
+          "aa_max_ratio_dev": 0.0437,
+          "floor": 0.422,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.1645,
+          "aa_max_ratio_dev": 0.0656,
+          "floor": 0.493,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0046,
+          "aa_max_ratio_dev": 0.0039,
+          "floor": 0.014,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/10000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.1594,
+          "aa_max_ratio_dev": 0.0516,
+          "floor": 0.478,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/staged/8388608": {
+          "aa_max_abs_diff": 0.0005,
+          "aa_max_ratio_dev": 0.0016,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/67108864": {
+          "aa_max_abs_diff": 0.0026,
+          "aa_max_ratio_dev": 0.0085,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/binary/sync/8388608": {
+          "aa_max_abs_diff": 0.004,
+          "aa_max_ratio_dev": 0.0128,
+          "floor": 0.012,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/staged/8388608": {
+          "aa_max_abs_diff": 0.0095,
+          "aa_max_ratio_dev": 0.0337,
+          "floor": 0.028,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/67108864": {
+          "aa_max_abs_diff": 0.0201,
+          "aa_max_ratio_dev": 0.0708,
+          "floor": 0.06,
+          "relative_tolerance_holds": true
+        },
+        "exact_mean_ms/2000/none/sync/8388608": {
+          "aa_max_abs_diff": 0.0016,
+          "aa_max_ratio_dev": 0.0057,
+          "floor": 0.01,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/10000": {
+          "aa_max_abs_diff": 0.0779,
+          "aa_max_ratio_dev": 0.0239,
+          "floor": 0.234,
+          "relative_tolerance_holds": true
+        },
+        "filtered_p50_ms/2000": {
+          "aa_max_abs_diff": 0.0079,
+          "aa_max_ratio_dev": 0.02,
+          "floor": 0.024,
+          "relative_tolerance_holds": true
+        }
+      }
+    }
+  }
+}

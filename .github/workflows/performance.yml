@@ -1,5 +1,10 @@
 name: Vector performance
 
+# Same-runner A/B benchmark gates. Rules, tolerances and how to recalibrate:
+# benchmarks/README.md. Every comparison builds the baseline with the
+# candidate's harness, runs the two sides interleaved at least three times, and
+# re-measures a suspected regression before failing on it.
+
 on:
   pull_request:
     branches: [main, dev]
@@ -10,6 +15,7 @@ on:
       - 'scripts/bench-web.mjs'
       - 'scripts/vector-web-bench-compare.mjs'
       - 'packages/bindings/web/**'
+      - 'benchmarks/gates/**'
       - '.github/workflows/performance.yml'
       - 'Cargo.*'
       - 'rust-toolchain.toml'
@@ -25,23 +31,113 @@ on:
       - 'scripts/bench-web.mjs'
       - 'scripts/vector-web-bench-compare.mjs'
       - 'packages/bindings/web/**'
+      - 'benchmarks/gates/**'
       - '.github/workflows/performance.yml'
       - 'Cargo.*'
       - 'rust-toolchain.toml'
   schedule:
     - cron: '0 2 * * 1'
   workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Baseline commit or ref. Default: the parent commit. Give the candidate commit itself for an A/A calibration run.'
+        required: false
+      cumulative:
+        description: 'Also compare against v0.12.1 (a2ef466)'
+        type: boolean
+        default: false
+      size:
+        description: 'pr = 2k vectors and the PR browser size; release = 10k vectors, 5k browser, 100k documents'
+        type: choice
+        options: [release, pr]
+        default: release
+      suites:
+        description: 'Comma-separated: vector, criterion, browser, tier0 (Tier 0 runs in ci.yml otherwise)'
+        default: 'vector,criterion,browser'
+      record_tier0:
+        description: 'tier0 suite: record the references instead of checking them'
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: vector-performance-${{ github.event.pull_request.number || github.ref }}
+  # Manual runs never cancel or replace each other: calibration dispatches several.
+  group: vector-performance-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # The v0.13 cumulative baseline, by commit: the v0.12.1 tag is lightweight and
+  # could be moved. benchmarks/baselines/v0.12.1/manifest.json records the same SHA.
+  V0121_SHA: a2ef46602127919c60a0fe6333d676b1b1ab391e
+
 jobs:
+  plan:
+    name: Plan baselines
+    runs-on: ubuntu-latest
+    outputs:
+      bases: ${{ steps.plan.outputs.bases }}
+      size: ${{ steps.plan.outputs.size }}
+      suites: ${{ steps.plan.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve baselines
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_CUMULATIVE: ${{ inputs.cumulative }}
+          INPUT_SIZE: ${{ inputs.size }}
+          INPUT_SUITES: ${{ inputs.suites }}
+        run: |
+          base="${INPUT_BASELINE:-${PR_BASE:-${BEFORE:-HEAD^}}}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            base=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD^)
+          fi
+          if ! sha=$(git rev-parse --verify --quiet "$base^{commit}"); then
+            sha=$(git rev-parse HEAD^)
+          fi
+          # The cumulative comparison runs on the weekly schedule, on every
+          # release and on request. When the parent already is v0.12.1 (the
+          # first v0.13 release, or a PR based on it), one comparison is both.
+          cumulative=false
+          if [ "$EVENT" = schedule ] || [[ "$GITHUB_REF" == refs/tags/* ]] || [ "$INPUT_CUMULATIVE" = true ]; then
+            cumulative=true
+          fi
+          if [ "$cumulative" = true ] && [ "$sha" = "$V0121_SHA" ]; then
+            bases='[{"kind":"cumulative","sha":"'"$sha"'"}]'
+          elif [ "$cumulative" = true ]; then
+            bases='[{"kind":"pr","sha":"'"$sha"'"},{"kind":"cumulative","sha":"'"$V0121_SHA"'"}]'
+          else
+            bases='[{"kind":"pr","sha":"'"$sha"'"}]'
+          fi
+          size=release
+          if [ "$EVENT" = pull_request ]; then size=pr; fi
+          if [ -n "$INPUT_SIZE" ]; then size="$INPUT_SIZE"; fi
+          suites="${INPUT_SUITES:-vector,criterion,browser}"
+          echo "bases=$bases" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "Candidate $(git rev-parse HEAD); baselines $bases; size $size; suites $suites" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  tier0:
+    name: Tier 0
+    needs: plan
+    if: contains(needs.plan.outputs.suites, 'tier0')
+    uses: ./.github/workflows/benchmark-tier0.yml
+    with:
+      record: ${{ inputs.record_tier0 == true }}
+
   compare:
+    name: Vector (${{ matrix.os }}, ${{ matrix.quantization }}, ${{ matrix.base.kind }})
+    needs: plan
+    if: contains(needs.plan.outputs.suites, 'vector')
     strategy:
       fail-fast: false
       matrix:
@@ -49,8 +145,16 @@ jobs:
         # hit aarch64 (and phones) hard — see the 2026-09-20 cosine regression.
         os: [ubuntu-latest, ubuntu-24.04-arm]
         quantization: [none, binary]
+        base: ${{ fromJSON(needs.plan.outputs.bases) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Release size: three interleaved pairs of a ~75 s 10k graph build per
+    # step, plus room for one confirmation round.
+    timeout-minutes: ${{ needs.plan.outputs.size == 'pr' && 45 || 120 }}
+    env:
+      BENCH_SIZE: ${{ needs.plan.outputs.size }}
+      BENCH_KIND: ${{ matrix.base.kind }}
+      BENCH_QUANTIZATION: ${{ matrix.quantization }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,72 +175,59 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Prepare baseline
         id: baseline
-        env:
-          BENCH_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            BENCH_BASE=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD^)
-          fi
-          if ! git cat-file -e "$BENCH_BASE^{commit}" 2>/dev/null; then
-            BENCH_BASE=HEAD^
-          fi
-          git worktree add --detach "$RUNNER_TEMP/vector-baseline" "$BENCH_BASE"
+          git worktree add --detach "$RUNNER_TEMP/vector-baseline" "${{ matrix.base.sha }}"
           # The baseline compiles the candidate's harnesses, which set cache
           # budgets. Re-runs keep the original event's base, which can predate them.
           if grep -q 'pub fn set_vector_cache_budget' "$RUNNER_TEMP/vector-baseline/packages/core/src/lib.rs"; then
             echo "compatible=true" >> "$GITHUB_OUTPUT"
           else
             echo "compatible=false" >> "$GITHUB_OUTPUT"
-            echo "Baseline $BENCH_BASE predates configurable cache budgets; skipped native comparisons." >> "$GITHUB_STEP_SUMMARY"
+            echo "Baseline ${{ matrix.base.sha }} predates configurable cache budgets; skipped native comparisons." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Compare release workloads
-        if: steps.baseline.outputs.compatible == 'true'
-        env:
-          BENCH_EVENT: ${{ github.event_name }}
-          BENCH_QUANTIZATION: ${{ matrix.quantization }}
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: |
           count=2000
-          repeats=3
-          if [ "$BENCH_EVENT" != pull_request ]; then
-            count=10000
-            repeats=1
-          fi
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" \
-            --count "$count" --repeats "$repeats" --quantization "$BENCH_QUANTIZATION" --output vector-benchmark.json
+          if [ "$BENCH_SIZE" != pr ]; then count=10000; fi
+          echo "BENCH_COUNT=$count" >> "$GITHUB_ENV"
+          echo "BENCH_PROFILE=ci-linux-$(uname -m)" >> "$GITHUB_ENV"
+      # Each comparison runs even when an earlier one failed, so a PR sees every
+      # regressed configuration at once; the job still fails.
+      - name: Compare graph builds and search, 8 MiB budget (phones, WASM)
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
+        run: |
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 8388608 \
+            --output vector-benchmark.json
+      # hnsw_profile defaults to the 8 MiB budget; at the 64 MiB native default
+      # the same 10k graph builds ~2.6x faster and searches ~7x faster, so a
+      # change can help one budget and hurt the other.
+      - name: Compare graph builds and search, 64 MiB budget (native default)
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
+        run: |
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" --cache-bytes 67108864 \
+            --output vector-benchmark-64mib.json
       - name: Compare resumable builds
-        if: steps.baseline.outputs.compatible == 'true'
-        env:
-          BENCH_EVENT: ${{ github.event_name }}
-          BENCH_QUANTIZATION: ${{ matrix.quantization }}
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        if: ${{ !cancelled() && steps.baseline.outputs.compatible == 'true' }}
         run: |
-          count=2000
-          repeats=3
-          if [ "$BENCH_EVENT" != pull_request ]; then
-            count=10000
-            repeats=1
-          fi
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" \
-            --count "$count" --repeats "$repeats" --quantization "$BENCH_QUANTIZATION" \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --count "$BENCH_COUNT" --repeats 3 --quantization "$BENCH_QUANTIZATION" \
             --batch-size 128 --output vector-benchmark-staged.json
       - name: Compare filtered workloads
-        if: matrix.quantization == 'none' && steps.baseline.outputs.compatible == 'true'
-        env:
-          BENCH_EVENT: ${{ github.event_name }}
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        if: ${{ !cancelled() && matrix.quantization == 'none' && steps.baseline.outputs.compatible == 'true' }}
         run: |
-          count=2000
-          repeats=3
-          if [ "$BENCH_EVENT" != pull_request ]; then
-            count=10000
-            repeats=1
-          fi
-          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" \
-            --workload filtered --count "$count" --repeats "$repeats" --queries 20 \
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --workload filtered --count "$BENCH_COUNT" --repeats 3 --queries 20 \
             --output vector-benchmark-filtered.json
+      # CONC-2, report only: steady-state throughput and CPU per request at
+      # 1/2/4 threads, both sides interleaved.
+      - name: Compare concurrent search (report only)
+        if: ${{ !cancelled() && matrix.quantization == 'none' && env.BENCH_SIZE != 'pr' && steps.baseline.outputs.compatible == 'true' }}
+        run: |
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --workload concurrency --count 2000 --repeats 3 --steady 400 --cache-bytes 8388608 \
+            --output vector-benchmark-concurrency.json
       - name: Check concurrent search memory at phone budgets
-        if: matrix.quantization == 'none'
+        if: ${{ !cancelled() && matrix.quantization == 'none' }}
         run: |
           for budget in 1048576 8388608; do
             cargo run --locked --release -p taladb --example vector_memory_profile -- \
@@ -146,18 +237,98 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vector-benchmark-${{ runner.os }}-${{ runner.arch }}-${{ matrix.quantization }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: vector-benchmark-${{ runner.os }}-${{ runner.arch }}-${{ matrix.quantization }}-${{ matrix.base.kind }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            vector-benchmark.json
-            vector-benchmark-staged.json
-            vector-benchmark-filtered.json
+            vector-benchmark*.json
+            vector-benchmark*-evidence/
             vector-memory-*.json
           retention-days: 90
 
+  criterion:
+    name: Criterion (${{ matrix.os }}, ${{ matrix.base.kind }})
+    needs: plan
+    if: contains(needs.plan.outputs.suites, 'criterion')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        base: ${{ fromJSON(needs.plan.outputs.bases) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    env:
+      BENCH_SIZE: ${{ needs.plan.outputs.size }}
+      BENCH_KIND: ${{ matrix.base.kind }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sync pinned toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: criterion
+      - name: Prepare baseline
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/criterion-baseline" "${{ matrix.base.sha }}"
+          echo "BENCH_PROFILE=ci-linux-$(uname -m)" >> "$GITHUB_ENV"
+      # Release size (push, schedule, release, manual default): every family at
+      # 1k and 10k, plus IDX write amplification. Pull requests: the 10k
+      # collections only; the kernel (`vector/score_one`) and fixed-size
+      # `query/`/`write/` cases still run. The 1k cases are mostly report-only on
+      # x86_64 runners anyway, and stay covered on push, schedule and release.
+      # Result fingerprints are compared before any timing.
+      - name: Compare engine benchmarks
+        run: |
+          groups=vector,query,write,stabilization,doc,fts,hyb,bulk
+          sizes=()
+          if [ "$BENCH_SIZE" = pr ]; then
+            sizes=(--criterion-sizes 10000)
+          else
+            groups="$groups,idx"
+          fi
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/criterion-baseline" "$GITHUB_WORKSPACE" \
+            --workload criterion --repeats 3 --criterion-groups "$groups" "${sizes[@]}" \
+            --tolerances-profile "$BENCH_PROFILE" --gate-kind "$BENCH_KIND" \
+            --output criterion-benchmark.json
+      # 100k documents, read-only families: where the v0.13 range and
+      # sorted-page work claims its largest factors.
+      - name: Compare engine benchmarks at 100k (release size)
+        if: ${{ !cancelled() && env.BENCH_SIZE != 'pr' }}
+        run: |
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/criterion-baseline" "$GITHUB_WORKSPACE" \
+            --workload criterion --repeats 3 --criterion-groups doc --criterion-sizes 100000 \
+            --tolerances-profile "$BENCH_PROFILE" --gate-kind "$BENCH_KIND" \
+            --output criterion-benchmark-100k.json
+      - name: Publish benchmark history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-benchmark-${{ runner.os }}-${{ runner.arch }}-${{ matrix.base.kind }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            criterion-benchmark*.json
+            criterion-benchmark*-evidence/
+          retention-days: 90
+
   browser:
-    name: Browser worker + OPFS
+    name: Browser worker + OPFS (${{ matrix.base.kind }})
+    needs: plan
+    if: contains(needs.plan.outputs.suites, 'browser')
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ${{ fromJSON(needs.plan.outputs.bases) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,16 +345,7 @@ jobs:
         with:
           tool: wasm-pack
       - name: Prepare baseline
-        env:
-          BENCH_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            BENCH_BASE=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD^)
-          fi
-          if ! git cat-file -e "$BENCH_BASE^{commit}" 2>/dev/null; then
-            BENCH_BASE=HEAD^
-          fi
-          git worktree add --detach "$RUNNER_TEMP/vector-web-baseline" "$BENCH_BASE"
+        run: git worktree add --detach "$RUNNER_TEMP/vector-web-baseline" "${{ matrix.base.sha }}"
       - name: Build both browser bindings
         run: |
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/vector-web-baseline" \
@@ -192,13 +354,15 @@ jobs:
             wasm-pack build packages/bindings/web --target web --out-dir pkg --release
       - name: Check browser harness
         run: node scripts/bench-web/vector-workload.test.mjs
+      # Three interleaved pairs on every event. A failing budget is re-measured
+      # with three more pairs and fails only if all six still regress; the first
+      # comparison is kept as vector-web-comparison-<budget>-attempt1.json.
       - name: Compare small-device cache profiles
         env:
-          BENCH_EVENT: ${{ github.event_name }}
+          BENCH_SIZE: ${{ needs.plan.outputs.size }}
         run: |
           count=2000
-          repeats=3
-          if [ "$BENCH_EVENT" != pull_request ]; then count=5000; repeats=1; fi
+          if [ "$BENCH_SIZE" != pr ]; then count=5000; fi
           failed=0
           budgets="8388608"
           if grep -q 'pub vector_cache_bytes:' "$RUNNER_TEMP/vector-web-baseline/packages/core/src/config.rs"; then
@@ -206,25 +370,33 @@ jobs:
           else
             echo "Baseline predates configurable cache budgets; comparing its 8 MiB WASM default." >> "$GITHUB_STEP_SUMMARY"
           fi
-          for budget in $budgets; do
-            before=""
-            after=""
-            for run in $(seq 1 "$repeats"); do
+          pairs() { # budget first last
+            for run in $(seq "$2" "$3"); do
               node scripts/bench-web.mjs --vectors --repo "$RUNNER_TEMP/vector-web-baseline" --baseline \
-                --count "$count" --queries 30 --cache-bytes "$budget" --json --output "vector-web-before-$budget-$run.json"
+                --count "$count" --queries 30 --cache-bytes "$1" --json --output "vector-web-before-$1-$run.json"
               node scripts/bench-web.mjs --vectors --count "$count" --queries 30 \
-                --cache-bytes "$budget" --json --output "vector-web-after-$budget-$run.json"
-              before="${before:+$before,}vector-web-before-$budget-$run.json"
-              after="${after:+$after,}vector-web-after-$budget-$run.json"
+                --cache-bytes "$1" --json --output "vector-web-after-$1-$run.json"
             done
-            node scripts/vector-web-bench-compare.mjs "$before" "$after" \
-              "vector-web-comparison-$budget.json" || failed=1
+          }
+          files() { # side budget runs
+            seq -s, -f "vector-web-$1-$2-%g.json" 1 "$3"
+          }
+          for budget in $budgets; do
+            pairs "$budget" 1 3
+            if ! node scripts/vector-web-bench-compare.mjs "$(files before "$budget" 3)" "$(files after "$budget" 3)" \
+                "vector-web-comparison-$budget.json"; then
+              mv "vector-web-comparison-$budget.json" "vector-web-comparison-$budget-attempt1.json"
+              echo "Budget $budget: suspected regression, confirming with three more pairs." >> "$GITHUB_STEP_SUMMARY"
+              pairs "$budget" 4 6
+              node scripts/vector-web-bench-compare.mjs "$(files before "$budget" 6)" "$(files after "$budget" 6)" \
+                "vector-web-comparison-$budget.json" || failed=1
+            fi
           done
           exit "$failed"
       - name: Publish browser benchmark history
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vector-web-${{ github.sha }}-${{ github.run_attempt }}
+          name: vector-web-${{ matrix.base.kind }}-${{ github.sha }}-${{ github.run_attempt }}
           path: vector-web-*.json
           retention-days: 90

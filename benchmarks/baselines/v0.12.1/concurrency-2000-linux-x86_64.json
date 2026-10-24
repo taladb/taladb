@@ -1,0 +1,142 @@
+{
+  "binary_sha256": "76211d3b1b3d0a7e211e75cb35dc8770d83a06814e4a8eaaa085a3f0aead3c18",
+  "cases": {
+    "1 threads cpu_cores_busy": {
+      "median": 1.0,
+      "runs": [
+        0.9993,
+        1.0,
+        1.0017
+      ],
+      "unit": "ms, or as named"
+    },
+    "1 threads cpu_ms_per_request": {
+      "median": 0.4799,
+      "runs": [
+        0.4799,
+        0.4799,
+        0.48
+      ],
+      "unit": "ms, or as named"
+    },
+    "1 threads throughput_per_s": {
+      "median": 2083.7275,
+      "runs": [
+        2082.0504,
+        2083.7275,
+        2086.9985
+      ],
+      "unit": "ms, or as named"
+    },
+    "2 threads cpu_cores_busy": {
+      "median": 1.988,
+      "runs": [
+        1.9886,
+        1.9276,
+        1.988
+      ],
+      "unit": "ms, or as named"
+    },
+    "2 threads cpu_ms_per_request": {
+      "median": 0.4964,
+      "runs": [
+        0.4957,
+        0.6378,
+        0.4964
+      ],
+      "unit": "ms, or as named"
+    },
+    "2 threads throughput_per_s": {
+      "median": 4005.0377,
+      "runs": [
+        4011.9415,
+        3022.1878,
+        4005.0377
+      ],
+      "unit": "ms, or as named"
+    },
+    "4 threads cpu_cores_busy": {
+      "median": 3.7818,
+      "runs": [
+        3.7818,
+        3.7948,
+        3.7631
+      ],
+      "unit": "ms, or as named"
+    },
+    "4 threads cpu_ms_per_request": {
+      "median": 1.0487,
+      "runs": [
+        1.0566,
+        1.0487,
+        1.0439
+      ],
+      "unit": "ms, or as named"
+    },
+    "4 threads throughput_per_s": {
+      "median": 3604.7688,
+      "runs": [
+        3579.3379,
+        3618.6839,
+        3604.7688
+      ],
+      "unit": "ms, or as named"
+    }
+  },
+  "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+  "environment": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpus": 4,
+    "governor": null,
+    "measured_runs_pinned_to": null,
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "runner": {
+      "GITHUB_JOB": "compare",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "GITHUB_RUN_ID": "40104289158",
+      "ImageOS": "ubuntu24",
+      "ImageVersion": "20261012.334.1",
+      "RUNNER_ARCH": "X64",
+      "RUNNER_OS": "Linux"
+    },
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "started_at": "2026-10-24T15:16:43Z"
+  },
+  "harness_sha256": "481414e5e480efbdbc03634240bc67bbf6f78d7633ec42a8ee2b721f170d0b36",
+  "pairs": 3,
+  "protocol": {
+    "cold_gate_min_runs": 5,
+    "recall_allowance": 0.03,
+    "vector_rules": {
+      "ann_p50_ms": [
+        0.5,
+        0.25
+      ],
+      "build_ms": [
+        0.3,
+        500.0
+      ],
+      "exact_mean_ms": [
+        0.3,
+        0.25
+      ],
+      "filtered_p50_ms": [
+        0.5,
+        0.25
+      ]
+    }
+  },
+  "provenance": "built from the baseline commit",
+  "schema": 1,
+  "side": "baseline",
+  "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-X64-none-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-concurrency.json",
+  "workload": "concurrency"
+}
