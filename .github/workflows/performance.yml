@@ -281,14 +281,23 @@ jobs:
         run: |
           git worktree add --detach "$RUNNER_TEMP/criterion-baseline" "${{ matrix.base.sha }}"
           echo "BENCH_PROFILE=ci-linux-$(uname -m)" >> "$GITHUB_ENV"
-      # Every family at 1k and 10k; the IDX write-amplification family only at
-      # release size. Result fingerprints are compared before any timing.
+      # Release size (push, schedule, release, manual default): every family at
+      # 1k and 10k, plus IDX write amplification. Pull requests: the 10k
+      # collections only; the kernel (`vector/score_one`) and fixed-size
+      # `query/`/`write/` cases still run. The 1k cases are mostly report-only on
+      # x86_64 runners anyway, and stay covered on push, schedule and release.
+      # Result fingerprints are compared before any timing.
       - name: Compare engine benchmarks
         run: |
           groups=vector,query,write,stabilization,doc,fts,hyb,bulk
-          if [ "$BENCH_SIZE" != pr ]; then groups="$groups,idx"; fi
+          sizes=()
+          if [ "$BENCH_SIZE" = pr ]; then
+            sizes=(--criterion-sizes 10000)
+          else
+            groups="$groups,idx"
+          fi
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/criterion-baseline" "$GITHUB_WORKSPACE" \
-            --workload criterion --repeats 3 --criterion-groups "$groups" \
+            --workload criterion --repeats 3 --criterion-groups "$groups" "${sizes[@]}" \
             --tolerances-profile "$BENCH_PROFILE" --gate-kind "$BENCH_KIND" \
             --output criterion-benchmark.json
       # 100k documents, read-only families: where the v0.13 range and

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tier 0 benchmark gates: deterministic checks that need no baseline build.
 
-    codegen       VEC-6 — vector instructions in each scoring kernel, per target
+    codegen       VEC-6 — each scoring kernel still vectorised, per target
     fingerprints  result fingerprints of every Criterion workload
     allocations   MEM-2 — heap allocation counts of `stabilization_memory`
 
@@ -9,11 +9,13 @@ Each command compares against a committed v0.12.1 reference
 (`benchmarks/baselines/v0.12.1/`) and exits non-zero on a regression, or writes
 that reference with `--record`. See `benchmarks/README.md`.
 
-Codegen counts are a gate on *vectorisation*, not a stand-in for speed: a kernel
-that keeps its vector instructions can still get slower, which the timed
-`vector/score_one` cases catch. The count catches what no x86 timing can — the
-2026-09-20 fused loop kept 114 vector instructions on x86_64 and fell to 2 on
-aarch64 and 0 on wasm32.
+The codegen check is a gate on *vectorisation*, not a stand-in for speed: a
+kernel that stays vectorised can still get slower, which the timed
+`vector/score_one` cases catch. It catches what no x86 timing can — the
+2026-09-20 fused loop stayed vectorised on x86_64 and compiled scalar on
+aarch64 and wasm32. A kernel fails when it loses packed f32 multiply/add
+arithmetic on a target; changes in the instruction count are recorded and
+reported, not failed, because a better loop can legitimately need fewer.
 """
 import argparse
 import json
@@ -57,6 +59,26 @@ VECTOR_OP = {
     "aarch64": re.compile(r"\.4s\b"),
     "wasm32": re.compile(r"^\s*(f32x4|v128)\."),
 }
+# Packed f32 arithmetic: a kernel is vectorised on a target when its body
+# multiplies and accumulates in vector registers. Multiplies only happen in the
+# reduction loop, so a scalar loop with a vector horizontal sum does not pass.
+PACKED_MUL = {
+    "x86_64": re.compile(r"^\s*(v?mulps|vfn?m(add|sub)\w*ps)\b"),
+    # GNU syntax `fmul v0.4s, ...`; Apple's (iOS) `fmul.4s v0, ...`.
+    "aarch64": re.compile(r"^\s*(fmul|fmla|fmls)(\.4s\s|\s+v\d+\.4s)"),
+    "wasm32": re.compile(r"^\s*f32x4\.(mul|relaxed_madd)\b"),
+}
+PACKED_ADD = {
+    "x86_64": re.compile(r"^\s*(v?addps|vfn?m(add|sub)\w*ps)\b"),
+    "aarch64": re.compile(r"^\s*(fadd|faddp|fmla)(\.4s\s|\s+v\d+\.4s)"),
+    "wasm32": re.compile(r"^\s*f32x4\.(add|relaxed_madd)\b"),
+}
+# Every kernel is written to vectorise on every target (lane-split
+# accumulators, see `LANES` in vector.rs), so the expectation is declared here
+# rather than read from a reference that could be re-recorded from a bad build.
+EXPECTED_VECTORISED = {(target, kernel) for target in TARGETS for kernel in KERNELS}
+# A vectorised kernel whose instruction count falls further than this is noted.
+COUNT_NOTE_DROP = 0.25
 FUNCTION_END = re.compile(r"^\s*(\.cfi_endproc|end_function)\b")
 
 
@@ -79,13 +101,15 @@ def kernel_counts(asm: Path, family: str):
         if len(starts) != 1:
             counts[kernel] = None
             continue
-        count = 0
+        body = []
         for line in lines[starts[0] + 1:]:
             if FUNCTION_END.match(line):
                 break
-            if VECTOR_OP[family].search(line):
-                count += 1
-        counts[kernel] = count
+            body.append(line)
+        mul = sum(bool(PACKED_MUL[family].search(line)) for line in body)
+        add = sum(bool(PACKED_ADD[family].search(line)) for line in body)
+        counts[kernel] = {"vector_instructions": sum(bool(VECTOR_OP[family].search(line)) for line in body),
+                          "packed_mul": mul, "packed_add": add, "vectorised": mul > 0 and add > 0}
     return counts
 
 
@@ -110,21 +134,40 @@ def codegen(args):
         if not asm:
             raise SystemExit(f"no assembly for taladb on {target}")
         results[target] = kernel_counts(asm[-1], family)
-    report = {"schema": 1, "rustc": rustc_version(), "unit": "vector instructions per function", "targets": results}
+    report = {"schema": 2, "rustc": rustc_version(),
+              "rule": "fail when an expected kernel has no packed f32 multiply and add; instruction counts are recorded",
+              "targets": results}
     if args.record:
         return write(args.reference, report)
     reference = json.loads(args.reference.read_text())
-    failures, rows = [], []
+    failures, notes, rows, differences = [], [], [], []
     for target, kernels in results.items():
-        for kernel, count in kernels.items():
-            expected = reference["targets"].get(target, {}).get(kernel)
-            rows.append((target, kernel, expected, count))
-            if count is None:
+        for kernel, now in kernels.items():
+            then = reference["targets"].get(target, {}).get(kernel)
+            if isinstance(then, int):  # schema 1 reference: a bare count
+                then = {"vector_instructions": then, "vectorised": None}
+            if now is None:
                 failures.append(f"{target} {kernel}: symbol not found (inlined away or renamed) — the kernel is no longer checked")
-            elif expected is not None and count < expected:
-                failures.append(f"{target} {kernel}: {count} vector instructions, v0.12.1 had {expected}")
-    summary("VEC-6 codegen (vector instructions per kernel)", ["Target", "Kernel", "v0.12.1", "Candidate"], rows, failures)
-    return finish(args.output, report | {"reference": reference["targets"]}, failures)
+                rows.append((target, kernel, then and then["vector_instructions"], "missing", "", "missing"))
+                continue
+            before = then["vector_instructions"] if then else None
+            delta = None if before is None else now["vector_instructions"] - before
+            differences.append({"target": target, "kernel": kernel, "v0_12_1": before,
+                                "candidate": now["vector_instructions"], "delta": delta})
+            state = "vectorised" if now["vectorised"] else "SCALAR"
+            rows.append((target, kernel, before, now["vector_instructions"],
+                         "" if delta is None else f"{delta:+d}", f"{state} (mul {now['packed_mul']}, add {now['packed_add']})"))
+            if (target, kernel) in EXPECTED_VECTORISED and not now["vectorised"]:
+                failures.append(f"{target} {kernel}: no longer vectorised — {now['packed_mul']} packed f32 multiplies, "
+                                f"{now['packed_add']} packed adds ({now['vector_instructions']} vector instructions, v0.12.1 had {before})")
+            elif before and delta < 0 and -delta / before > COUNT_NOTE_DROP:
+                notes.append(f"{target} {kernel}: still vectorised, but {now['vector_instructions']} vector instructions "
+                             f"vs {before} at v0.12.1 ({delta / before:+.0%}); check `vector/score_one` timings")
+    summary("VEC-6 vectorisation of the scoring kernels",
+            ["Target", "Kernel", "v0.12.1 vector instr.", "Candidate", "Δ", "Candidate state"], rows,
+            failures, notes)
+    return finish(args.output, report | {"reference": reference["targets"], "differences": differences, "notes": notes},
+                  failures)
 
 
 def fingerprints(args):
@@ -208,10 +251,10 @@ def write(path: Path, report):
     print(f"recorded {path}")
 
 
-def summary(title, header, rows, failures):
+def summary(title, header, rows, failures, notes=()):
     lines = [title, "", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     lines += ["| " + " | ".join(str(c) for c in row) + " |" for row in rows]
-    lines += ["", *(f"FAIL: {f}" for f in failures)]
+    lines += ["", *(f"NOTE: {n}" for n in notes), *(f"FAIL: {f}" for f in failures)]
     text = "\n".join(lines) + "\n"
     print(text)
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):
