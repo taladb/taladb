@@ -6,12 +6,12 @@
   },
   "harness": {
     "benches_tree": "3a02d43c35aa0740c9c367047c24bf4f45d76217",
-    "commit": "925160ad27ae3294e849c82900652117f09d8ed1",
+    "commit": "765b01ded173a9b278afd9e93a7b50f8301c2ac2",
     "engine_identical_to_source": true,
     "examples_tree": "b5574d0a5562223cf46a88dadac219f2b5ececc3",
     "scripts": {
       "bench-baseline.py": "15267dd5d507ba3d61cf27a5fc302e614804a18f",
-      "bench-tier0.py": "69ec946c48a90ff872177c5660a72933d882ee66",
+      "bench-tier0.py": "8dd464b70e67c51ab12d4dfd694c17bd301d60c3",
       "vector-bench-ci.py": "d96134009543f6ef60831b7d6f963ca107126cdb",
       "vector-web-bench-compare.mjs": "e13b6a58a4fe84a5c79eb16a56769ac1861f7b59"
     }
