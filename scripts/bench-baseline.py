@@ -90,8 +90,13 @@ def compact(path: Path, commit):
     elif args.get("criterion_sizes"):
         name += f"-{args['criterion_sizes']}"
     profile = result["tolerances_profile"] if result["workload"] == "criterion" else env["platform_key"]
+    runner = env.get("runner") or {}
+    source = path.name
+    if runner.get("GITHUB_RUN_ID"):
+        # CI run, attempt and artifact: where the full result and its raw runs live.
+        source = f"run {runner['GITHUB_RUN_ID']} attempt {runner.get('GITHUB_RUN_ATTEMPT')}, artifact {path.parent.name}, {path.name}"
     return f"{name}-{profile}.json", {
-        "schema": 1, "workload": result["workload"], "source_result": path.name, "side": label,
+        "schema": 1, "workload": result["workload"], "source_result": source, "side": label,
         "provenance": provenance, "commit": side["commit"], "binary_sha256": side["binary_sha256"],
         "harness_sha256": result["harness_sha256"], "protocol": result["protocol"],
         "environment": {k: env.get(k) for k in ("platform", "cpu_model", "cpus", "governor", "rustc", "runner",
@@ -120,7 +125,7 @@ def main():
     for path in args.results:
         name, data = compact(path, commit)
         (out / name).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-        references[name] = {"workload": data["workload"], "source_result": path.name, "provenance": data["provenance"]}
+        references[name] = {"workload": data["workload"], "source_result": data["source_result"], "provenance": data["provenance"]}
     tag = f"v{args.version}"
     tag_kind = subprocess.run(["git", "cat-file", "-t", tag], cwd=REPO, capture_output=True, text=True).stdout.strip() or None
     manifest_path = out / "manifest.json"
