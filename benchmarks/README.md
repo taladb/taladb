@@ -48,7 +48,7 @@ Every harness must compile against v0.12.1 (`a2ef466`) unchanged, because the cu
 
 For each case, with per-run statistics *Bᵢ*, *Cᵢ* from interleaved pairs (B C B C B C), *B*, *C* their medians and *T* the case tolerance:
 
-- **Regression** only when all three hold: *C/B > 1 + T*; *C − B* above the absolute floor (Criterion: max(2 µs, 2% of *B*); per-request vector gates: 0.25 ms native, 0.5 ms browser, 500 ms for builds); and at least ⌈2n/3⌉ paired ratios *Cᵢ/Bᵢ* above *1 + T/2*. One bad run cannot fail a case.
+- **Regression** only when all three hold: *C/B > 1 + T*; *C − B* above the absolute floor (Criterion: the case's calibrated *A*, at least 2% of *B*; per-request vector gates: the calibrated floor of the step configuration, or 0.25 ms native / 500 ms builds where uncalibrated; browser 0.5 ms); and at least ⌈2n/3⌉ paired ratios *Cᵢ/Bᵢ* above *1 + T/2*. One bad run cannot fail a case.
 - **Confirmation:** a suspected regression is re-measured with three more interleaved pairs, only for the failing cases. It fails only if the rule still holds over all six pairs. Both attempts are written to the result JSON and its evidence directory.
 - **Hard rules, no tolerance:** fingerprints equal; recall@10 not more than 3 percentage points lower (any change is reported); cache accounting asserts; no repeated run of one binary may change its own results.
 - **Cold-cache** filtered cases are reported, not gated, below five pairs.
@@ -60,7 +60,7 @@ For each case, with per-run statistics *Bᵢ*, *Cᵢ* from interleaved pairs (B 
 
 **Criterion:**
 
-`T = max(5%, 3N)`, where *N* is the case's A/A noise: the largest deviation of one run's median from its side's median, over both sides of every A/A run. Cases are reported, not gated, when *T* exceeds 25%, or for 1k cases when it exceeds 10%. Uncalibrated cases use the default (10%).
+`T = max(5%, 3N)` and `A = max(3 × the largest A/A difference between the sides' medians, 2% of B)`, where *N* is the case's A/A noise: the largest deviation of one run's median from its side's median, over both sides of every A/A run. A fixed 2 µs floor, the plan's first rule, exceeded every `vector/score_one` measurement (16–500 ns), so a 1.9× slower cosine kernel passed. Cases are reported, not gated, when *T* exceeds 25%, or for 1k cases when it exceeds 10%. Uncalibrated cases use the default (10%).
 
 Recalibrate whenever the runner image, toolchain pin, Criterion protocol or a fixture changes:
 

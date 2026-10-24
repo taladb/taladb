@@ -8,7 +8,7 @@
         "sampling": "flat",
         "warm_up_s": 1
       },
-      "rule": "T = max(5%, 3N); report-only when T > 25%, or for 1k cases when T > 10%",
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
       "sources": [
         {
           "commit": "d931950eeacecf0d3644010498a619e618998e36",
@@ -110,7 +110,7 @@
         "sampling": "flat",
         "warm_up_s": 1
       },
-      "rule": "T = max(5%, 3N); report-only when T > 25%, or for 1k cases when T > 10%",
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
       "sources": [
         {
           "commit": "d931950eeacecf0d3644010498a619e618998e36",
@@ -212,7 +212,7 @@
         "sampling": "flat",
         "warm_up_s": 1
       },
-      "rule": "T = max(5%, 3N); report-only when T > 25%, or for 1k cases when T > 10%",
+      "rule": "T = max(5%, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); report-only when T > 25%, or for 1k cases when T > 10%",
       "sources": [
         {
           "commit": "9d96682208f6f3d19d78466d8b46facd6999a379",
@@ -240,6 +240,7 @@
     "ci-linux-aarch64": {
       "cases": {
         "bulk/delete_one_by_id/10000": {
+          "A_ns": 12989.1,
           "N": 0.036,
           "T": 0.108,
           "aa_ratios": [
@@ -250,6 +251,7 @@
           "gate": true
         },
         "bulk/insert_many_indexed/10000": {
+          "A_ns": 550702.5,
           "N": 0.0729,
           "T": 0.219,
           "aa_ratios": [
@@ -260,6 +262,7 @@
           "gate": true
         },
         "bulk/update_one_by_id/10000": {
+          "A_ns": 770.7,
           "N": 0.0241,
           "T": 0.072,
           "aa_ratios": [
@@ -270,6 +273,7 @@
           "gate": true
         },
         "doc/aggregate_group/1000": {
+          "A_ns": 13263.9,
           "N": 0.0322,
           "T": 0.097,
           "aa_ratios": [
@@ -280,6 +284,7 @@
           "gate": true
         },
         "doc/aggregate_group/10000": {
+          "A_ns": 1786730.1,
           "N": 0.1969,
           "T": 0.591,
           "aa_ratios": [
@@ -290,6 +295,7 @@
           "gate": false
         },
         "doc/aggregate_group/100000": {
+          "A_ns": 3996123.0,
           "N": 0.0561,
           "T": 0.168,
           "aa_ratios": [
@@ -300,6 +306,7 @@
           "gate": true
         },
         "doc/compound_eq_range/1000": {
+          "A_ns": 487.0,
           "N": 0.0074,
           "T": 0.05,
           "aa_ratios": [
@@ -310,6 +317,7 @@
           "gate": true
         },
         "doc/compound_eq_range/10000": {
+          "A_ns": 8996.9,
           "N": 0.0243,
           "T": 0.073,
           "aa_ratios": [
@@ -320,6 +328,7 @@
           "gate": true
         },
         "doc/compound_eq_range/100000": {
+          "A_ns": 229395.1,
           "N": 0.0305,
           "T": 0.091,
           "aa_ratios": [
@@ -330,6 +339,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/1000": {
+          "A_ns": 8.7,
           "N": 0.0097,
           "T": 0.05,
           "aa_ratios": [
@@ -340,6 +350,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/10000": {
+          "A_ns": 117.9,
           "N": 0.0213,
           "T": 0.064,
           "aa_ratios": [
@@ -350,6 +361,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/100000": {
+          "A_ns": 934.0,
           "N": 0.005,
           "T": 0.05,
           "aa_ratios": [
@@ -360,6 +372,7 @@
           "gate": true
         },
         "doc/count_indexed_range/1000": {
+          "A_ns": 21595.3,
           "N": 0.022,
           "T": 0.066,
           "aa_ratios": [
@@ -370,6 +383,7 @@
           "gate": true
         },
         "doc/count_indexed_range/10000": {
+          "A_ns": 272836.1,
           "N": 0.0668,
           "T": 0.201,
           "aa_ratios": [
@@ -380,6 +394,7 @@
           "gate": true
         },
         "doc/count_indexed_range/100000": {
+          "A_ns": 6148608.8,
           "N": 0.0183,
           "T": 0.055,
           "aa_ratios": [
@@ -390,6 +405,7 @@
           "gate": true
         },
         "doc/count_unindexed/1000": {
+          "A_ns": 11479.2,
           "N": 0.009,
           "T": 0.05,
           "aa_ratios": [
@@ -400,6 +416,7 @@
           "gate": true
         },
         "doc/count_unindexed/10000": {
+          "A_ns": 232728.6,
           "N": 0.0705,
           "T": 0.212,
           "aa_ratios": [
@@ -410,6 +427,7 @@
           "gate": true
         },
         "doc/count_unindexed/100000": {
+          "A_ns": 3881428.5,
           "N": 0.0674,
           "T": 0.202,
           "aa_ratios": [
@@ -420,6 +438,7 @@
           "gate": true
         },
         "doc/find_by_id/1000": {
+          "A_ns": 993.6,
           "N": 0.0066,
           "T": 0.05,
           "aa_ratios": [
@@ -430,6 +449,7 @@
           "gate": true
         },
         "doc/find_by_id/10000": {
+          "A_ns": 730.8,
           "N": 0.0102,
           "T": 0.05,
           "aa_ratios": [
@@ -440,6 +460,7 @@
           "gate": true
         },
         "doc/find_by_id/100000": {
+          "A_ns": 596.6,
           "N": 0.0078,
           "T": 0.05,
           "aa_ratios": [
@@ -450,6 +471,7 @@
           "gate": true
         },
         "doc/indexed_eq/1000": {
+          "A_ns": 342.7,
           "N": 0.0134,
           "T": 0.05,
           "aa_ratios": [
@@ -460,6 +482,7 @@
           "gate": true
         },
         "doc/indexed_eq/10000": {
+          "A_ns": 6131.2,
           "N": 0.0328,
           "T": 0.099,
           "aa_ratios": [
@@ -470,6 +493,7 @@
           "gate": true
         },
         "doc/indexed_eq/100000": {
+          "A_ns": 216478.3,
           "N": 0.0826,
           "T": 0.248,
           "aa_ratios": [
@@ -480,6 +504,7 @@
           "gate": true
         },
         "doc/page_full/1000": {
+          "A_ns": 5567.8,
           "N": 0.0204,
           "T": 0.061,
           "aa_ratios": [
@@ -490,6 +515,7 @@
           "gate": true
         },
         "doc/page_full/10000": {
+          "A_ns": 12867.0,
           "N": 0.0253,
           "T": 0.076,
           "aa_ratios": [
@@ -500,6 +526,7 @@
           "gate": true
         },
         "doc/page_full/100000": {
+          "A_ns": 3894.6,
           "N": 0.0315,
           "T": 0.095,
           "aa_ratios": [
@@ -510,6 +537,7 @@
           "gate": true
         },
         "doc/page_projected/1000": {
+          "A_ns": 7156.8,
           "N": 0.0117,
           "T": 0.05,
           "aa_ratios": [
@@ -520,6 +548,7 @@
           "gate": true
         },
         "doc/page_projected/10000": {
+          "A_ns": 3789.5,
           "N": 0.0207,
           "T": 0.062,
           "aa_ratios": [
@@ -530,6 +559,7 @@
           "gate": true
         },
         "doc/page_projected/100000": {
+          "A_ns": 5141.4,
           "N": 0.0208,
           "T": 0.062,
           "aa_ratios": [
@@ -540,6 +570,7 @@
           "gate": true
         },
         "doc/range_window/1000": {
+          "A_ns": 27586.4,
           "N": 0.0185,
           "T": 0.055,
           "aa_ratios": [
@@ -550,6 +581,7 @@
           "gate": true
         },
         "doc/range_window/10000": {
+          "A_ns": 228994.1,
           "N": 0.0265,
           "T": 0.079,
           "aa_ratios": [
@@ -560,6 +592,7 @@
           "gate": true
         },
         "doc/range_window/100000": {
+          "A_ns": 3395502.0,
           "N": 0.0292,
           "T": 0.088,
           "aa_ratios": [
@@ -570,6 +603,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/1000": {
+          "A_ns": 1663.1,
           "N": 0.0152,
           "T": 0.05,
           "aa_ratios": [
@@ -580,6 +614,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/10000": {
+          "A_ns": 63500.9,
           "N": 0.0324,
           "T": 0.097,
           "aa_ratios": [
@@ -590,6 +625,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/100000": {
+          "A_ns": 156961.6,
           "N": 0.0196,
           "T": 0.059,
           "aa_ratios": [
@@ -600,6 +636,7 @@
           "gate": true
         },
         "fts/bm25_zipf/10000": {
+          "A_ns": 30944.4,
           "N": 0.0094,
           "T": 0.05,
           "aa_ratios": [
@@ -610,6 +647,7 @@
           "gate": true
         },
         "fts/insert_indexed/10000": {
+          "A_ns": 900222.0,
           "N": 0.0417,
           "T": 0.125,
           "aa_ratios": [
@@ -620,6 +658,7 @@
           "gate": true
         },
         "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 7219.3,
           "N": 0.0043,
           "T": 0.05,
           "aa_ratios": [
@@ -630,6 +669,7 @@
           "gate": true
         },
         "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 120196.3,
           "N": 0.0317,
           "T": 0.095,
           "aa_ratios": [
@@ -640,6 +680,7 @@
           "gate": true
         },
         "idx/insert_amplification/none": {
+          "A_ns": 231640.5,
           "N": 0.1199,
           "T": 0.36,
           "aa_ratios": [
@@ -650,6 +691,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar1": {
+          "A_ns": 215026.5,
           "N": 0.0843,
           "T": 0.253,
           "aa_ratios": [
@@ -660,6 +702,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3": {
+          "A_ns": 762489.0,
           "N": 0.0967,
           "T": 0.29,
           "aa_ratios": [
@@ -670,6 +713,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 2927335.5,
           "N": 0.0804,
           "T": 0.241,
           "aa_ratios": [
@@ -680,6 +724,7 @@
           "gate": true
         },
         "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 2079183.0,
           "N": 0.049,
           "T": 0.147,
           "aa_ratios": [
@@ -690,6 +735,7 @@
           "gate": true
         },
         "query/equality": {
+          "A_ns": 134008.8,
           "N": 0.0156,
           "T": 0.05,
           "aa_ratios": [
@@ -700,6 +746,7 @@
           "gate": true
         },
         "query/range_scan_mixed_numeric": {
+          "A_ns": 85738.0,
           "N": 0.0101,
           "T": 0.05,
           "aa_ratios": [
@@ -710,6 +757,7 @@
           "gate": true
         },
         "query/range_scan_unindexed": {
+          "A_ns": 46222.7,
           "N": 0.018,
           "T": 0.054,
           "aa_ratios": [
@@ -720,6 +768,7 @@
           "gate": true
         },
         "stabilization/bm25/1000": {
+          "A_ns": 5551.1,
           "N": 0.0384,
           "T": 0.115,
           "aa_ratios": [
@@ -730,6 +779,7 @@
           "gate": false
         },
         "stabilization/bm25/10000": {
+          "A_ns": 15174.9,
           "N": 0.0307,
           "T": 0.092,
           "aa_ratios": [
@@ -740,6 +790,7 @@
           "gate": true
         },
         "stabilization/bm25_selective/1000": {
+          "A_ns": 9096.8,
           "N": 0.0184,
           "T": 0.055,
           "aa_ratios": [
@@ -750,6 +801,7 @@
           "gate": true
         },
         "stabilization/bm25_selective/10000": {
+          "A_ns": 117424.5,
           "N": 0.015,
           "T": 0.05,
           "aa_ratios": [
@@ -760,6 +812,7 @@
           "gate": true
         },
         "stabilization/delete_many/1000": {
+          "A_ns": 389541.8,
           "N": 0.0118,
           "T": 0.05,
           "aa_ratios": [
@@ -770,6 +823,7 @@
           "gate": true
         },
         "stabilization/delete_many/10000": {
+          "A_ns": 4557996.0,
           "N": 0.0155,
           "T": 0.05,
           "aa_ratios": [
@@ -780,6 +834,7 @@
           "gate": true
         },
         "stabilization/exact_vector/1000": {
+          "A_ns": 218.6,
           "N": 0.0177,
           "T": 0.053,
           "aa_ratios": [
@@ -790,6 +845,7 @@
           "gate": true
         },
         "stabilization/exact_vector/10000": {
+          "A_ns": 1331.0,
           "N": 0.0073,
           "T": 0.05,
           "aa_ratios": [
@@ -800,6 +856,7 @@
           "gate": true
         },
         "stabilization/fts_index_cycle/1000": {
+          "A_ns": 183550.5,
           "N": 0.0158,
           "T": 0.05,
           "aa_ratios": [
@@ -810,6 +867,7 @@
           "gate": true
         },
         "stabilization/fts_index_cycle/10000": {
+          "A_ns": 1144550.2,
           "N": 0.0143,
           "T": 0.05,
           "aa_ratios": [
@@ -820,6 +878,7 @@
           "gate": true
         },
         "stabilization/hnsw/1000": {
+          "A_ns": 114.4,
           "N": 0.01,
           "T": 0.05,
           "aa_ratios": [
@@ -830,6 +889,7 @@
           "gate": true
         },
         "stabilization/hnsw/10000": {
+          "A_ns": 269.9,
           "N": 0.0068,
           "T": 0.05,
           "aa_ratios": [
@@ -840,6 +900,7 @@
           "gate": true
         },
         "stabilization/hybrid/1000": {
+          "A_ns": 3743.4,
           "N": 0.0209,
           "T": 0.063,
           "aa_ratios": [
@@ -850,6 +911,7 @@
           "gate": true
         },
         "stabilization/hybrid/10000": {
+          "A_ns": 111552.5,
           "N": 0.0291,
           "T": 0.087,
           "aa_ratios": [
@@ -860,6 +922,7 @@
           "gate": true
         },
         "stabilization/index_cycle/1000": {
+          "A_ns": 165908.0,
           "N": 0.0246,
           "T": 0.074,
           "aa_ratios": [
@@ -870,6 +933,7 @@
           "gate": true
         },
         "stabilization/index_cycle/10000": {
+          "A_ns": 1843731.5,
           "N": 0.0149,
           "T": 0.05,
           "aa_ratios": [
@@ -880,6 +944,7 @@
           "gate": true
         },
         "stabilization/indexed_page/1000": {
+          "A_ns": 258.5,
           "N": 0.014,
           "T": 0.05,
           "aa_ratios": [
@@ -890,6 +955,7 @@
           "gate": true
         },
         "stabilization/indexed_page/10000": {
+          "A_ns": 659.7,
           "N": 0.013,
           "T": 0.05,
           "aa_ratios": [
@@ -900,6 +966,7 @@
           "gate": true
         },
         "stabilization/sorted_page/1000": {
+          "A_ns": 5644.4,
           "N": 0.0149,
           "T": 0.05,
           "aa_ratios": [
@@ -910,6 +977,7 @@
           "gate": true
         },
         "stabilization/sorted_page/10000": {
+          "A_ns": 58781.0,
           "N": 0.0301,
           "T": 0.09,
           "aa_ratios": [
@@ -920,6 +988,7 @@
           "gate": true
         },
         "stabilization/unindexed_selective/1000": {
+          "A_ns": 41708.1,
           "N": 0.0141,
           "T": 0.05,
           "aa_ratios": [
@@ -930,6 +999,7 @@
           "gate": true
         },
         "stabilization/unindexed_selective/10000": {
+          "A_ns": 1048179.8,
           "N": 0.0287,
           "T": 0.086,
           "aa_ratios": [
@@ -940,6 +1010,7 @@
           "gate": true
         },
         "stabilization/update_many/1000": {
+          "A_ns": 80363.3,
           "N": 0.051,
           "T": 0.153,
           "aa_ratios": [
@@ -950,6 +1021,7 @@
           "gate": false
         },
         "stabilization/update_many/10000": {
+          "A_ns": 1482478.5,
           "N": 0.0407,
           "T": 0.122,
           "aa_ratios": [
@@ -960,6 +1032,7 @@
           "gate": true
         },
         "vector/find_nearest/1000": {
+          "A_ns": 5008.7,
           "N": 0.0263,
           "T": 0.079,
           "aa_ratios": [
@@ -970,6 +1043,7 @@
           "gate": true
         },
         "vector/find_nearest/10000": {
+          "A_ns": 29277.2,
           "N": 0.0947,
           "T": 0.284,
           "aa_ratios": [
@@ -980,6 +1054,7 @@
           "gate": false
         },
         "vector/score_one/Cosine/128": {
+          "A_ns": 0.6,
           "N": 0.0089,
           "T": 0.05,
           "aa_ratios": [
@@ -990,6 +1065,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/1536": {
+          "A_ns": 2.3,
           "N": 0.004,
           "T": 0.05,
           "aa_ratios": [
@@ -1000,6 +1076,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/384": {
+          "A_ns": 0.4,
           "N": 0.0027,
           "T": 0.05,
           "aa_ratios": [
@@ -1010,6 +1087,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/768": {
+          "A_ns": 0.5,
           "N": 0.0142,
           "T": 0.05,
           "aa_ratios": [
@@ -1020,6 +1098,7 @@
           "gate": true
         },
         "vector/score_one/Dot/128": {
+          "A_ns": 0.3,
           "N": 0.0329,
           "T": 0.099,
           "aa_ratios": [
@@ -1030,6 +1109,7 @@
           "gate": true
         },
         "vector/score_one/Dot/1536": {
+          "A_ns": 10.9,
           "N": 0.0247,
           "T": 0.074,
           "aa_ratios": [
@@ -1040,6 +1120,7 @@
           "gate": true
         },
         "vector/score_one/Dot/384": {
+          "A_ns": 0.0,
           "N": 0.0019,
           "T": 0.05,
           "aa_ratios": [
@@ -1050,6 +1131,7 @@
           "gate": true
         },
         "vector/score_one/Dot/768": {
+          "A_ns": 0.5,
           "N": 0.0119,
           "T": 0.05,
           "aa_ratios": [
@@ -1060,6 +1142,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/128": {
+          "A_ns": 0.4,
           "N": 0.0035,
           "T": 0.05,
           "aa_ratios": [
@@ -1070,6 +1153,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.2,
           "N": 0.0014,
           "T": 0.05,
           "aa_ratios": [
@@ -1080,6 +1164,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/384": {
+          "A_ns": 0.1,
           "N": 0.0008,
           "T": 0.05,
           "aa_ratios": [
@@ -1090,6 +1175,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/768": {
+          "A_ns": 0.4,
           "N": 0.0031,
           "T": 0.05,
           "aa_ratios": [
@@ -1100,6 +1186,7 @@
           "gate": true
         },
         "write/export_snapshot_10k": {
+          "A_ns": 3936.7,
           "N": 0.0195,
           "T": 0.059,
           "aa_ratios": [
@@ -1110,6 +1197,7 @@
           "gate": true
         },
         "write/insert_many_1k": {
+          "A_ns": 48690.0,
           "N": 0.0205,
           "T": 0.061,
           "aa_ratios": [
@@ -1124,6 +1212,7 @@
     "ci-linux-x86_64": {
       "cases": {
         "bulk/delete_one_by_id/10000": {
+          "A_ns": 7932.5,
           "N": 0.1029,
           "T": 0.309,
           "aa_ratios": [
@@ -1134,6 +1223,7 @@
           "gate": false
         },
         "bulk/insert_many_indexed/10000": {
+          "A_ns": 1317579.0,
           "N": 0.1065,
           "T": 0.32,
           "aa_ratios": [
@@ -1144,6 +1234,7 @@
           "gate": false
         },
         "bulk/update_one_by_id/10000": {
+          "A_ns": 2118.3,
           "N": 0.0439,
           "T": 0.132,
           "aa_ratios": [
@@ -1154,6 +1245,7 @@
           "gate": true
         },
         "doc/aggregate_group/1000": {
+          "A_ns": 84344.4,
           "N": 0.0214,
           "T": 0.064,
           "aa_ratios": [
@@ -1164,6 +1256,7 @@
           "gate": true
         },
         "doc/aggregate_group/10000": {
+          "A_ns": 2732060.6,
           "N": 0.2435,
           "T": 0.73,
           "aa_ratios": [
@@ -1174,6 +1267,7 @@
           "gate": false
         },
         "doc/aggregate_group/100000": {
+          "A_ns": 5811781.5,
           "N": 0.0347,
           "T": 0.104,
           "aa_ratios": [
@@ -1184,6 +1278,7 @@
           "gate": true
         },
         "doc/compound_eq_range/1000": {
+          "A_ns": 470.1,
           "N": 0.0366,
           "T": 0.11,
           "aa_ratios": [
@@ -1194,6 +1289,7 @@
           "gate": false
         },
         "doc/compound_eq_range/10000": {
+          "A_ns": 2784.6,
           "N": 0.0286,
           "T": 0.086,
           "aa_ratios": [
@@ -1204,6 +1300,7 @@
           "gate": true
         },
         "doc/compound_eq_range/100000": {
+          "A_ns": 96261.6,
           "N": 0.034,
           "T": 0.102,
           "aa_ratios": [
@@ -1214,6 +1311,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/1000": {
+          "A_ns": 74.4,
           "N": 0.0348,
           "T": 0.105,
           "aa_ratios": [
@@ -1224,6 +1322,7 @@
           "gate": false
         },
         "doc/count_indexed_eq/10000": {
+          "A_ns": 533.4,
           "N": 0.0393,
           "T": 0.118,
           "aa_ratios": [
@@ -1234,6 +1333,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/100000": {
+          "A_ns": 1631.8,
           "N": 0.0451,
           "T": 0.135,
           "aa_ratios": [
@@ -1244,6 +1344,7 @@
           "gate": true
         },
         "doc/count_indexed_range/1000": {
+          "A_ns": 19364.4,
           "N": 0.0253,
           "T": 0.076,
           "aa_ratios": [
@@ -1254,6 +1355,7 @@
           "gate": true
         },
         "doc/count_indexed_range/10000": {
+          "A_ns": 508950.2,
           "N": 0.0857,
           "T": 0.257,
           "aa_ratios": [
@@ -1264,6 +1366,7 @@
           "gate": false
         },
         "doc/count_indexed_range/100000": {
+          "A_ns": 4256356.5,
           "N": 0.0294,
           "T": 0.088,
           "aa_ratios": [
@@ -1274,6 +1377,7 @@
           "gate": true
         },
         "doc/count_unindexed/1000": {
+          "A_ns": 28454.0,
           "N": 0.0431,
           "T": 0.129,
           "aa_ratios": [
@@ -1284,6 +1388,7 @@
           "gate": false
         },
         "doc/count_unindexed/10000": {
+          "A_ns": 293763.8,
           "N": 0.0436,
           "T": 0.131,
           "aa_ratios": [
@@ -1294,6 +1399,7 @@
           "gate": true
         },
         "doc/count_unindexed/100000": {
+          "A_ns": 7048347.8,
           "N": 0.0375,
           "T": 0.113,
           "aa_ratios": [
@@ -1304,6 +1410,7 @@
           "gate": true
         },
         "doc/find_by_id/1000": {
+          "A_ns": 1094.2,
           "N": 0.0426,
           "T": 0.128,
           "aa_ratios": [
@@ -1314,6 +1421,7 @@
           "gate": false
         },
         "doc/find_by_id/10000": {
+          "A_ns": 2575.6,
           "N": 0.0225,
           "T": 0.067,
           "aa_ratios": [
@@ -1324,6 +1432,7 @@
           "gate": true
         },
         "doc/find_by_id/100000": {
+          "A_ns": 3523.0,
           "N": 0.0286,
           "T": 0.086,
           "aa_ratios": [
@@ -1334,6 +1443,7 @@
           "gate": true
         },
         "doc/indexed_eq/1000": {
+          "A_ns": 821.9,
           "N": 0.0322,
           "T": 0.097,
           "aa_ratios": [
@@ -1344,6 +1454,7 @@
           "gate": true
         },
         "doc/indexed_eq/10000": {
+          "A_ns": 6178.4,
           "N": 0.0482,
           "T": 0.144,
           "aa_ratios": [
@@ -1354,6 +1465,7 @@
           "gate": true
         },
         "doc/indexed_eq/100000": {
+          "A_ns": 52756.7,
           "N": 0.0378,
           "T": 0.113,
           "aa_ratios": [
@@ -1364,6 +1476,7 @@
           "gate": true
         },
         "doc/page_full/1000": {
+          "A_ns": 7846.9,
           "N": 0.0342,
           "T": 0.103,
           "aa_ratios": [
@@ -1374,6 +1487,7 @@
           "gate": false
         },
         "doc/page_full/10000": {
+          "A_ns": 4698.8,
           "N": 0.0265,
           "T": 0.08,
           "aa_ratios": [
@@ -1384,6 +1498,7 @@
           "gate": true
         },
         "doc/page_full/100000": {
+          "A_ns": 7161.0,
           "N": 0.0253,
           "T": 0.076,
           "aa_ratios": [
@@ -1394,6 +1509,7 @@
           "gate": true
         },
         "doc/page_projected/1000": {
+          "A_ns": 10466.9,
           "N": 0.0529,
           "T": 0.159,
           "aa_ratios": [
@@ -1404,6 +1520,7 @@
           "gate": false
         },
         "doc/page_projected/10000": {
+          "A_ns": 6564.7,
           "N": 0.0241,
           "T": 0.072,
           "aa_ratios": [
@@ -1414,6 +1531,7 @@
           "gate": true
         },
         "doc/page_projected/100000": {
+          "A_ns": 6118.6,
           "N": 0.0308,
           "T": 0.092,
           "aa_ratios": [
@@ -1424,6 +1542,7 @@
           "gate": true
         },
         "doc/range_window/1000": {
+          "A_ns": 102467.0,
           "N": 0.0266,
           "T": 0.08,
           "aa_ratios": [
@@ -1434,6 +1553,7 @@
           "gate": true
         },
         "doc/range_window/10000": {
+          "A_ns": 406450.1,
           "N": 0.027,
           "T": 0.081,
           "aa_ratios": [
@@ -1444,6 +1564,7 @@
           "gate": true
         },
         "doc/range_window/100000": {
+          "A_ns": 10498849.5,
           "N": 0.1478,
           "T": 0.443,
           "aa_ratios": [
@@ -1454,6 +1575,7 @@
           "gate": false
         },
         "doc/sorted_page_asc/1000": {
+          "A_ns": 5242.6,
           "N": 0.0157,
           "T": 0.05,
           "aa_ratios": [
@@ -1464,6 +1586,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/10000": {
+          "A_ns": 21512.7,
           "N": 0.0173,
           "T": 0.052,
           "aa_ratios": [
@@ -1474,6 +1597,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/100000": {
+          "A_ns": 424402.7,
           "N": 0.0733,
           "T": 0.22,
           "aa_ratios": [
@@ -1484,6 +1608,7 @@
           "gate": true
         },
         "fts/bm25_zipf/10000": {
+          "A_ns": 60821.0,
           "N": 0.0547,
           "T": 0.164,
           "aa_ratios": [
@@ -1494,6 +1619,7 @@
           "gate": true
         },
         "fts/insert_indexed/10000": {
+          "A_ns": 1515523.5,
           "N": 0.1145,
           "T": 0.344,
           "aa_ratios": [
@@ -1504,6 +1630,7 @@
           "gate": false
         },
         "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 7408.5,
           "N": 0.0418,
           "T": 0.126,
           "aa_ratios": [
@@ -1514,6 +1641,7 @@
           "gate": false
         },
         "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 311854.9,
           "N": 0.0644,
           "T": 0.193,
           "aa_ratios": [
@@ -1524,6 +1652,7 @@
           "gate": true
         },
         "idx/insert_amplification/none": {
+          "A_ns": 542964.0,
           "N": 0.1155,
           "T": 0.347,
           "aa_ratios": [
@@ -1534,6 +1663,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar1": {
+          "A_ns": 644442.0,
           "N": 0.1089,
           "T": 0.327,
           "aa_ratios": [
@@ -1544,6 +1674,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3": {
+          "A_ns": 4358203.5,
           "N": 0.1754,
           "T": 0.526,
           "aa_ratios": [
@@ -1554,6 +1685,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 4236279.0,
           "N": 0.0865,
           "T": 0.259,
           "aa_ratios": [
@@ -1564,6 +1696,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 1097422.5,
           "N": 0.0699,
           "T": 0.21,
           "aa_ratios": [
@@ -1574,6 +1707,7 @@
           "gate": true
         },
         "query/equality": {
+          "A_ns": 181196.7,
           "N": 0.0583,
           "T": 0.175,
           "aa_ratios": [
@@ -1584,6 +1718,7 @@
           "gate": true
         },
         "query/range_scan_mixed_numeric": {
+          "A_ns": 155982.8,
           "N": 0.0596,
           "T": 0.179,
           "aa_ratios": [
@@ -1594,6 +1729,7 @@
           "gate": true
         },
         "query/range_scan_unindexed": {
+          "A_ns": 205950.9,
           "N": 0.0314,
           "T": 0.094,
           "aa_ratios": [
@@ -1604,6 +1740,7 @@
           "gate": true
         },
         "stabilization/bm25/1000": {
+          "A_ns": 16540.6,
           "N": 0.0683,
           "T": 0.205,
           "aa_ratios": [
@@ -1614,6 +1751,7 @@
           "gate": false
         },
         "stabilization/bm25/10000": {
+          "A_ns": 180378.0,
           "N": 0.0448,
           "T": 0.134,
           "aa_ratios": [
@@ -1624,6 +1762,7 @@
           "gate": true
         },
         "stabilization/bm25_selective/1000": {
+          "A_ns": 11315.7,
           "N": 0.0693,
           "T": 0.208,
           "aa_ratios": [
@@ -1634,6 +1773,7 @@
           "gate": false
         },
         "stabilization/bm25_selective/10000": {
+          "A_ns": 207130.1,
           "N": 0.0503,
           "T": 0.151,
           "aa_ratios": [
@@ -1644,6 +1784,7 @@
           "gate": true
         },
         "stabilization/delete_many/1000": {
+          "A_ns": 828947.7,
           "N": 0.0351,
           "T": 0.105,
           "aa_ratios": [
@@ -1654,6 +1795,7 @@
           "gate": false
         },
         "stabilization/delete_many/10000": {
+          "A_ns": 3052632.0,
           "N": 0.031,
           "T": 0.093,
           "aa_ratios": [
@@ -1664,6 +1806,7 @@
           "gate": true
         },
         "stabilization/exact_vector/1000": {
+          "A_ns": 490.9,
           "N": 0.0521,
           "T": 0.156,
           "aa_ratios": [
@@ -1674,6 +1817,7 @@
           "gate": false
         },
         "stabilization/exact_vector/10000": {
+          "A_ns": 5822.4,
           "N": 0.0411,
           "T": 0.123,
           "aa_ratios": [
@@ -1684,6 +1828,7 @@
           "gate": true
         },
         "stabilization/fts_index_cycle/1000": {
+          "A_ns": 307172.6,
           "N": 0.0546,
           "T": 0.164,
           "aa_ratios": [
@@ -1694,6 +1839,7 @@
           "gate": false
         },
         "stabilization/fts_index_cycle/10000": {
+          "A_ns": 3119286.8,
           "N": 0.021,
           "T": 0.063,
           "aa_ratios": [
@@ -1704,6 +1850,7 @@
           "gate": true
         },
         "stabilization/hnsw/1000": {
+          "A_ns": 1072.1,
           "N": 0.0415,
           "T": 0.124,
           "aa_ratios": [
@@ -1714,6 +1861,7 @@
           "gate": false
         },
         "stabilization/hnsw/10000": {
+          "A_ns": 2088.2,
           "N": 0.0573,
           "T": 0.172,
           "aa_ratios": [
@@ -1724,6 +1872,7 @@
           "gate": true
         },
         "stabilization/hybrid/1000": {
+          "A_ns": 11007.4,
           "N": 0.0209,
           "T": 0.063,
           "aa_ratios": [
@@ -1734,6 +1883,7 @@
           "gate": true
         },
         "stabilization/hybrid/10000": {
+          "A_ns": 40669.5,
           "N": 0.0286,
           "T": 0.086,
           "aa_ratios": [
@@ -1744,6 +1894,7 @@
           "gate": true
         },
         "stabilization/index_cycle/1000": {
+          "A_ns": 183982.2,
           "N": 0.0574,
           "T": 0.172,
           "aa_ratios": [
@@ -1754,6 +1905,7 @@
           "gate": false
         },
         "stabilization/index_cycle/10000": {
+          "A_ns": 3472715.2,
           "N": 0.0628,
           "T": 0.188,
           "aa_ratios": [
@@ -1764,6 +1916,7 @@
           "gate": true
         },
         "stabilization/indexed_page/1000": {
+          "A_ns": 918.5,
           "N": 0.0607,
           "T": 0.182,
           "aa_ratios": [
@@ -1774,6 +1927,7 @@
           "gate": false
         },
         "stabilization/indexed_page/10000": {
+          "A_ns": 820.9,
           "N": 0.04,
           "T": 0.12,
           "aa_ratios": [
@@ -1784,6 +1938,7 @@
           "gate": true
         },
         "stabilization/sorted_page/1000": {
+          "A_ns": 1306.7,
           "N": 0.051,
           "T": 0.153,
           "aa_ratios": [
@@ -1794,6 +1949,7 @@
           "gate": false
         },
         "stabilization/sorted_page/10000": {
+          "A_ns": 17867.3,
           "N": 0.0289,
           "T": 0.087,
           "aa_ratios": [
@@ -1804,6 +1960,7 @@
           "gate": true
         },
         "stabilization/unindexed_selective/1000": {
+          "A_ns": 36649.4,
           "N": 0.0903,
           "T": 0.271,
           "aa_ratios": [
@@ -1814,6 +1971,7 @@
           "gate": false
         },
         "stabilization/unindexed_selective/10000": {
+          "A_ns": 644625.5,
           "N": 0.0896,
           "T": 0.269,
           "aa_ratios": [
@@ -1824,6 +1982,7 @@
           "gate": false
         },
         "stabilization/update_many/1000": {
+          "A_ns": 240845.5,
           "N": 0.0424,
           "T": 0.127,
           "aa_ratios": [
@@ -1834,6 +1993,7 @@
           "gate": false
         },
         "stabilization/update_many/10000": {
+          "A_ns": 6326630.7,
           "N": 0.0684,
           "T": 0.205,
           "aa_ratios": [
@@ -1844,6 +2004,7 @@
           "gate": true
         },
         "vector/find_nearest/1000": {
+          "A_ns": 22289.3,
           "N": 0.0807,
           "T": 0.242,
           "aa_ratios": [
@@ -1854,6 +2015,7 @@
           "gate": false
         },
         "vector/find_nearest/10000": {
+          "A_ns": 12467.7,
           "N": 0.0446,
           "T": 0.134,
           "aa_ratios": [
@@ -1864,6 +2026,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/128": {
+          "A_ns": 0.6,
           "N": 0.142,
           "T": 0.426,
           "aa_ratios": [
@@ -1874,6 +2037,7 @@
           "gate": false
         },
         "vector/score_one/Cosine/1536": {
+          "A_ns": 5.9,
           "N": 0.0464,
           "T": 0.139,
           "aa_ratios": [
@@ -1884,6 +2048,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/384": {
+          "A_ns": 0.1,
           "N": 0.0627,
           "T": 0.188,
           "aa_ratios": [
@@ -1894,6 +2059,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/768": {
+          "A_ns": 11.7,
           "N": 0.0701,
           "T": 0.21,
           "aa_ratios": [
@@ -1904,6 +2070,7 @@
           "gate": true
         },
         "vector/score_one/Dot/128": {
+          "A_ns": 1.3,
           "N": 0.1219,
           "T": 0.366,
           "aa_ratios": [
@@ -1914,6 +2081,7 @@
           "gate": false
         },
         "vector/score_one/Dot/1536": {
+          "A_ns": 5.0,
           "N": 0.0429,
           "T": 0.129,
           "aa_ratios": [
@@ -1924,6 +2092,7 @@
           "gate": true
         },
         "vector/score_one/Dot/384": {
+          "A_ns": 0.6,
           "N": 0.0666,
           "T": 0.2,
           "aa_ratios": [
@@ -1934,6 +2103,7 @@
           "gate": true
         },
         "vector/score_one/Dot/768": {
+          "A_ns": 9.6,
           "N": 0.0331,
           "T": 0.099,
           "aa_ratios": [
@@ -1944,6 +2114,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/128": {
+          "A_ns": 1.3,
           "N": 0.0556,
           "T": 0.167,
           "aa_ratios": [
@@ -1954,6 +2125,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.8,
           "N": 0.049,
           "T": 0.147,
           "aa_ratios": [
@@ -1964,6 +2136,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/384": {
+          "A_ns": 1.1,
           "N": 0.0353,
           "T": 0.106,
           "aa_ratios": [
@@ -1974,6 +2147,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/768": {
+          "A_ns": 12.2,
           "N": 0.0356,
           "T": 0.107,
           "aa_ratios": [
@@ -1984,6 +2158,7 @@
           "gate": true
         },
         "write/export_snapshot_10k": {
+          "A_ns": 14475.4,
           "N": 0.0326,
           "T": 0.098,
           "aa_ratios": [
@@ -1994,6 +2169,7 @@
           "gate": true
         },
         "write/insert_many_1k": {
+          "A_ns": 88993.3,
           "N": 0.0414,
           "T": 0.124,
           "aa_ratios": [
@@ -2008,6 +2184,7 @@
     "local-i5-9400f": {
       "cases": {
         "bulk/delete_one_by_id/10000": {
+          "A_ns": 20823.6,
           "N": 0.0549,
           "T": 0.165,
           "aa_ratios": [
@@ -2016,6 +2193,7 @@
           "gate": true
         },
         "bulk/insert_many_indexed/10000": {
+          "A_ns": 744288.0,
           "N": 0.0638,
           "T": 0.191,
           "aa_ratios": [
@@ -2024,6 +2202,7 @@
           "gate": true
         },
         "bulk/update_one_by_id/10000": {
+          "A_ns": 2315.4,
           "N": 0.0357,
           "T": 0.107,
           "aa_ratios": [
@@ -2032,6 +2211,7 @@
           "gate": true
         },
         "doc/aggregate_group/1000": {
+          "A_ns": 31274.3,
           "N": 0.0379,
           "T": 0.114,
           "aa_ratios": [
@@ -2040,6 +2220,7 @@
           "gate": false
         },
         "doc/aggregate_group/10000": {
+          "A_ns": 48932.5,
           "N": 0.0708,
           "T": 0.212,
           "aa_ratios": [
@@ -2048,6 +2229,7 @@
           "gate": true
         },
         "doc/compound_eq_range/1000": {
+          "A_ns": 170.0,
           "N": 0.0252,
           "T": 0.075,
           "aa_ratios": [
@@ -2056,6 +2238,7 @@
           "gate": true
         },
         "doc/compound_eq_range/10000": {
+          "A_ns": 3516.8,
           "N": 0.0356,
           "T": 0.107,
           "aa_ratios": [
@@ -2064,6 +2247,7 @@
           "gate": true
         },
         "doc/count_indexed_eq/1000": {
+          "A_ns": 66.9,
           "N": 0.0388,
           "T": 0.116,
           "aa_ratios": [
@@ -2072,6 +2256,7 @@
           "gate": false
         },
         "doc/count_indexed_eq/10000": {
+          "A_ns": 181.8,
           "N": 0.0404,
           "T": 0.121,
           "aa_ratios": [
@@ -2080,6 +2265,7 @@
           "gate": true
         },
         "doc/count_indexed_range/1000": {
+          "A_ns": 5918.5,
           "N": 0.0295,
           "T": 0.088,
           "aa_ratios": [
@@ -2088,6 +2274,7 @@
           "gate": true
         },
         "doc/count_indexed_range/10000": {
+          "A_ns": 87078.9,
           "N": 0.0778,
           "T": 0.233,
           "aa_ratios": [
@@ -2096,6 +2283,7 @@
           "gate": true
         },
         "doc/count_unindexed/1000": {
+          "A_ns": 4032.3,
           "N": 0.0419,
           "T": 0.126,
           "aa_ratios": [
@@ -2104,6 +2292,7 @@
           "gate": false
         },
         "doc/count_unindexed/10000": {
+          "A_ns": 56676.9,
           "N": 0.0602,
           "T": 0.181,
           "aa_ratios": [
@@ -2112,6 +2301,7 @@
           "gate": true
         },
         "doc/find_by_id/1000": {
+          "A_ns": 1312.0,
           "N": 0.0362,
           "T": 0.109,
           "aa_ratios": [
@@ -2120,6 +2310,7 @@
           "gate": false
         },
         "doc/find_by_id/10000": {
+          "A_ns": 1521.2,
           "N": 0.0316,
           "T": 0.095,
           "aa_ratios": [
@@ -2128,6 +2319,7 @@
           "gate": true
         },
         "doc/indexed_eq/1000": {
+          "A_ns": 78.4,
           "N": 0.0303,
           "T": 0.091,
           "aa_ratios": [
@@ -2136,6 +2328,7 @@
           "gate": true
         },
         "doc/indexed_eq/10000": {
+          "A_ns": 5285.2,
           "N": 0.0382,
           "T": 0.115,
           "aa_ratios": [
@@ -2144,6 +2337,7 @@
           "gate": true
         },
         "doc/page_full/1000": {
+          "A_ns": 1792.9,
           "N": 0.0371,
           "T": 0.111,
           "aa_ratios": [
@@ -2152,6 +2346,7 @@
           "gate": false
         },
         "doc/page_full/10000": {
+          "A_ns": 5435.2,
           "N": 0.0328,
           "T": 0.098,
           "aa_ratios": [
@@ -2160,6 +2355,7 @@
           "gate": true
         },
         "doc/page_projected/1000": {
+          "A_ns": 1542.7,
           "N": 0.0349,
           "T": 0.105,
           "aa_ratios": [
@@ -2168,6 +2364,7 @@
           "gate": false
         },
         "doc/page_projected/10000": {
+          "A_ns": 10588.3,
           "N": 0.0387,
           "T": 0.116,
           "aa_ratios": [
@@ -2176,6 +2373,7 @@
           "gate": true
         },
         "doc/range_window/1000": {
+          "A_ns": 8739.7,
           "N": 0.0541,
           "T": 0.162,
           "aa_ratios": [
@@ -2184,6 +2382,7 @@
           "gate": false
         },
         "doc/range_window/10000": {
+          "A_ns": 21934.2,
           "N": 0.0439,
           "T": 0.132,
           "aa_ratios": [
@@ -2192,6 +2391,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/1000": {
+          "A_ns": 366.2,
           "N": 0.0262,
           "T": 0.078,
           "aa_ratios": [
@@ -2200,6 +2400,7 @@
           "gate": true
         },
         "doc/sorted_page_asc/10000": {
+          "A_ns": 41078.3,
           "N": 0.0347,
           "T": 0.104,
           "aa_ratios": [
@@ -2208,6 +2409,7 @@
           "gate": true
         },
         "fts/bm25_zipf/10000": {
+          "A_ns": 60412.0,
           "N": 0.031,
           "T": 0.093,
           "aa_ratios": [
@@ -2216,6 +2418,7 @@
           "gate": true
         },
         "fts/insert_indexed/10000": {
+          "A_ns": 1529521.5,
           "N": 0.0661,
           "T": 0.198,
           "aa_ratios": [
@@ -2224,6 +2427,7 @@
           "gate": true
         },
         "hyb/hybrid_unfiltered/1000": {
+          "A_ns": 3619.6,
           "N": 0.0316,
           "T": 0.095,
           "aa_ratios": [
@@ -2232,6 +2436,7 @@
           "gate": true
         },
         "hyb/hybrid_unfiltered/10000": {
+          "A_ns": 79.3,
           "N": 0.0524,
           "T": 0.157,
           "aa_ratios": [
@@ -2240,6 +2445,7 @@
           "gate": true
         },
         "idx/insert_amplification/none": {
+          "A_ns": 984015.0,
           "N": 0.1051,
           "T": 0.315,
           "aa_ratios": [
@@ -2248,6 +2454,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar1": {
+          "A_ns": 588990.0,
           "N": 0.101,
           "T": 0.303,
           "aa_ratios": [
@@ -2256,6 +2463,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3": {
+          "A_ns": 272763.0,
           "N": 0.2177,
           "T": 0.653,
           "aa_ratios": [
@@ -2264,6 +2472,7 @@
           "gate": false
         },
         "idx/insert_amplification/scalar3_fts": {
+          "A_ns": 3222510.0,
           "N": 0.061,
           "T": 0.183,
           "aa_ratios": [
@@ -2272,6 +2481,7 @@
           "gate": true
         },
         "idx/insert_amplification/scalar3_fts_vector": {
+          "A_ns": 17580.0,
           "N": 0.0578,
           "T": 0.173,
           "aa_ratios": [
@@ -2280,6 +2490,7 @@
           "gate": true
         },
         "query/equality": {
+          "A_ns": 73202.9,
           "N": 0.0187,
           "T": 0.056,
           "aa_ratios": [
@@ -2288,6 +2499,7 @@
           "gate": true
         },
         "query/range_scan_mixed_numeric": {
+          "A_ns": 5138.2,
           "N": 0.0374,
           "T": 0.112,
           "aa_ratios": [
@@ -2296,6 +2508,7 @@
           "gate": true
         },
         "query/range_scan_unindexed": {
+          "A_ns": 1476.6,
           "N": 0.0384,
           "T": 0.115,
           "aa_ratios": [
@@ -2304,6 +2517,7 @@
           "gate": true
         },
         "stabilization/bm25/1000": {
+          "A_ns": 8304.6,
           "N": 0.0291,
           "T": 0.087,
           "aa_ratios": [
@@ -2312,6 +2526,7 @@
           "gate": true
         },
         "stabilization/bm25/10000": {
+          "A_ns": 290025.3,
           "N": 0.0569,
           "T": 0.171,
           "aa_ratios": [
@@ -2320,6 +2535,7 @@
           "gate": true
         },
         "stabilization/bm25_selective/1000": {
+          "A_ns": 1459.7,
           "N": 0.0294,
           "T": 0.088,
           "aa_ratios": [
@@ -2328,6 +2544,7 @@
           "gate": true
         },
         "stabilization/bm25_selective/10000": {
+          "A_ns": 1044.7,
           "N": 0.0341,
           "T": 0.102,
           "aa_ratios": [
@@ -2336,6 +2553,7 @@
           "gate": true
         },
         "stabilization/delete_many/1000": {
+          "A_ns": 238027.1,
           "N": 0.0377,
           "T": 0.113,
           "aa_ratios": [
@@ -2344,6 +2562,7 @@
           "gate": false
         },
         "stabilization/delete_many/10000": {
+          "A_ns": 203236.5,
           "N": 0.0397,
           "T": 0.119,
           "aa_ratios": [
@@ -2352,6 +2571,7 @@
           "gate": true
         },
         "stabilization/exact_vector/1000": {
+          "A_ns": 5.7,
           "N": 0.0289,
           "T": 0.087,
           "aa_ratios": [
@@ -2360,6 +2580,7 @@
           "gate": true
         },
         "stabilization/exact_vector/10000": {
+          "A_ns": 256.5,
           "N": 0.0254,
           "T": 0.076,
           "aa_ratios": [
@@ -2368,6 +2589,7 @@
           "gate": true
         },
         "stabilization/fts_index_cycle/1000": {
+          "A_ns": 107308.4,
           "N": 0.0373,
           "T": 0.112,
           "aa_ratios": [
@@ -2376,6 +2598,7 @@
           "gate": false
         },
         "stabilization/fts_index_cycle/10000": {
+          "A_ns": 1491322.5,
           "N": 0.0391,
           "T": 0.117,
           "aa_ratios": [
@@ -2384,6 +2607,7 @@
           "gate": true
         },
         "stabilization/hnsw/1000": {
+          "A_ns": 134.5,
           "N": 0.0291,
           "T": 0.087,
           "aa_ratios": [
@@ -2392,6 +2616,7 @@
           "gate": true
         },
         "stabilization/hnsw/10000": {
+          "A_ns": 1388.0,
           "N": 0.0337,
           "T": 0.101,
           "aa_ratios": [
@@ -2400,6 +2625,7 @@
           "gate": true
         },
         "stabilization/hybrid/1000": {
+          "A_ns": 2001.0,
           "N": 0.0263,
           "T": 0.079,
           "aa_ratios": [
@@ -2408,6 +2634,7 @@
           "gate": true
         },
         "stabilization/hybrid/10000": {
+          "A_ns": 15486.6,
           "N": 0.045,
           "T": 0.135,
           "aa_ratios": [
@@ -2416,6 +2643,7 @@
           "gate": true
         },
         "stabilization/index_cycle/1000": {
+          "A_ns": 39096.8,
           "N": 0.0386,
           "T": 0.116,
           "aa_ratios": [
@@ -2424,6 +2652,7 @@
           "gate": false
         },
         "stabilization/index_cycle/10000": {
+          "A_ns": 396967.5,
           "N": 0.0415,
           "T": 0.124,
           "aa_ratios": [
@@ -2432,6 +2661,7 @@
           "gate": true
         },
         "stabilization/indexed_page/1000": {
+          "A_ns": 417.7,
           "N": 0.0268,
           "T": 0.08,
           "aa_ratios": [
@@ -2440,6 +2670,7 @@
           "gate": true
         },
         "stabilization/indexed_page/10000": {
+          "A_ns": 288.0,
           "N": 0.0389,
           "T": 0.117,
           "aa_ratios": [
@@ -2448,6 +2679,7 @@
           "gate": true
         },
         "stabilization/sorted_page/1000": {
+          "A_ns": 821.2,
           "N": 0.0115,
           "T": 0.05,
           "aa_ratios": [
@@ -2456,6 +2688,7 @@
           "gate": true
         },
         "stabilization/sorted_page/10000": {
+          "A_ns": 28657.4,
           "N": 0.0453,
           "T": 0.136,
           "aa_ratios": [
@@ -2464,6 +2697,7 @@
           "gate": true
         },
         "stabilization/unindexed_selective/1000": {
+          "A_ns": 5379.0,
           "N": 0.0296,
           "T": 0.089,
           "aa_ratios": [
@@ -2472,6 +2706,7 @@
           "gate": true
         },
         "stabilization/unindexed_selective/10000": {
+          "A_ns": 47125.0,
           "N": 0.0533,
           "T": 0.16,
           "aa_ratios": [
@@ -2480,6 +2715,7 @@
           "gate": true
         },
         "stabilization/update_many/1000": {
+          "A_ns": 21219.5,
           "N": 0.055,
           "T": 0.165,
           "aa_ratios": [
@@ -2488,6 +2724,7 @@
           "gate": false
         },
         "stabilization/update_many/10000": {
+          "A_ns": 54138.8,
           "N": 0.0442,
           "T": 0.133,
           "aa_ratios": [
@@ -2496,6 +2733,7 @@
           "gate": true
         },
         "vector/find_nearest/1000": {
+          "A_ns": 1956.5,
           "N": 0.0421,
           "T": 0.126,
           "aa_ratios": [
@@ -2504,6 +2742,7 @@
           "gate": false
         },
         "vector/find_nearest/10000": {
+          "A_ns": 247029.1,
           "N": 0.0538,
           "T": 0.161,
           "aa_ratios": [
@@ -2512,6 +2751,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/128": {
+          "A_ns": 0.1,
           "N": 0.0259,
           "T": 0.078,
           "aa_ratios": [
@@ -2520,6 +2760,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/1536": {
+          "A_ns": 0.1,
           "N": 0.0263,
           "T": 0.079,
           "aa_ratios": [
@@ -2528,6 +2769,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/384": {
+          "A_ns": 0.1,
           "N": 0.0235,
           "T": 0.071,
           "aa_ratios": [
@@ -2536,6 +2778,7 @@
           "gate": true
         },
         "vector/score_one/Cosine/768": {
+          "A_ns": 0.2,
           "N": 0.0265,
           "T": 0.08,
           "aa_ratios": [
@@ -2544,6 +2787,7 @@
           "gate": true
         },
         "vector/score_one/Dot/128": {
+          "A_ns": 0.0,
           "N": 0.0632,
           "T": 0.19,
           "aa_ratios": [
@@ -2552,6 +2796,7 @@
           "gate": true
         },
         "vector/score_one/Dot/1536": {
+          "A_ns": 0.2,
           "N": 0.0243,
           "T": 0.073,
           "aa_ratios": [
@@ -2560,6 +2805,7 @@
           "gate": true
         },
         "vector/score_one/Dot/384": {
+          "A_ns": 0.0,
           "N": 0.0321,
           "T": 0.096,
           "aa_ratios": [
@@ -2568,6 +2814,7 @@
           "gate": true
         },
         "vector/score_one/Dot/768": {
+          "A_ns": 0.0,
           "N": 0.0215,
           "T": 0.064,
           "aa_ratios": [
@@ -2576,6 +2823,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/128": {
+          "A_ns": 0.1,
           "N": 0.0244,
           "T": 0.073,
           "aa_ratios": [
@@ -2584,6 +2832,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/1536": {
+          "A_ns": 0.0,
           "N": 0.0269,
           "T": 0.081,
           "aa_ratios": [
@@ -2592,6 +2841,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/384": {
+          "A_ns": 0.2,
           "N": 0.0695,
           "T": 0.208,
           "aa_ratios": [
@@ -2600,6 +2850,7 @@
           "gate": true
         },
         "vector/score_one/Euclidean/768": {
+          "A_ns": 0.4,
           "N": 0.0267,
           "T": 0.08,
           "aa_ratios": [
@@ -2608,6 +2859,7 @@
           "gate": true
         },
         "write/export_snapshot_10k": {
+          "A_ns": 7002.9,
           "N": 0.0278,
           "T": 0.083,
           "aa_ratios": [
@@ -2616,6 +2868,7 @@
           "gate": true
         },
         "write/insert_many_1k": {
+          "A_ns": 21517.9,
           "N": 0.0249,
           "T": 0.075,
           "aa_ratios": [

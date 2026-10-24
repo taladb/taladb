@@ -445,7 +445,11 @@ def evaluate(workload, pairs, args, exceptions):
             tolerance = entry.get("T", default["T"])
             gated = entry.get("gate", default["gate"]) and case not in args.excluded_cases
             before = [b[case] for b, _ in pairs]
-            v = verdict(before, [c[case] for _, c in pairs], tolerance, max(2000.0, 0.02 * statistics.median(before)))
+            # Absolute floor: the case's calibrated A/A difference, never below 2%
+            # of B. A fixed 2 µs floor (the plan's first rule) exceeded every
+            # `vector/score_one` measurement, so those kernels could not fail.
+            floor = max(entry.get("A_ns", 0.0), 0.02 * statistics.median(before))
+            v = verdict(before, [c[case] for _, c in pairs], tolerance, floor)
             v |= {"case": case, "gated": gated, "calibrated": case in table}
             rows.append(v)
             message = (f"{case}: {v['baseline'] / 1e3:.2f} -> {v['candidate'] / 1e3:.2f} µs "
@@ -692,7 +696,7 @@ def calibrate(args):
     """Tolerances from A/A results (the same commit on both sides). N is the
     largest deviation of one run's median from the median of its side, over
     every side of every result; T = max(T_min, 3N)."""
-    deviation, ratios, sources = {}, {}, []
+    deviation, ratios, diffs, sources = {}, {}, {}, []
     for path in args.results:
         result = json.loads(path.read_text())
         if result["workload"] != "criterion":
@@ -708,21 +712,24 @@ def calibrate(args):
                 values = [p[side][case] for p in pairs]
                 m = statistics.median(values)
                 deviation[case] = max(deviation.get(case, 0.0), max(abs(v - m) / m for v in values))
-            ratios.setdefault(case, []).append(statistics.median(p[1][case] for p in pairs)
-                                               / statistics.median(p[0][case] for p in pairs))
+            b = statistics.median(p[0][case] for p in pairs)
+            c = statistics.median(p[1][case] for p in pairs)
+            ratios.setdefault(case, []).append(c / b)
+            diffs[case] = max(diffs.get(case, 0.0), abs(c - b))
     cases = {}
     for case in sorted(deviation):
         n = deviation[case]
         t = max(args.t_min, 3 * n)
         small = case.endswith("/1000")
-        cases[case] = {"N": round(n, 4), "T": round(t, 3),
+        cases[case] = {"N": round(n, 4), "T": round(t, 3), "A_ns": round(3 * diffs[case], 1),
                        "gate": t <= args.t_cap and not (small and t > args.small_cap),
                        "aa_ratios": [round(r, 4) for r in ratios[case]]}
     data = json.loads(args.output.read_text()) if args.output.exists() else {"schema": 1, "profiles": {}}
     data.setdefault("default", {"T": 0.10, "gate": True})
     data["profiles"][args.profile] = {"cases": cases}
     data.setdefault("calibration", {})[args.profile] = {
-        "rule": f"T = max({args.t_min:.0%}, 3N); report-only when T > {args.t_cap:.0%}, or for 1k cases when T > {args.small_cap:.0%}",
+        "rule": f"T = max({args.t_min:.0%}, 3N); absolute floor A = max(3 x largest A/A |median(C) - median(B)|, 2% of B); "
+                f"report-only when T > {args.t_cap:.0%}, or for 1k cases when T > {args.small_cap:.0%}",
         "protocol": CRITERION_PROTOCOL, "sources": sources, "calibrated_at": time.strftime("%Y-%m-%d", time.gmtime())}
     args.output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     gated = sum(c["gate"] for c in cases.values())
