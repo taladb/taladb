@@ -12,7 +12,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
-use taladb::{Database, Value, VectorMetric};
+use taladb::{Database, Ulid, Value, VectorMetric};
 
 struct Counting;
 
@@ -81,15 +81,19 @@ fn main() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("docs").unwrap();
     let vectors = make_vectors(count + 1, dims);
-    for chunk in vectors[1..].chunks(1_000) {
+    // Fixed IDs, so fingerprints compare across runs and builds.
+    for (start, chunk) in (1..).step_by(1_000).zip(vectors[1..].chunks(1_000)) {
         col.insert_many(
-            chunk
-                .iter()
-                .map(|v| {
-                    vec![(
-                        "embedding".to_string(),
-                        Value::Array(v.iter().map(|f| Value::Float(f64::from(*f))).collect()),
-                    )]
+            (start..)
+                .zip(chunk)
+                .map(|(i, v): (u128, _)| {
+                    vec![
+                        ("_id".to_string(), Value::Str(Ulid::from(i).to_string())),
+                        (
+                            "embedding".to_string(),
+                            Value::Array(v.iter().map(|f| Value::Float(f64::from(*f))).collect()),
+                        ),
+                    ]
                 })
                 .collect(),
         )
