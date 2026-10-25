@@ -109,6 +109,12 @@ Reshape each document. A projection is either an **inclusion** or an **exclusion
 Before 0.9.3 the engine implemented inclusion only. An exclusion such as `{ description: 0 }` parsed to an *empty inclusion list*, so every document came back stripped of every field but `_id` — silently, with no error. Exclusion now works, and mixing the two modes raises an error instead of resolving to something arbitrary.
 :::
 
+## Sort order
+
+`$sort` (and `find` with `sort`) orders values of different types as: missing, `null`, booleans, numbers, strings, byte arrays, then arrays and objects, which compare equal to one another. Equal values are ordered by `_id`.
+
+Numbers compare by exact value, integers and floating-point numbers together: `2^53 + 1` sorts after the float `2^53`, which it used to tie with. `-0` and `0` are equal. NaN sorts after every number, `Infinity` included, and every NaN equals every other. `$min` and `$max` use the same order, so the `$max` of a group holding NaN is NaN.
+
 ## Paging: sort + skip + limit
 
 A `$sort` followed by `$skip`/`$limit` is a **bounded** query, and the engine treats it as one. When the sort's first key is indexed and no `$match` precedes it, the page is served from that index, and no document after the page is decoded:

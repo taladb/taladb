@@ -161,6 +161,18 @@ pub fn rrf_contribution(rank: usize, k: f32, weight: f32) -> f32 {
     weight / denominator
 }
 
+/// Rank order for scores: highest first, NaN last.
+///
+/// `partial_cmp` decides every pair without a NaN, so finite and infinite
+/// scores rank as they always have. NaN used to compare equal to every score,
+/// which is not a total order: the standard sort can panic on it. Caller-chosen
+/// parameters produce NaN — a `k1` near `f32::MAX` overflows `term_score`, and
+/// opposite infinite RRF weights add to `inf - inf`.
+pub(crate) fn cmp_scores_desc(a: f32, b: f32) -> std::cmp::Ordering {
+    b.partial_cmp(&a)
+        .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
