@@ -1408,7 +1408,7 @@ impl Collection {
         pre_filter: Option<Filter>,
         options: &VectorQueryOptions,
     ) -> Result<(Vec<VectorSearchResult>, usize), TalaDbError> {
-        use crate::vector::VectorBlock;
+        use crate::vector::{RetainedVectors, VectorMetric};
         let cache = self.load_indexes_in(txn)?;
         let def = cache
             .vec_indexes
@@ -1448,14 +1448,22 @@ impl Collection {
         let norm = crate::vector::l2_norm(query);
         let mut ranker = vector_window::Ranker::new(top_k, options);
         let mut computations = 0;
-        let mut score = |id: Ulid, values: &[f32]| -> Result<(), TalaDbError> {
-            if values.len() != query.len() {
-                return Ok(());
-            }
-            computations += 1;
-            let similarity = crate::vector::score_with_query_norm(&def.metric, query, norm, values);
-            ranker.offer(self, txn, id, similarity)
-        };
+        // `stored_norm_sq` comes from a retained block; streamed vectors
+        // recompute it. Both give the same bits (see `RetainedVectors`).
+        let mut score =
+            |id: Ulid, values: &[f32], stored_norm_sq: Option<f32>| -> Result<(), TalaDbError> {
+                if values.len() != query.len() {
+                    return Ok(());
+                }
+                computations += 1;
+                let similarity = match stored_norm_sq {
+                    Some(norm_sq) => {
+                        crate::vector::score_with_norms(&def.metric, query, norm, values, norm_sq)
+                    }
+                    None => crate::vector::score_with_query_norm(&def.metric, query, norm, values),
+                };
+                ranker.offer(self, txn, id, similarity)
+            };
         // Sparse filters batch point reads in key order. Dense filters use an
         // existing decoded block or one contiguous scan, decoding only matches.
         // Filtered reads never populate the full-vector cache.
@@ -1467,14 +1475,19 @@ impl Collection {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .vectors(&cache_key, generation);
-            if let Some(block) = cached {
+            if let Some(retained) = cached {
                 // Blocks are built by ordered scans. Reuse their vectors without
                 // building an ID map or copying a collection-sized block.
+                let block = &retained.block;
                 self.visit_vector_ids_in(txn, filter, &mut |id| {
                     let id = Ulid::from_bytes(id);
                     if let Ok(i) = block.ids.binary_search(&id) {
                         let start = i * block.dimensions;
-                        score(id, &block.values[start..start + block.dimensions])?;
+                        score(
+                            id,
+                            &block.values[start..start + block.dimensions],
+                            retained.norm_sq(i),
+                        )?;
                     }
                     Ok(())
                 })?;
@@ -1484,7 +1497,7 @@ impl Collection {
                 let mut flush = |keys: &mut Vec<[u8; 16]>| -> Result<(), TalaDbError> {
                     crate::query::key_batch::visit(txn, &table, keys, &mut |id, bytes| {
                         if let Some(values) = decode_f32_vec(bytes) {
-                            score(Ulid::from_bytes(*id), &values)?;
+                            score(Ulid::from_bytes(*id), &values, None)?;
                         }
                         Ok(())
                     })
@@ -1514,7 +1527,7 @@ impl Collection {
                         if let Some(bytes) = bytes
                             && let Some(values) = decode_f32_vec(&bytes)
                         {
-                            score(Ulid::from_bytes(*id), &values)?;
+                            score(Ulid::from_bytes(*id), &values, None)?;
                         }
                     }
                 }
@@ -1524,14 +1537,16 @@ impl Collection {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .vectors(&cache_key, generation);
-                if let Some(block) = cached {
-                    for (id, values) in block
+                if let Some(retained) = cached {
+                    let block = &retained.block;
+                    for (i, (id, values)) in block
                         .ids
                         .iter()
                         .zip(block.values.chunks_exact(block.dimensions))
+                        .enumerate()
                     {
                         if ids.contains(&id.to_bytes()) {
-                            score(*id, values)?;
+                            score(*id, values, retained.norm_sq(i))?;
                         }
                     }
                 } else {
@@ -1544,7 +1559,7 @@ impl Collection {
                                 && ids.contains(&id)
                                 && let Some(values) = decode_f32_vec(bytes)
                             {
-                                score(Ulid::from_bytes(id), &values)?;
+                                score(Ulid::from_bytes(id), &values, None)?;
                             }
                             Ok(crate::engine::ScanFlow::Continue)
                         },
@@ -1563,18 +1578,25 @@ impl Collection {
                     cache.epoch,
                 )
             };
-            if let Some(block) = cached {
-                for (id, values) in block
+            if let Some(retained) = cached {
+                let block = &retained.block;
+                for (i, (id, values)) in block
                     .ids
                     .iter()
                     .zip(block.values.chunks_exact(block.dimensions))
+                    .enumerate()
                 {
-                    score(*id, values)?;
+                    score(*id, values, retained.norm_sq(i))?;
                 }
             } else {
+                // Only cosine reads the stored norm; other metrics retain none.
+                let cosine = def.metric == VectorMetric::Cosine;
                 let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
-                let estimate =
-                    count.checked_mul(def.dimensions.saturating_mul(4).saturating_add(16));
+                let per_vector =
+                    def.dimensions
+                        .saturating_mul(4)
+                        .saturating_add(if cosine { 20 } else { 16 });
+                let estimate = count.checked_mul(per_vector);
                 // Reserve before decoding a full block. Concurrent exact
                 // queries that cannot claim space simply stream the table.
                 let mut reservation =
@@ -1587,15 +1609,17 @@ impl Collection {
                                 .reserve(n)
                         });
                 let retain = reservation.is_some();
-                let mut block = VectorBlock {
-                    dimensions: def.dimensions,
-                    ..Default::default()
-                };
+                let mut retained = RetainedVectors::default();
+                retained.block.dimensions = def.dimensions;
                 if retain {
-                    block.ids.reserve_exact(count);
-                    block
+                    retained.block.ids.reserve_exact(count);
+                    retained
+                        .block
                         .values
                         .reserve_exact(count.saturating_mul(def.dimensions));
+                    if cosine {
+                        retained.norms.reserve_exact(count);
+                    }
                 }
                 txn.scan(
                     &table,
@@ -1606,22 +1630,27 @@ impl Collection {
                             && let Some(values) = decode_f32_vec(bytes)
                             && values.len() == def.dimensions
                         {
-                            score(Ulid::from_bytes(id), &values)?;
+                            // A retained cosine block computes each norm once,
+                            // and this first query scores with it too.
+                            let norm_sq =
+                                (retain && cosine).then(|| crate::vector::norm_sq(&values));
+                            score(Ulid::from_bytes(id), &values, norm_sq)?;
                             if retain {
-                                block.ids.push(Ulid::from_bytes(id));
-                                block.values.extend(values);
+                                retained.block.ids.push(Ulid::from_bytes(id));
+                                retained.block.values.extend(values);
+                                retained.norms.extend(norm_sq);
                             }
                         }
                         Ok(crate::engine::ScanFlow::Continue)
                     },
                 )?;
-                if retain && block.bytes() <= reservation.as_ref().unwrap().bytes {
+                if retain && retained.bytes() <= reservation.as_ref().unwrap().bytes {
                     let mut cache = self
                         .search_cache
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     drop(reservation.take());
-                    cache.insert_vectors(&cache_key, generation, block, epoch);
+                    cache.insert_vectors(&cache_key, generation, retained, epoch);
                 }
             }
         }

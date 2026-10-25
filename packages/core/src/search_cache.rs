@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::vector::{CachedVectors, VectorBlock};
+use crate::vector::RetainedVectors;
 use crate::vector_graph::CachedGraph;
 
 #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
@@ -57,8 +57,14 @@ pub struct VectorCacheStats {
     pub graph_indexes: usize,
 }
 
+/// Decoded vectors for one `collection::field`, tagged with its vector revision.
+struct CachedBlock {
+    generation: u64,
+    vectors: Arc<RetainedVectors>,
+}
+
 enum Value {
-    Vectors(CachedVectors),
+    Vectors(CachedBlock),
     Graph(CachedGraph),
 }
 struct Entry {
@@ -84,7 +90,7 @@ pub(crate) struct SearchCache {
     pressure: MemoryPressure,
     clock: u64,
     active: Arc<AtomicUsize>,
-    vector_loans: Vec<Weak<VectorBlock>>,
+    vector_loans: Vec<Weak<RetainedVectors>>,
     peak: usize,
     /// Invalidation also discards loans returned by queries already running.
     pub epoch: u64,
@@ -316,7 +322,7 @@ impl SearchCache {
         );
         self.record_peak();
     }
-    pub fn vectors(&mut self, key: &str, generation: u64) -> Option<Arc<VectorBlock>> {
+    pub fn vectors(&mut self, key: &str, generation: u64) -> Option<Arc<RetainedVectors>> {
         let key = format!("v:{key}");
         if self
             .entries
@@ -343,7 +349,13 @@ impl SearchCache {
             _ => None,
         }
     }
-    pub fn insert_vectors(&mut self, key: &str, generation: u64, vectors: VectorBlock, epoch: u64) {
+    pub fn insert_vectors(
+        &mut self,
+        key: &str,
+        generation: u64,
+        vectors: RetainedVectors,
+        epoch: u64,
+    ) {
         if self.epoch != epoch {
             return;
         }
@@ -357,7 +369,7 @@ impl SearchCache {
         }
         self.insert(
             key,
-            Value::Vectors(CachedVectors {
+            Value::Vectors(CachedBlock {
                 generation,
                 vectors: Arc::new(vectors),
             }),
@@ -470,12 +482,41 @@ mod tests {
         assert!(cache.stats().retained_bytes > 0);
         assert_eq!(cache.stats().active_bytes, 0);
     }
-    fn block(n: usize) -> VectorBlock {
-        VectorBlock {
-            ids: vec![ulid::Ulid::from(1); n],
-            values: vec![1.0; n * 2],
-            dimensions: 2,
+    // Shaped like a cosine block: two dimensions plus one norm per vector.
+    fn block(n: usize) -> RetainedVectors {
+        RetainedVectors {
+            block: crate::vector::VectorBlock {
+                ids: vec![ulid::Ulid::from(1); n],
+                values: vec![1.0; n * 2],
+                dimensions: 2,
+            },
+            norms: vec![2.0; n],
         }
+    }
+    #[test]
+    fn cached_norms_are_charged_to_retained_pinned_and_peak_bytes() {
+        let n = 1000;
+        // 16 B id + 2 × 4 B values + 4 B norm per vector.
+        assert_eq!(block(n).bytes(), n * 28);
+        assert_eq!(block(n).bytes(), block(n).block.bytes() + n * 4);
+
+        // A budget that holds the vectors but not their norms admits nothing.
+        let mut cache = SearchCache::default();
+        cache.set_budget(block(n).block.bytes());
+        cache.insert_vectors("a", 1, block(n), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, 0);
+
+        cache.set_budget(block(n).bytes());
+        cache.insert_vectors("a", 1, block(n), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, n * 28);
+        assert_eq!(cache.stats().peak_bytes, n * 28);
+        // Evicted while a query holds it: still counted, norms included.
+        let pinned = cache.vectors("a", 1).unwrap();
+        cache.set_budget(0);
+        assert_eq!(cache.stats().retained_bytes, 0);
+        assert_eq!(cache.stats().active_bytes, n * 28);
+        drop(pinned);
+        assert_eq!(cache.stats().active_bytes, 0);
     }
     #[test]
     fn eviction_preserves_recent_indexes_and_replacements_do_not_double_count() {
