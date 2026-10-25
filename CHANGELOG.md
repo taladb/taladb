@@ -14,9 +14,16 @@
   - With `find`, documents before `skip` are no longer decoded.
   - Fields the index cannot order — missing values, arrays, mixed integers and floats, NaN or zero floats, field encryption — still scan and sort.
 
+### Fixes
+
+- **Sorting a field that holds NaN no longer panics.** The sort comparator called NaN equal to every number, which is not a consistent order, and the standard library's sort can detect that and panic ("user-provided comparison function does not correctly implement a total order"). It also compared integers with floats through a rounding conversion, so integers beyond 2^53 could sort out of numeric order depending on insertion order. Both affected `find` with `sort`, `$sort`, and `$min`/`$max`, and both date back to 0.12.1 at least.
+- **Text and hybrid search no longer panic on NaN scores.** A very large `k1` (such as `3e38`) or opposite infinite RRF weights produce NaN scores, which the rankers compared the same inconsistent way. NaN scores now rank after every other; finite and infinite scores rank as before.
+
 ### Behavior changes
 
 - Unsorted results of such a range now come back in index order (by value, integers before floating-point numbers, then `_id`) instead of an order that differed between runs. An unsorted `limit` therefore selects a different, now stable, subset. Sorted queries return exactly the same results as before.
+- **Where NaN sorts.** Every NaN, of either sign, now sorts after every number (`Infinity` included) and before strings, equal to every other NaN and ordered by `_id`. Before, its position depended on the input order, or the sort panicked. `$max` of a group holding NaN is now NaN, and `$min` passes over it; before, the result depended on which document came first.
+- **Integers beyond 2^53 against floats.** Numbers compare by exact value: `2^53 + 1` now sorts after the float `2^53` instead of tying with it, and `i64::MAX` before the float `2^63`. Orders among other numbers, and the tie of `-0`, `0` and integer `0`, are unchanged.
 
 
 ## 0.12.1 — 2026-10-22
