@@ -792,7 +792,8 @@ fn plan_is_exact_for(plan: &QueryPlan, filter: &Filter) -> bool {
                 // covering both encodings for a zero float, never `IndexEq`.)
                 Value::Float(f) if f.is_nan() => false,
                 // Every other value encodes injectively within its type tag, so
-                // the range holds exactly the documents `Eq` matches.
+                // the range's keys of the value's own length are exactly the
+                // documents `Eq` matches (`count_plan_entries` skips the rest).
                 _ => true,
             }
         }
@@ -811,12 +812,18 @@ fn count_plan_entries(
         QueryPlan::IndexEq { field, start, end } => {
             let table = index_table_name(collection, field);
             let mut n = 0u64;
+            // A Str/Bytes value with an escaped NUL extends a shorter value's
+            // prefix (`"a\0b"` is `"a"`'s prefix ++ 0xFF ++ …), so its keys fall
+            // inside this range. Only keys of exactly the bound's length — the
+            // value prefix plus an id — hold the value itself.
             txn.scan(
                 &table,
                 Bound::Included(start.as_slice()),
                 Bound::Included(end.as_slice()),
-                &mut |_, _| {
-                    n += 1;
+                &mut |key, _| {
+                    if key.len() == start.len() {
+                        n += 1;
+                    }
                     Ok(ScanFlow::Continue)
                 },
             )?;
