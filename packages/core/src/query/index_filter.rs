@@ -751,6 +751,65 @@ pub(super) fn visit_unique(
     Ok(true)
 }
 
+/// A two-sided range on one indexed field — planned as the `IndexAnd` of its
+/// lower and upper bound by `planner::bounded_range_from_and` — narrowed to the
+/// key ranges both bounds share, when that is provably the same answer.
+///
+/// The planner intersects document IDs because an array document has one key
+/// per element, and different elements can satisfy each bound. A field whose
+/// array counter is zero in this snapshot has at most one key per document, so
+/// a document is in both bounds' ID sets exactly when its single key lies in
+/// both bounds' key ranges: the pairwise intersection [`intersect_ranges`]
+/// computes, including the Int/Float twin ranges. The result is disjoint and in
+/// key order, so it can be walked without a dedup set and stop at a limit.
+///
+/// `None` keeps the ID intersection: any other plan shape, a field that holds
+/// arrays, and a field without a counter (written before counters existed).
+pub(super) fn scalar_range_plan(
+    plan: &QueryPlan,
+    txn: &dyn ReadTxn,
+    collection: &str,
+) -> Result<Option<QueryPlan>, TalaDbError> {
+    let QueryPlan::IndexAnd { plans } = plan else {
+        return Ok(None);
+    };
+    let [lower, upper] = plans.as_slice() else {
+        return Ok(None);
+    };
+    let (Some(field), Some(other)) = (range_field(lower), range_field(upper)) else {
+        return Ok(None);
+    };
+    if field != other || !scalar_field(txn, collection, field)? {
+        return Ok(None);
+    }
+    let narrowed = intersect_ranges(lower, upper, field);
+    Ok(Some(QueryPlan::IndexOr {
+        plans: union_ranges(ranges(&narrowed))
+            .into_iter()
+            .map(|(start, end)| QueryPlan::IndexRange {
+                field: field.to_string(),
+                start,
+                end,
+            })
+            .collect(),
+    }))
+}
+
+/// The field of a plan made only of key ranges on one field.
+fn range_field(plan: &QueryPlan) -> Option<&str> {
+    match plan {
+        QueryPlan::IndexRange { field, .. } => Some(field),
+        QueryPlan::IndexOr { plans } => {
+            let field = range_field(plans.first()?)?;
+            plans
+                .iter()
+                .all(|p| range_field(p) == Some(field))
+                .then_some(field)
+        }
+        _ => None,
+    }
+}
+
 fn scalar_field(txn: &dyn ReadTxn, collection: &str, field: &str) -> Result<bool, TalaDbError> {
     Ok(txn
         .get(
@@ -804,4 +863,167 @@ fn union_ranges(mut ranges: Vec<KeyRange>) -> Vec<KeyRange> {
         out.push((start, end));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Collection;
+    use crate::engine::{RedbBackend, StorageBackend};
+    use std::sync::Arc;
+
+    fn collection(values: Vec<Value>) -> (Arc<RedbBackend>, Collection) {
+        let backend = Arc::new(RedbBackend::open_in_memory().unwrap());
+        let col = Collection::new("docs", backend.clone());
+        col.insert_many(
+            values
+                .into_iter()
+                .map(|v| vec![("n".to_string(), v)])
+                .collect(),
+        )
+        .unwrap();
+        col.create_index("n").unwrap();
+        (backend, col)
+    }
+
+    fn two_sided(lo: Value, hi: Value) -> QueryPlan {
+        let filter = Filter::And(vec![
+            Filter::Gte("n".into(), lo),
+            Filter::Lt("n".into(), hi),
+        ]);
+        let index = IndexDef {
+            collection: "docs".into(),
+            field: "n".into(),
+        };
+        plan_full(&filter, &[index], &[], &[])
+    }
+
+    fn bounded(plan: &QueryPlan) -> bool {
+        matches!(plan, QueryPlan::IndexRange { start, end, .. }
+            if !matches!(start, Bound::Unbounded) && !matches!(end, Bound::Unbounded))
+    }
+
+    #[test]
+    fn scalar_fields_get_bounded_ranges() {
+        let (backend, _col) = collection((0..100).map(Value::Int).collect());
+        let txn = backend.begin_read().unwrap();
+        let plan = two_sided(Value::Int(10), Value::Int(20));
+        assert!(matches!(plan, QueryPlan::IndexAnd { .. }));
+        let Some(QueryPlan::IndexOr { plans }) =
+            scalar_range_plan(&plan, txn.as_ref(), "docs").unwrap()
+        else {
+            panic!("a scalar field must be narrowed");
+        };
+        // Int [10, 20), and the Float block up to just above 20: Float keys sort
+        // above every Int key, so a Float such as 19.5 lives there. Neither
+        // window is open-ended, unlike the two halves the planner emits.
+        assert_eq!(plans.len(), 2, "{plans:?}");
+        assert!(plans.iter().all(bounded), "{plans:?}");
+    }
+
+    #[test]
+    fn mixed_numeric_bounds_keep_both_type_blocks() {
+        let (backend, _col) = collection(vec![Value::Int(1), Value::Float(2.5)]);
+        let txn = backend.begin_read().unwrap();
+        let plan = two_sided(Value::Float(0.5), Value::Int(10));
+        let Some(QueryPlan::IndexOr { plans }) =
+            scalar_range_plan(&plan, txn.as_ref(), "docs").unwrap()
+        else {
+            panic!("a scalar field must be narrowed");
+        };
+        // [0.5, ∞) ∪ Int[0, MAX] intersected with Int(-∞, 10) ∪ Float(-∞, 10⁺]:
+        // an Int window and a Float window.
+        assert_eq!(plans.len(), 2, "{plans:?}");
+    }
+
+    #[test]
+    fn contradictory_bounds_find_nothing() {
+        let (backend, col) = collection((0..10).map(Value::Int).collect());
+        let txn = backend.begin_read().unwrap();
+        let plan = two_sided(Value::Int(8), Value::Int(3));
+        // The Int windows cancel out. An Int lower bound cannot exclude the
+        // Float block by key, so a bounded Float window remains for the
+        // post-filter, which finds nothing.
+        let Some(QueryPlan::IndexOr { plans }) =
+            scalar_range_plan(&plan, txn.as_ref(), "docs").unwrap()
+        else {
+            panic!("a scalar field must be narrowed");
+        };
+        assert!(plans.iter().all(bounded), "{plans:?}");
+        let filter = Filter::And(vec![
+            Filter::Gte("n".into(), Value::Int(8)),
+            Filter::Lt("n".into(), Value::Int(3)),
+        ]);
+        assert!(col.find(filter).unwrap().is_empty());
+    }
+
+    #[test]
+    fn array_fields_keep_the_id_intersection() {
+        let (backend, _col) = collection(vec![
+            Value::Int(1),
+            Value::Array(vec![Value::Int(1), Value::Int(20)]),
+        ]);
+        let txn = backend.begin_read().unwrap();
+        let plan = two_sided(Value::Int(5), Value::Int(10));
+        assert!(
+            scalar_range_plan(&plan, txn.as_ref(), "docs")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn other_plan_shapes_are_left_alone() {
+        let (backend, _col) = collection((0..10).map(Value::Int).collect());
+        let txn = backend.begin_read().unwrap();
+        let index = |field: &str| IndexDef {
+            collection: "docs".into(),
+            field: field.into(),
+        };
+        let equalities = plan_full(
+            &Filter::And(vec![
+                Filter::Eq("n".into(), Value::Int(1)),
+                Filter::Eq("m".into(), Value::Int(2)),
+            ]),
+            &[index("n"), index("m")],
+            &[],
+            &[],
+        );
+        assert!(matches!(equalities, QueryPlan::IndexAnd { .. }));
+        assert!(
+            scalar_range_plan(&equalities, txn.as_ref(), "docs")
+                .unwrap()
+                .is_none()
+        );
+        let one_sided = plan_full(
+            &Filter::Gte("n".into(), Value::Int(1)),
+            &[index("n")],
+            &[],
+            &[],
+        );
+        assert!(
+            scalar_range_plan(&one_sided, txn.as_ref(), "docs")
+                .unwrap()
+                .is_none()
+        );
+        let fields_differ = QueryPlan::IndexAnd {
+            plans: vec![
+                QueryPlan::IndexRange {
+                    field: "n".into(),
+                    start: Bound::Unbounded,
+                    end: Bound::Unbounded,
+                },
+                QueryPlan::IndexRange {
+                    field: "m".into(),
+                    start: Bound::Unbounded,
+                    end: Bound::Unbounded,
+                },
+            ],
+        };
+        assert!(
+            scalar_range_plan(&fields_differ, txn.as_ref(), "docs")
+                .unwrap()
+                .is_none()
+        );
+    }
 }

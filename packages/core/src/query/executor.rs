@@ -457,6 +457,32 @@ fn execute_into(
         // work: the smallest id set is intersected against the rest, so only
         // documents satisfying *every* indexed conjunct are ever decoded.
         QueryPlan::IndexAnd { plans } => {
+            // A two-sided range on a scalar field: walk the shared key ranges in
+            // key order instead of materialising both halves' ID sets. Disjoint
+            // ranges over one key per document need no dedup set, and the walk
+            // stops at the limit.
+            if let Some(QueryPlan::IndexOr { plans: ranges }) =
+                super::index_filter::scalar_range_plan(plan, txn, collection)?
+            {
+                for range in &ranges {
+                    let QueryPlan::IndexRange { field, start, end } = range else {
+                        unreachable!("scalar_range_plan yields key ranges only");
+                    };
+                    fetch_index_range(
+                        txn,
+                        &index_table_name(collection, field),
+                        bound_as_ref(start),
+                        bound_as_ref(end),
+                        collection,
+                        &matcher,
+                        deadline,
+                        limit,
+                        &mut results,
+                        None,
+                    )?;
+                }
+                return Ok(());
+            }
             let mut sets: Vec<HashSet<[u8; 16]>> = Vec::with_capacity(plans.len());
             for sub_plan in plans {
                 check_deadline(deadline)?;
@@ -694,6 +720,9 @@ fn collect_ulids(
             Ok(ids.into_iter().collect())
         }
         QueryPlan::IndexAnd { plans } => {
+            if let Some(narrowed) = super::index_filter::scalar_range_plan(plan, txn, collection)? {
+                return collect_ulids(&narrowed, txn, collection, deadline);
+            }
             let mut ids: Option<HashSet<[u8; 16]>> = None;
             for plan in plans {
                 let next: HashSet<_> = collect_ulids(plan, txn, collection, deadline)?
@@ -1038,7 +1067,10 @@ fn visit_plan_documents(
             Ok(true)
         }
         QueryPlan::IndexAnd { plans } if !plans.is_empty() => {
-            visit_plan_documents(&plans[0], txn, collection, accept)
+            match super::index_filter::scalar_range_plan(plan, txn, collection)? {
+                Some(narrowed) => visit_plan_documents(&narrowed, txn, collection, accept),
+                None => visit_plan_documents(&plans[0], txn, collection, accept),
+            }
         }
         _ => {
             let docs = docs_table_name(collection);
