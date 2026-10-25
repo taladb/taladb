@@ -135,7 +135,8 @@ The index is used only when its order is provably the sort's order. Otherwise th
 - some documents lack the field;
 - some document currently holds an array in it, or the index was built before the engine began counting array values (rebuilding the index fixes that);
 - it mixes integers and floats, or holds NaN or zero floats;
-- it is field-encrypted.
+- it is field-encrypted;
+- the walk reaches a string or byte array containing a NUL character, in a collection where some `_id` starts with byte `0xFF` (as about 1 in 256 `deriveDocId` ids do). Such a value's index key can sort ahead of a shorter value it extends.
 
 `find` with `sort` and `limit` takes the same path. There, documents wholly before `skip` are not decoded either.
 
