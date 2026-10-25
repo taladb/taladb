@@ -1,0 +1,480 @@
+//! Sorted pages served from a secondary index without materialising it.
+//!
+//! An index key is `encode_value_prefix(value) ++ ulid`, so a forward scan
+//! yields `(value asc, id asc)`. Once [`index_order_is_sort_order`] has shown
+//! that the encoding agrees with `cmp_values` on every key of the index, the
+//! rows of a sort on that field are the index entries, ranked as follows:
+//!
+//! * runs of equal values (equal value prefixes) are ordered by value, in the
+//!   sort's direction;
+//! * inside a run, a single-key sort orders by `_id` ascending in **both**
+//!   directions (`cmp_rows` breaks ties on the id without reversing it), which
+//!   is the run's key order;
+//! * inside a run, a multi-key sort orders by the later keys, which only the
+//!   documents can tell.
+//!
+//! An ascending page therefore stops the walk at rank `keep`. A descending page
+//! still walks every key — the internal read API iterates forward only — but
+//! keeps only the trailing runs that can reach the page. Either way the memory
+//! held is bounded by `keep`, never by the collection or by a run of ties.
+
+use std::collections::VecDeque;
+use std::ops::Bound;
+
+use ulid::Ulid;
+
+use crate::document::Document;
+use crate::engine::{ReadTxn, ScanFlow};
+use crate::error::TalaDbError;
+use crate::index::{TAG_FLOAT, TAG_INT, docs_table_name, index_table_name, ulid_from_index_key};
+use crate::query::executor::fetch_by_ulids;
+use crate::query::options::{SortDirection, SortSpec, partial_sort_documents};
+
+/// Documents decoded per step when a run must be ordered by later sort keys.
+const RUN_CHUNK: usize = 256;
+
+/// The candidates for a sorted page.
+pub(crate) struct SortedPage {
+    /// Every row of rank `skipped..keep` in the sort's order, plus possibly a
+    /// few more of the same runs, in no particular order: the caller still
+    /// orders them on the full sort specification.
+    pub docs: Vec<Document>,
+    /// Rows of rank below this were not decoded. Always at most the requested
+    /// `skip`.
+    pub skipped: usize,
+}
+
+/// Whether ordering a field's index keys gives the sort comparator's order for
+/// every document of the collection. Reads a constant number of keys.
+///
+/// The caller has already checked the field's array counter is zero, so each
+/// document has at most one key. Then:
+///
+/// * the index has an entry for every document exactly when the two tables
+///   have the same length (redb keeps the length in the table header);
+/// * `TAG_INT` sorts before `TAG_FLOAT`, while `cmp_values` compares the two
+///   numerically, so a field holding both is out;
+/// * `cmp_values` treats NaN as equal to everything and `-0.0` as equal to
+///   `0.0`, while their keys differ, so any float key in those ranges is out.
+pub(crate) fn index_order_is_sort_order(
+    txn: &dyn ReadTxn,
+    collection: &str,
+    field: &str,
+) -> Result<bool, TalaDbError> {
+    let table = index_table_name(collection, field);
+    if txn.count_entries(&table)? != txn.count_entries(&docs_table_name(collection))? {
+        return Ok(false);
+    }
+    let has_int = any_key(
+        txn,
+        &table,
+        Bound::Included(&[TAG_INT]),
+        Bound::Excluded(&[TAG_INT + 1]),
+    )?;
+    let has_float = any_key(
+        txn,
+        &table,
+        Bound::Included(&[TAG_FLOAT]),
+        Bound::Excluded(&[TAG_FLOAT + 1]),
+    )?;
+    if has_int && has_float {
+        return Ok(false);
+    }
+    if has_float {
+        for (start, end) in float_ranges_out_of_order() {
+            if any_key(
+                txn,
+                &table,
+                Bound::Included(&start),
+                end.as_ref().map(Vec::as_slice),
+            )? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Key ranges holding every float key whose value `cmp_values` does not order
+/// like its key: negative NaNs (below `-inf`), `-0.0` and `0.0` (adjacent), and
+/// positive NaNs (above `+inf`). Bounds are value prefixes, so each range
+/// covers every id.
+fn float_ranges_out_of_order() -> [(Vec<u8>, Bound<Vec<u8>>); 3] {
+    let key = |sortable: u64| {
+        let mut k = vec![TAG_FLOAT];
+        k.extend_from_slice(&sortable.to_be_bytes());
+        k
+    };
+    let neg_inf = !f64::NEG_INFINITY.to_bits();
+    let neg_zero = !(-0.0f64).to_bits();
+    let pos_zero = 0.0f64.to_bits() ^ (1 << 63);
+    let pos_inf = f64::INFINITY.to_bits() ^ (1 << 63);
+    [
+        (key(0), Bound::Excluded(key(neg_inf))),
+        (key(neg_zero), Bound::Excluded(key(pos_zero + 1))),
+        (key(pos_inf + 1), Bound::Excluded(vec![TAG_FLOAT + 1])),
+    ]
+}
+
+fn any_key(
+    txn: &dyn ReadTxn,
+    table: &str,
+    start: Bound<&[u8]>,
+    end: Bound<&[u8]>,
+) -> Result<bool, TalaDbError> {
+    let mut found = false;
+    txn.scan(table, start, end, &mut |_, _| {
+        found = true;
+        Ok(ScanFlow::Stop)
+    })?;
+    Ok(found)
+}
+
+/// One run of equal values, in index order.
+#[derive(Default)]
+struct Run {
+    prefix: Vec<u8>,
+    /// The run's first ids, at most `keep` of them.
+    ids: Vec<Ulid>,
+    /// Entries seen in the run. More than `ids.len()` when the cap was reached
+    /// or (ascending) when the walk stopped inside the run.
+    size: usize,
+    /// Whether every entry of the run was seen.
+    complete: bool,
+}
+
+/// The rows of rank `0..keep` for `sort` (whose first key is the indexed field),
+/// leaving out whole runs, or single-key rows, of rank below `skip` without
+/// decoding them. The index must satisfy [`index_order_is_sort_order`].
+///
+/// Returns `None` if an index key is malformed.
+pub(crate) fn sorted_page(
+    txn: &dyn ReadTxn,
+    collection: &str,
+    sort: &[SortSpec],
+    skip: usize,
+    keep: usize,
+) -> Result<Option<SortedPage>, TalaDbError> {
+    let Some(first) = sort.first() else {
+        return Ok(None);
+    };
+    if skip >= keep {
+        return Ok(Some(SortedPage {
+            docs: Vec::new(),
+            skipped: 0,
+        }));
+    }
+    let table = index_table_name(collection, &first.field);
+    if sort.len() == 1 && first.direction == SortDirection::Asc {
+        // Key order is the sort order: the page is the keys of rank
+        // `skip..keep`, and the walk ends there.
+        let Some((ids, seen)) = ascending_ids(txn, &table, skip, keep)? else {
+            return Ok(None);
+        };
+        return Ok(Some(SortedPage {
+            docs: fetch_by_ulids(txn, collection, &ids)?,
+            skipped: skip.min(seen),
+        }));
+    }
+    let runs = match first.direction {
+        SortDirection::Asc => ascending_runs(txn, &table, keep)?,
+        SortDirection::Desc => descending_runs(txn, &table, keep)?,
+    };
+    let Some(runs) = runs else {
+        return Ok(None);
+    };
+
+    if sort.len() == 1 {
+        // Descending: rows are the runs' ids in order (highest run first, ids
+        // ascending inside a run); at least `keep` of them were kept.
+        let ids: Vec<Ulid> = runs
+            .iter()
+            .flat_map(|r| r.ids.iter().copied())
+            .take(keep)
+            .skip(skip)
+            .collect();
+        let skipped = skip.min(runs.iter().map(|r| r.ids.len()).sum());
+        return Ok(Some(SortedPage {
+            docs: fetch_by_ulids(txn, collection, &ids)?,
+            skipped,
+        }));
+    }
+
+    // Multi-key: later keys order rows only inside a run. Runs wholly below
+    // `skip` are dropped; the rest are decoded, a run that may exceed what the
+    // page needs through a bounded selection over its key range.
+    let mut docs = Vec::new();
+    let mut skipped = 0;
+    let mut start = 0;
+    for run in runs {
+        if start >= keep {
+            break;
+        }
+        let end = start + run.size;
+        if run.complete && end <= skip {
+            skipped = end;
+        } else if run.complete && run.size == run.ids.len() {
+            docs.extend(fetch_by_ulids(txn, collection, &run.ids)?);
+        } else {
+            let Some(best) = best_of_run(txn, &table, collection, sort, &run.prefix, keep - start)?
+            else {
+                return Ok(None);
+            };
+            docs.extend(best);
+        }
+        start = end;
+    }
+    Ok(Some(SortedPage { docs, skipped }))
+}
+
+/// Ids of rank `skip..keep` in key order, and how many keys were walked.
+fn ascending_ids(
+    txn: &dyn ReadTxn,
+    table: &str,
+    skip: usize,
+    keep: usize,
+) -> Result<Option<(Vec<Ulid>, usize)>, TalaDbError> {
+    let mut ids = Vec::new();
+    let mut seen = 0;
+    let mut malformed = false;
+    txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
+        let Some((_, id)) = split_key(k) else {
+            malformed = true;
+            return Ok(ScanFlow::Stop);
+        };
+        if seen >= skip {
+            ids.push(id);
+        }
+        seen += 1;
+        Ok(if seen == keep {
+            ScanFlow::Stop
+        } else {
+            ScanFlow::Continue
+        })
+    })?;
+    Ok((!malformed).then_some((ids, seen)))
+}
+
+/// Forward walk that stops at rank `keep`. The last run may be incomplete.
+fn ascending_runs(
+    txn: &dyn ReadTxn,
+    table: &str,
+    keep: usize,
+) -> Result<Option<Vec<Run>>, TalaDbError> {
+    let mut runs: Vec<Run> = Vec::new();
+    let mut seen = 0;
+    let mut malformed = false;
+    txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
+        let Some((prefix, id)) = split_key(k) else {
+            malformed = true;
+            return Ok(ScanFlow::Stop);
+        };
+        if runs.last().is_none_or(|r| r.prefix != prefix) {
+            if let Some(r) = runs.last_mut() {
+                r.complete = true;
+            }
+            runs.push(Run {
+                prefix: prefix.to_vec(),
+                ..Run::default()
+            });
+        }
+        let run = runs.last_mut().expect("pushed above");
+        run.ids.push(id);
+        run.size += 1;
+        seen += 1;
+        Ok(if seen == keep {
+            ScanFlow::Stop
+        } else {
+            ScanFlow::Continue
+        })
+    })?;
+    if malformed {
+        return Ok(None);
+    }
+    // The walk ended with the index, so every run is whole.
+    if seen < keep
+        && let Some(r) = runs.last_mut()
+    {
+        r.complete = true;
+    }
+    Ok(Some(runs))
+}
+
+/// Forward walk of the whole index that retains only the trailing runs able to
+/// reach rank `keep` of a descending order, returned highest value first.
+///
+/// Invariant: either one run is held, or the runs after the first (lowest)
+/// hold fewer than `keep` rows between them, so the first run is the page's
+/// boundary and every later run lies wholly on the page. Each run keeps at most
+/// `keep` ids; dropped runs are recycled, so steady state allocates only when
+/// a value outgrows a recycled buffer.
+fn descending_runs(
+    txn: &dyn ReadTxn,
+    table: &str,
+    keep: usize,
+) -> Result<Option<Vec<Run>>, TalaDbError> {
+    let mut runs: VecDeque<Run> = VecDeque::new();
+    let mut spare: Vec<Run> = Vec::new();
+    // Rows held by every run but the first, each counted up to `keep`.
+    let mut tail = 0usize;
+    let mut malformed = false;
+    txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
+        let Some((prefix, id)) = split_key(k) else {
+            malformed = true;
+            return Ok(ScanFlow::Stop);
+        };
+        if runs.back().is_none_or(|r| r.prefix != prefix) {
+            let mut run = spare.pop().unwrap_or_default();
+            run.prefix.clear();
+            run.prefix.extend_from_slice(prefix);
+            run.ids.clear();
+            run.size = 0;
+            run.complete = true;
+            runs.push_back(run);
+        }
+        let held = runs.len();
+        let run = runs.back_mut().expect("pushed above");
+        run.size += 1;
+        if run.ids.len() < keep {
+            run.ids.push(id);
+            if held > 1 {
+                tail += 1;
+            }
+        }
+        while runs.len() > 1 && tail >= keep {
+            let dropped = runs.pop_front().expect("more than one run");
+            spare.push(dropped);
+            tail -= runs.front().expect("more than one run").ids.len();
+        }
+        Ok(ScanFlow::Continue)
+    })?;
+    if malformed {
+        return Ok(None);
+    }
+    Ok(Some(runs.into_iter().rev().collect()))
+}
+
+/// The `need` best documents of one run under `sort`, reading the run's keys in
+/// steps of [`RUN_CHUNK`] and holding at most `need + RUN_CHUNK` documents.
+/// Every document of the run is decoded once.
+fn best_of_run(
+    txn: &dyn ReadTxn,
+    table: &str,
+    collection: &str,
+    sort: &[SortSpec],
+    prefix: &[u8],
+    need: usize,
+) -> Result<Option<Vec<Document>>, TalaDbError> {
+    let mut end = prefix.to_vec();
+    end.extend_from_slice(&[0xFF; 16]);
+    let mut from = prefix.to_vec();
+    from.extend_from_slice(&[0x00; 16]);
+    let mut first = true;
+    let mut best: Vec<Document> = Vec::new();
+    let mut ids = Vec::with_capacity(RUN_CHUNK);
+    loop {
+        ids.clear();
+        let mut malformed = false;
+        let start = if first {
+            Bound::Included(from.as_slice())
+        } else {
+            Bound::Excluded(from.as_slice())
+        };
+        txn.scan(table, start, Bound::Included(&end), &mut |k, _| {
+            match split_key(k) {
+                Some((p, id)) if p == prefix => ids.push(id),
+                // Another value whose encoding extends this prefix (a string
+                // with an escaped NUL) can sort inside the range: not ours.
+                Some(_) => {}
+                None => {
+                    malformed = true;
+                    return Ok(ScanFlow::Stop);
+                }
+            }
+            Ok(if ids.len() == RUN_CHUNK {
+                ScanFlow::Stop
+            } else {
+                ScanFlow::Continue
+            })
+        })?;
+        if malformed {
+            return Ok(None);
+        }
+        best.extend(fetch_by_ulids(txn, collection, &ids)?);
+        if best.len() > need {
+            partial_sort_documents(&mut best, sort, need);
+        }
+        if ids.len() < RUN_CHUNK {
+            return Ok(Some(best));
+        }
+        first = false;
+        from.truncate(prefix.len());
+        from.extend_from_slice(&ids[ids.len() - 1].to_bytes());
+    }
+}
+
+/// `(value prefix, id)` of an index key.
+fn split_key(key: &[u8]) -> Option<(&[u8], Ulid)> {
+    let split = key.len().checked_sub(16)?;
+    Some((&key[..split], ulid_from_index_key(key)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Value;
+    use crate::index::encode_index_key;
+
+    fn in_range(key: &[u8], start: &[u8], end: &Bound<Vec<u8>>) -> bool {
+        key >= start
+            && match end {
+                Bound::Excluded(e) => key < e.as_slice(),
+                Bound::Included(e) => key <= e.as_slice(),
+                Bound::Unbounded => true,
+            }
+    }
+
+    /// The probe ranges hold exactly the floats `cmp_values` cannot order by
+    /// key: every NaN payload of either sign, and both zeros.
+    #[test]
+    fn probe_ranges_hold_exactly_nan_and_signed_zero() {
+        let ranges = float_ranges_out_of_order();
+        let id = Ulid::from(u128::MAX);
+        let low = Ulid::from(0u128);
+        let mut cases: Vec<(f64, bool)> = vec![
+            (f64::NAN, true),
+            (-f64::NAN, true),
+            (f64::from_bits(0x7FF0_0000_0000_0001), true),
+            (f64::from_bits(0x7FFF_FFFF_FFFF_FFFF), true),
+            (f64::from_bits(0xFFF0_0000_0000_0001), true),
+            (f64::from_bits(0xFFFF_FFFF_FFFF_FFFF), true),
+            (0.0, true),
+            (-0.0, true),
+            (f64::INFINITY, false),
+            (f64::NEG_INFINITY, false),
+            (f64::MAX, false),
+            (f64::MIN, false),
+            (f64::MIN_POSITIVE, false),
+            (-f64::MIN_POSITIVE, false),
+            (f64::from_bits(1), false),
+            (-f64::from_bits(1), false),
+            (1.0, false),
+            (-1.0, false),
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..10_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let f = f64::from_bits(state);
+            cases.push((f, f.is_nan() || f == 0.0));
+        }
+        for (f, out_of_order) in cases {
+            for id in [id, low] {
+                let key = encode_index_key(&Value::Float(f), id).unwrap();
+                let hit = ranges.iter().any(|(s, e)| in_range(&key, s, e));
+                assert_eq!(hit, out_of_order, "{f:?} ({:#018x})", f.to_bits());
+            }
+        }
+    }
+}
