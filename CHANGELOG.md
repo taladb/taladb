@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- **Two-sided indexed ranges** (`{ n: { $gte: x, $lt: y } }`) on a field that has never held an array now scan only the index keys inside the window. Before, they collected the IDs of both open-ended halves and intersected them. With 100 matching documents, the cost no longer grows with the collection, and the memory the query allocates falls by 81% at 10k documents and 97% at 100k. Fields that hold arrays keep the previous plan, because different array elements can satisfy each bound.
+
+### Behavior changes
+
+- Unsorted results of such a range now come back in index order (by value, integers before floating-point numbers, then `_id`) instead of an order that differed between runs. An unsorted `limit` therefore selects a different, now stable, subset. Sorted queries return exactly the same results as before.
+
 
 ## 0.12.1 — 2026-10-22
 

@@ -451,6 +451,12 @@ fn f64_next_up(f: f64) -> f64 {
 
 /// Scan an `And`'s direct sub-filters for a lower **and** upper bound on the
 /// same indexed field and, if found, intersect their matching IDs.
+///
+/// The planner cannot tell whether the field holds arrays; the executor can,
+/// from the index's array counter in the query's own snapshot. For a scalar
+/// field it walks only the key ranges both bounds share instead
+/// (`index_filter::scalar_range_plan`), which is the same set of documents
+/// without two ID sets the size of each half of the collection.
 fn bounded_range_from_and(filters: &[Filter], indexed_fields: &[&str]) -> Option<QueryPlan> {
     for field in indexed_fields {
         let mut lower: Option<(&Value, bool)> = None;
