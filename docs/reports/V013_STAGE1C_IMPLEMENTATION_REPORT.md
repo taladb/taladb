@@ -8,12 +8,12 @@ Companions: [V013_STAGE1C_BENCHMARK_RESULTS.json](V013_STAGE1C_BENCHMARK_RESULTS
 | `8d53a22` | The change: `query/sorted_index.rs`, integration in `collection.rs`, removal of `index_ordered_entries`; `tests/sorted_page_index.rs` | yes (PR #106) |
 | `ee907c4` | `examples/sorted_page_profile.rs`: per-request latency, keys walked, documents decoded, heap | yes (PR #106) |
 | `40fe920` | Clippy fixes in the new test | yes, as `55d6df1` (PR #107) |
-| `a23567d` | `docs/api/aggregation.md`: what a sorted page reads, and when the index is not used | no |
-| `c622848` | Descending walk in flat queues (from profiling DOC-6) | no |
+| `a23567d` | `docs/api/aggregation.md`: what a sorted page reads, and when the index is not used | yes (PR #108) |
+| `c622848` | Descending walk in flat queues (from profiling DOC-6) | yes (PR #108) |
 | `9cb41df` | Changelog | no |
 | this commit | Stage 1C reports | no |
 
-PR #106 merged the first two commits before validation had finished. Its test file failed `dev`'s workspace clippy step (run 40189769033); PR #107 fixed that. The remaining commits are proposed in a follow-up PR.
+PR #106 merged the first two commits before validation had finished. Its test file failed `dev`'s workspace clippy step (run 40189769033); PR #107 fixed that. PR #108 merged the flat descending window and the docs. `dev` at `15aa8fe` (CI green) now has an engine tree byte-identical to `c622848`, the head every measurement below was taken on. Only the changelog and these reports remain, in their own PR.
 
 ## 1. Summary
 

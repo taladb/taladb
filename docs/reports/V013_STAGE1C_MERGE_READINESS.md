@@ -4,23 +4,19 @@ Date: 2026-10-25. Branch: `feat/v013-sorted-page-scanning` → `dev`. Details: [
 
 ## 0. State of `dev`
 
-Part of this stage is already merged:
+The engine change is already in `dev`, merged across three PRs:
 
-- **PR #106** (`8d53a22` + `ee907c4`) was merged before validation finished. It contains the first version: probes, the ascending walk, the first descending walk, the tests and the profile example.
-- **PR #107** fixed the Clippy failure #106 caused on `dev`.
+| PR | Merged | Content |
+|---|---|---|
+| #106 | 11:39 UTC, before validation had finished | First version (`8d53a22`) and the profile example (`ee907c4`). Its new test failed `dev`'s workspace clippy step |
+| #107 | 12:15 UTC | The clippy fix (`55d6df1`) |
+| #108 | 12:43 UTC | The flat descending window (`c622848`) and the aggregation docs correction (`a23567d`) |
 
-The **follow-up PR** contains the rest:
-
-- `c622848`: the descending walk in flat queues, worth about 12 percentage points more on DOC-6;
-- `a23567d`: the corrected aggregation docs (`dev` still claims no document outside the page is decoded);
-- the changelog;
-- these reports.
-
-`dev` as merged returns correct results; everything below applies to it too. What it lacks is the faster descending walk and accurate documentation.
+`dev` at `15aa8fe` passes CI, and its engine tree is byte-identical to `c622848`, the head every measurement in these reports was taken on. The remaining PR carries only the changelog entry and these three reports.
 
 ## 1. Verdict
 
-**Correct and safe to merge.** Every requirement is met. The few limitations are inherent or pre-existing, and are listed in §2.
+**Correct, and already merged in substance.** Every requirement is met. The few limitations are inherent or pre-existing, and are listed in §2.
 
 | Requirement | Result |
 |---|---|
@@ -59,9 +55,8 @@ The **follow-up PR** contains the rest:
 1. **NaN sort panic (pre-existing, also in v0.12.1).** `find_with_options` sorting an *unindexed* field that holds NaN can panic with "user-provided comparison function does not correctly implement a total order". `cmp_values` calls NaN equal to every number, which is not transitive, and the standard-library sort detects that since Rust 1.81. Reproduced on `dev` and on v0.12.1 with 120 documents and no limit, or with `limit: 120`. Fixing it means choosing where NaN sorts, which changes sort semantics, and that is outside this stage. **Recommendation:** a small dedicated change that orders NaN like the index does (above +∞ for positive NaN), so index and comparator agree.
 2. **String keys with caller-supplied ids (pre-existing).** A shorter string's key followed by an id starting with `0xFF` can sort after a longer string that extends it with an escaped NUL (`"a"` vs `"a\0b"`). Index order then disagrees with the comparator, for the fast path and for range scans alike. Generated ULIDs cannot start with `0xFF` before the year 10889; caller-supplied ids can. **Recommendation:** document it, or disallow `0xFF`-leading caller ids if it matters.
 
-## 4. Before merging the follow-up PR
+## 4. Before merging the remaining PR
 
-- Its own CI must pass: `ci.yml` including `ci-pass`, and the PR-size performance gates against `dev`.
-- Merge it only after reading §0: `dev` already has the first version, so the PR's diff is the flat descending window, the docs and the reports.
+- It changes only `CHANGELOG.md` and `docs/reports/`; its CI should pass trivially.
 - Release notes: measured on Linux x86_64 and arm64 runners and one local x86_64 machine. Do not claim mobile or browser gains.
 - Stage 2 was not started.
