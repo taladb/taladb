@@ -6,6 +6,13 @@
 
 - **Two-sided indexed ranges** (`{ n: { $gte: x, $lt: y } }`) on a field that has never held an array now scan only the index keys inside the window. Before, they collected the IDs of both open-ended halves and intersected them. With 100 matching documents, the cost no longer grows with the collection, and the memory the query allocates falls by 81% at 10k documents and 97% at 100k. Fields that hold arrays keep the previous plan, because different array elements can satisfy each bound.
 - **Exact cosine search** on a vector index whose decoded vectors are retained in the cache no longer recomputes each stored vector's norm on every query. The norm is computed once, when the vectors are decoded, and scores are bit-for-bit identical. At 10,000 × 384-d vectors, an exact search takes 35–41% less time on Linux CI runners (x86_64 and arm64). Dot-product and Euclidean indexes, and indexes too large for the cache, are unchanged. The cached norms add 4 bytes per vector to the cache: a cosine block whose norms would not fit keeps its vectors without them and scores as before.
+- **Sorted pages on an indexed field** (`find` with `sort` and `limit`, or an aggregation that starts with a bounded `$sort`) no longer copy the whole index into memory. Results are unchanged.
+  - The engine checks with a few index reads that the index order is the sort order. It no longer walks every entry to check.
+  - An ascending page stops reading the index at its end: a 10-row page of a 100,000-document collection went from 10 ms to 19 µs (local x86_64).
+  - A descending page still reads every index key but keeps only what can reach the page: the same page takes 26–37% less time.
+  - Memory is bounded by `skip + limit`, even for a run of equal values spanning the collection.
+  - With `find`, documents before `skip` are no longer decoded.
+  - Fields the index cannot order — missing values, arrays, mixed integers and floats, NaN or zero floats, field encryption — still scan and sort.
 
 ### Behavior changes
 
