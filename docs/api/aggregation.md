@@ -111,7 +111,7 @@ Before 0.9.3 the engine implemented inclusion only. An exclusion such as `{ desc
 
 ## Paging: sort + skip + limit
 
-A `$sort` followed by `$skip`/`$limit` is a **bounded** query, and the engine treats it as one. When the sort's first key is indexed and no `$match` precedes it, the page is served by walking that index — no document outside the page is decoded at all:
+A `$sort` followed by `$skip`/`$limit` is a **bounded** query, and the engine treats it as one. When the sort's first key is indexed and no `$match` precedes it, the page is served from that index, and no document after the page is decoded:
 
 ```ts
 await listings.aggregate([
@@ -122,7 +122,16 @@ await listings.aggregate([
 ]);
 ```
 
-Paging a 10,000-document collection for 24 rows costs about the same as reading 24 documents, not 10,000. Multi-key sorts qualify too — only the *first* key needs an index; the rest order within the run of ties at the page boundary. Without an index on that first key the query still works, and still avoids a full sort (only the reachable `skip + limit` documents are ordered), but it must read the collection to do it.
+An ascending sort stops reading the index at the end of the page. A descending sort reads every index key, but no documents beyond the page. Memory is bounded by `skip + limit` in both directions. Multi-key sorts qualify too: only the *first* key needs an index, and the documents of a run of ties that the page cuts through are decoded so the later keys can order them.
+
+The index is used only when its order is provably the sort's order. Otherwise the query reads the collection, still ordering only the reachable `skip + limit` documents. That happens when:
+
+- some documents lack the field;
+- some document currently holds an array in it, or the index was built before the engine began counting array values (rebuilding the index fixes that);
+- it mixes integers and floats, or holds NaN or zero floats;
+- it is field-encrypted.
+
+`find` with `sort` and `limit` takes the same path. There, documents wholly before `skip` are not decoded either.
 
 Paging is stable: ties are broken on the unique `_id`, so a document can never appear on two pages or fall between them as `$skip` grows.
 
