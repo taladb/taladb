@@ -14,6 +14,11 @@
   - With `find`, documents before `skip` are no longer decoded.
   - Fields the index cannot order — missing values, arrays, mixed integers and floats, NaN or zero floats, field encryption — still scan and sort.
 
+### Fixes
+
+- **Indexed queries on strings and byte arrays containing NUL characters** now return what an unindexed scan returns. In the index, `'a\0b'` is stored inside the key range of `'a'`. As a result, `{ s: { $gt: 'a' } }` missed every `'a\0…'` value, and `count({ s: 'a' })` counted them as well. With document ids starting with byte `0xFF`, which `deriveDocId` produces for about 1 in 256 keys, `$lt`/`$lte` bounds containing NUL could also miss shorter values, and a sorted page served from the index could put `'a'` after `'a\0b'`. `find`, `count`, `updateMany` and `deleteMany` were affected alike, as far back as 0.12.1 at least. The index format is unchanged and no rebuild is needed.
+- A sorted page on a string field now falls back to scanning and sorting when the index walk reaches a value containing NUL in a collection where some `_id` starts with `0xFF`. Pages that never reach such a value, and every other collection, are still served from the index.
+
 ### Behavior changes
 
 - Unsorted results of such a range now come back in index order (by value, integers before floating-point numbers, then `_id`) instead of an order that differed between runs. An unsorted `limit` therefore selects a different, now stable, subset. Sorted queries return exactly the same results as before.
