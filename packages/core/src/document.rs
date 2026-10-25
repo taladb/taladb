@@ -281,7 +281,10 @@ impl std::fmt::Display for Value {
 /// Instead: reject NaN, handle the out-of-i64-range floats by sign, then split
 /// the remaining float into its integer and fractional parts and compare in the
 /// integer domain. Every step is exact.
-fn cmp_i64_f64(a: i64, b: f64) -> Option<std::cmp::Ordering> {
+///
+/// The sort comparator (`query::options::cmp_values`) orders Int against Float
+/// with this too, placing NaN above every number.
+pub(crate) fn cmp_i64_f64(a: i64, b: f64) -> Option<std::cmp::Ordering> {
     use std::cmp::Ordering;
 
     if b.is_nan() {

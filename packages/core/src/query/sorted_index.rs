@@ -54,8 +54,9 @@ pub(crate) struct SortedPage {
 ///   have the same length (redb keeps the length in the table header);
 /// * `TAG_INT` sorts before `TAG_FLOAT`, while `cmp_values` compares the two
 ///   numerically, so a field holding both is out;
-/// * `cmp_values` treats NaN as equal to everything and `-0.0` as equal to
-///   `0.0`, while their keys differ, so any float key in those ranges is out.
+/// * `cmp_values` puts every NaN in one class above `+inf` and calls `-0.0`
+///   equal to `0.0`, while the keys order NaNs by sign and payload and keep
+///   the zeros apart, so any float key in those ranges is out.
 pub(crate) fn index_order_is_sort_order(
     txn: &dyn ReadTxn,
     collection: &str,
