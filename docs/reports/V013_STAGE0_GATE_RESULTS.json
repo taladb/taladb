@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated_at": "2026-10-24T16:25:54Z",
+ "generated_at": "2026-10-25T03:25:53Z",
  "stage": "v0.13.0 Stage 0 \u2014 measurement foundation",
  "baseline": {
   "version": "0.12.1",
@@ -10,7 +10,7 @@
  },
  "branch": {
   "name": "feat/v013-stage0-benchmarks",
-  "head": "565d94a8e181fd797d837c5cc5ee3569daf30292",
+  "head": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
   "merged": false,
   "engine_diff_vs_baseline_empty": true
  },
@@ -38,7 +38,10 @@
   "40104333480": "C-fused control, tier0 check",
   "40106192059": "V2 fresh PR-size A/A vector+browser, calibrated floors (ab06759a8f773d223a7525643f62e6c848e70fe2)",
   "40106202243": "C2b cosine control vs ab06759a8f773d223a7525643f62e6c848e70fe2, pr, vector (calibrated floors)",
-  "40108078013": "C2c cosine control vs f28238ade5242f92dbd11fb736ab96f0e0de6e1e, pr, criterion+vector (per-case floors)"
+  "40108078013": "C2c cosine control vs f28238ade5242f92dbd11fb736ab96f0e0de6e1e, pr, criterion+vector (per-case floors)",
+  "40112416232": "T0r tier0 record, VEC-6 schema 2 (77cb01c)",
+  "40112426875": "C-fused2 fused control, new VEC-6 rule (d61f074)",
+  "40112985374": "V3 final release-size validation: A/A + cumulative vs a2ef466, all suites (a15a39aa6069fcd83aa5a107d1b3d955b17c1cde)"
  },
  "calibration": {
   "criterion": {
@@ -3501,6 +3504,1625 @@
    ],
    "failures_under_current_tables": []
   },
+  "V3_final_release_size_aa_and_cumulative": {
+   "run": "40112985374",
+   "head": "a15a39a",
+   "results": [
+    {
+     "file": "criterion-benchmark-100k.json",
+     "artifact": "criterion-benchmark-Linux-ARM64-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "criterion",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 11
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 11,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/indexed_eq/100000",
+      "ratio": 1.0362
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-ARM64-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "criterion",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 77,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 77
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 77,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/page_full/1000",
+      "ratio": 1.0199
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark-100k.json",
+     "artifact": "criterion-benchmark-Linux-ARM64-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 11
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 11,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/compound_eq_range/100000",
+      "ratio": 1.0308
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-ARM64-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 77,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 77
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 77,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/page_projected/1000",
+      "ratio": 1.0113
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark-100k.json",
+     "artifact": "criterion-benchmark-Linux-X64-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "criterion",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 11
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 11,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/count_unindexed/100000",
+      "ratio": 1.0171
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-X64-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "criterion",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 77,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 77
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 77,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "vector/score_one/Euclidean/128",
+      "ratio": 1.015
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark-100k.json",
+     "artifact": "criterion-benchmark-Linux-X64-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 11
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 11,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/compound_eq_range/100000",
+      "ratio": 1.0356
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-X64-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 77,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 77
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 77,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "stabilization/update_many/10000",
+      "ratio": 1.065
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 1.0204
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.0026
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=50 p50_ms",
+      "ratio": 1.0098
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=50 p50_ms",
+      "ratio": 1.0796
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=100 p50_ms",
+      "ratio": 1.0017
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=100 p50_ms",
+      "ratio": 1.0503
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.0126
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-concurrency.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "workload": "concurrency",
+     "gated": false,
+     "rows": {
+      "1 threads throughput_per_s": 1.003,
+      "1 threads cpu_ms_per_request": 0.994,
+      "1 threads cpu_cores_busy": 0.999,
+      "2 threads throughput_per_s": 0.948,
+      "2 threads cpu_ms_per_request": 1.032,
+      "2 threads cpu_cores_busy": 0.994,
+      "4 threads throughput_per_s": 0.992,
+      "4 threads cpu_ms_per_request": 0.974,
+      "4 threads cpu_cores_busy": 0.996
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "filtered",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact dense warm p50_ms",
+      "ratio": 1.0311
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0135
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.1008
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.1581
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-concurrency.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "workload": "concurrency",
+     "gated": false,
+     "rows": {
+      "1 threads throughput_per_s": 0.998,
+      "1 threads cpu_ms_per_request": 1.006,
+      "1 threads cpu_cores_busy": 1.001,
+      "2 threads throughput_per_s": 0.999,
+      "2 threads cpu_ms_per_request": 1.003,
+      "2 threads cpu_cores_busy": 0.986,
+      "4 threads throughput_per_s": 0.978,
+      "4 threads cpu_ms_per_request": 1.012,
+      "4 threads cpu_cores_busy": 1.0
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "filtered",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact sparse warm p50_ms",
+      "ratio": 0.9945
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0428
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=100 p50_ms",
+      "ratio": 1.0311
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.0274
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0248
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=50 p50_ms",
+      "ratio": 1.0146
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 0.997
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.02
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0401
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 1.1198
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-concurrency.json",
+     "artifact": "vector-benchmark-Linux-X64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "workload": "concurrency",
+     "gated": false,
+     "rows": {
+      "1 threads throughput_per_s": 0.997,
+      "1 threads cpu_ms_per_request": 1.0,
+      "1 threads cpu_cores_busy": 1.0,
+      "2 threads throughput_per_s": 0.999,
+      "2 threads cpu_ms_per_request": 0.999,
+      "2 threads cpu_cores_busy": 0.998,
+      "4 threads throughput_per_s": 1.0,
+      "4 threads cpu_ms_per_request": 1.014,
+      "4 threads cpu_cores_busy": 1.009
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-X64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "filtered",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact dense warm p50_ms",
+      "ratio": 1.0099
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0287
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-none-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "cumulative",
+     "workload": "hnsw",
+     "baseline_commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 0.9905
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0117
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-concurrency.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "workload": "concurrency",
+     "gated": false,
+     "rows": {
+      "1 threads throughput_per_s": 0.989,
+      "1 threads cpu_ms_per_request": 1.013,
+      "1 threads cpu_cores_busy": 0.999,
+      "2 threads throughput_per_s": 0.968,
+      "2 threads cpu_ms_per_request": 1.032,
+      "2 threads cpu_cores_busy": 0.997,
+      "4 threads throughput_per_s": 1.004,
+      "4 threads cpu_ms_per_request": 0.978,
+      "4 threads cpu_cores_busy": 1.001
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "filtered",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann dense warm p50_ms",
+      "ratio": 1.0594
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 1.0073
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "candidate_commit": "a15a39aa6069fcd83aa5a107d1b3d955b17c1cde",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 1.0101
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    }
+   ],
+   "browser": [
+    {
+     "file": "vector-web-comparison-1048576.json",
+     "artifact": "vector-web-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.125
+    },
+    {
+     "file": "vector-web-comparison-8388608.json",
+     "artifact": "vector-web-cumulative-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.019
+    },
+    {
+     "file": "vector-web-comparison-1048576.json",
+     "artifact": "vector-web-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.035
+    },
+    {
+     "file": "vector-web-comparison-8388608.json",
+     "artifact": "vector-web-pr-a15a39aa6069fcd83aa5a107d1b3d955b17c1cde-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.214
+    }
+   ],
+   "tier0": [
+    {
+     "file": "tier0-allocations.json",
+     "arch": "aarch64",
+     "failures": []
+    },
+    {
+     "file": "tier0-fingerprints.json",
+     "arch": "aarch64",
+     "failures": []
+    },
+    {
+     "file": "tier0-allocations.json",
+     "arch": "x86_64",
+     "failures": []
+    },
+    {
+     "file": "tier0-codegen.json",
+     "arch": "x86_64",
+     "failures": []
+    },
+    {
+     "file": "tier0-fingerprints.json",
+     "arch": "x86_64",
+     "failures": []
+    }
+   ],
+   "failures_under_current_tables": []
+  },
+  "PR100_pr_size_against_dev": {
+   "run": "40112967216",
+   "base": "c3a616d (dev)",
+   "results": [
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-ARM64-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 47,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 47
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 47,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "write/export_snapshot_10k",
+      "ratio": 1.0246
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "criterion-benchmark.json",
+     "artifact": "criterion-benchmark-Linux-X64-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "criterion",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 47,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 47
+     },
+     "regressions": [],
+     "improvements": [],
+     "fingerprints_compared": 47,
+     "fingerprints_mismatched": [],
+     "worst_gated_ratio": {
+      "case": "doc/indexed_eq/10000",
+      "ratio": 1.0232
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 1.0092
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 1.0044
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "exact_mean_ms",
+      "ratio": 1.0161
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=50 p50_ms",
+      "ratio": 1.0127
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "filtered",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann sparse warm p50_ms",
+      "ratio": 1.0146
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.0218
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-ARM64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "aarch64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=400 p50_ms",
+      "ratio": 1.0326
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 1.0121
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=200 p50_ms",
+      "ratio": 1.0009
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-binary-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=100 p50_ms",
+      "ratio": 1.0219
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-64mib.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 0.9952
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-filtered.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "filtered",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 16,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 16
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann sparse warm p50_ms",
+      "ratio": 1.0014
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark-staged.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 11,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 5
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "ann ef=100 p50_ms",
+      "ratio": 1.011
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    },
+    {
+     "file": "vector-benchmark.json",
+     "artifact": "vector-benchmark-Linux-X64-none-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "arch": "x86_64",
+     "gate_kind": "pr",
+     "workload": "hnsw",
+     "baseline_commit": "c3a616ddd48c16898688f086157bd7e68d4a4631",
+     "candidate_commit": "178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d",
+     "pairs_per_attempt": [
+      3
+     ],
+     "cases": 10,
+     "stored_failures": [],
+     "verdict_counts": {
+      "neutral": 6,
+      "report": 4
+     },
+     "regressions": [],
+     "improvements": [],
+     "worst_gated_ratio": {
+      "case": "build_ms",
+      "ratio": 0.9968
+     },
+     "rejudged_under_current_tables": {
+      "final_failures": [],
+      "unconfirmed": false
+     }
+    }
+   ],
+   "browser": [
+    {
+     "file": "vector-web-comparison-1048576.json",
+     "artifact": "vector-web-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.152
+    },
+    {
+     "file": "vector-web-comparison-8388608.json",
+     "artifact": "vector-web-pr-178ebb744f1dec4a73c9e8a9bef3f45acfed9b1d-1",
+     "pairs": 3,
+     "failures": [],
+     "max_warm_p50_ratio": 1.2
+    }
+   ],
+   "failures_under_current_tables": []
+  },
   "local_aa": {
    "failures": [],
    "cases": 77,
@@ -4769,7 +6391,46 @@
      "arch": "x86_64",
      "failures": []
     }
-   ]
+   ],
+   "note": "count rule (superseded): failed on every target whose count fell, x86_64 included"
+  },
+  "fused_kernel_vectorisation_rule": {
+   "change": "the 2026-09-20 fused dot_and_norm_sq loop, under the vectorisation rule",
+   "runs": {
+    "40112426875": "C-fused2 fused control, new VEC-6 rule (d61f074)"
+   },
+   "tier0": [
+    {
+     "file": "tier0-allocations.json",
+     "arch": "aarch64",
+     "failures": []
+    },
+    {
+     "file": "tier0-fingerprints.json",
+     "arch": "aarch64",
+     "failures": []
+    },
+    {
+     "file": "tier0-allocations.json",
+     "arch": "x86_64",
+     "failures": []
+    },
+    {
+     "file": "tier0-codegen.json",
+     "arch": "x86_64",
+     "failures": [
+      "aarch64-unknown-linux-gnu score_with_query_norm: no longer vectorised \u2014 0 packed f32 multiplies, 0 packed adds (0 vector instructions, v0.12.1 had 20)",
+      "aarch64-apple-ios score_with_query_norm: no longer vectorised \u2014 0 packed f32 multiplies, 0 packed adds (0 vector instructions, v0.12.1 had 20)",
+      "wasm32-unknown-unknown score_with_query_norm: no longer vectorised \u2014 0 packed f32 multiplies, 0 packed adds (0 vector instructions, v0.12.1 had 74)"
+     ]
+    },
+    {
+     "file": "tier0-fingerprints.json",
+     "arch": "x86_64",
+     "failures": []
+    }
+   ],
+   "expected": "fail aarch64 Linux, aarch64 iOS, wasm32 (scalar); x86_64 still vectorised, count drop recorded only"
   },
   "sorted_page_local": {
    "machine": "Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz",
@@ -4800,24 +6461,84 @@
   "fingerprints_identical_x86_64_aarch64": true,
   "codegen": {
    "aarch64-apple-ios": {
-    "dot_similarity": 10,
-    "euclidean_similarity": 12,
-    "score_with_query_norm": 20
+    "dot_similarity": {
+     "packed_add": 5,
+     "packed_mul": 2,
+     "vector_instructions": 10,
+     "vectorised": true
+    },
+    "euclidean_similarity": {
+     "packed_add": 5,
+     "packed_mul": 2,
+     "vector_instructions": 12,
+     "vectorised": true
+    },
+    "score_with_query_norm": {
+     "packed_add": 10,
+     "packed_mul": 4,
+     "vector_instructions": 20,
+     "vectorised": true
+    }
    },
    "aarch64-unknown-linux-gnu": {
-    "dot_similarity": 10,
-    "euclidean_similarity": 12,
-    "score_with_query_norm": 20
+    "dot_similarity": {
+     "packed_add": 5,
+     "packed_mul": 2,
+     "vector_instructions": 10,
+     "vectorised": true
+    },
+    "euclidean_similarity": {
+     "packed_add": 5,
+     "packed_mul": 2,
+     "vector_instructions": 12,
+     "vectorised": true
+    },
+    "score_with_query_norm": {
+     "packed_add": 10,
+     "packed_mul": 4,
+     "vector_instructions": 20,
+     "vectorised": true
+    }
    },
    "wasm32-unknown-unknown": {
-    "dot_similarity": 34,
-    "euclidean_similarity": 40,
-    "score_with_query_norm": 74
+    "dot_similarity": {
+     "packed_add": 6,
+     "packed_mul": 6,
+     "vector_instructions": 34,
+     "vectorised": true
+    },
+    "euclidean_similarity": {
+     "packed_add": 6,
+     "packed_mul": 6,
+     "vector_instructions": 40,
+     "vectorised": true
+    },
+    "score_with_query_norm": {
+     "packed_add": 16,
+     "packed_mul": 16,
+     "vector_instructions": 74,
+     "vectorised": true
+    }
    },
    "x86_64-unknown-linux-gnu": {
-    "dot_similarity": 41,
-    "euclidean_similarity": 48,
-    "score_with_query_norm": 115
+    "dot_similarity": {
+     "packed_add": 6,
+     "packed_mul": 6,
+     "vector_instructions": 41,
+     "vectorised": true
+    },
+    "euclidean_similarity": {
+     "packed_add": 6,
+     "packed_mul": 6,
+     "vector_instructions": 48,
+     "vectorised": true
+    },
+    "score_with_query_norm": {
+     "packed_add": 26,
+     "packed_mul": 19,
+     "vector_instructions": 115,
+     "vectorised": true
+    }
    }
   }
  },
@@ -4874,8 +6595,8 @@
   "HNSW-4/5/7, HYB-3, VEC-3, IDX-4, CONC-3/4/5, REC-1/3/4, MEM-4 (not implemented)",
   "100k for stabilization/, bulk/, fts/insert_indexed (not in CI)",
   "CONC-2 is report-only",
-  "exception approval enforcement (needs CODEOWNERS/branch protection)",
-  "Tier 0 under 2 minutes (2.8-3.7 min x86_64)"
+  "Tier 0 under 2 minutes (2.8-3.7 min x86_64)",
+  "exception approval enforcement: CODEOWNERS committed, but branch protection does not yet require code-owner review"
  ],
  "success_criterion": {
   "accepts_unchanged_performance": true,
@@ -4887,5 +6608,95 @@
   "release": "v0.12.1",
   "asset": "taladb-v0.12.1-baseline-evidence.tar.gz",
   "sha256": "0a14198979f17a36585c43bacbad0b26c4a5a49424c20a8e2f8ca7f505857c64"
+ },
+ "integration": {
+  "pull_requests": [
+   {
+    "number": 99,
+    "title": "chore: sync dev with main after v0.12.1",
+    "base": "dev",
+    "merged_at": "2026-10-24T17:18:32Z",
+    "merged_as": "a2ef466 (fast-forward)"
+   },
+   {
+    "number": 100,
+    "title": "bench: v0.13 Stage 0 measurement foundation (gates against v0.12.1)",
+    "base": "dev",
+    "merged_at": "2026-10-24T17:18:29Z",
+    "merged_as": "3f57bb7",
+    "ci_at_merge": {
+     "ci_run": "40112967196",
+     "performance_run": "40112967216",
+     "passed": "all jobs except Rust \u2014 cargo audit (RUSTSEC-2026-0385/0386, pre-existing, fixed by #101) and therefore ci-pass"
+    }
+   },
+   {
+    "number": 101,
+    "title": "fix(deps): ctutils 0.4.5, tokio 1.54.1 (RUSTSEC-2026-0385, -0386)",
+    "base": "dev",
+    "merged_at": "2026-10-24T17:18:47Z",
+    "merged_as": "20ed5df",
+    "checks": "19 passed"
+   }
+  ],
+  "dev_after_merge": {
+   "head": "20ed5df",
+   "ci_push_run": "40115549503",
+   "ci_push_conclusion": "success",
+   "engine_diff_vs_a2ef466_empty": true,
+   "cargo_lock_changed_by": "#101 only"
+  },
+  "main": "a2ef466 (unchanged)",
+  "merged_by": "repository owner; I did not merge anything",
+  "pr_runtime_minutes": {
+   "criterion_x86_64": 25.8,
+   "criterion_aarch64": 27.5,
+   "previous_pr_criterion": 40.5,
+   "vector": {
+    "x86_64_none": 5.4,
+    "x86_64_binary": 2.8,
+    "aarch64_none": 6.0,
+    "aarch64_binary": 3.8
+   },
+   "browser": 6.9,
+   "tier0": {
+    "x86_64": 3.6,
+    "aarch64": 2.1
+   },
+   "performance_workflow_wall": 33.3,
+   "performance_plus_tier0_runner_minutes": 84
+  },
+  "pr_criterion_selection": {
+   "cases": 47,
+   "release_cases": 77,
+   "dropped": "25 cases at 1k and 5 idx cases; no case at >= 10k",
+   "gated_on_pr": {
+    "ci-linux-x86_64": 39,
+    "ci-linux-aarch64": 45
+   },
+   "gated_cases_now_checked_only_on_push_schedule_release": {
+    "ci-linux-x86_64": 7,
+    "ci-linux-aarch64": 25
+   }
+  },
+  "codeowners": {
+   "file": ".github/CODEOWNERS",
+   "owner": "akosidencio (only org member and collaborator; admin)",
+   "github_validation_errors": []
+  },
+  "repository_settings_required_not_applied": [
+   "dev: branch protection (currently none): PR required, 1 approval, require code-owner review, required check 'CI \u2014 all checks passed', dismiss stale approvals",
+   "main: enable 'Require review from Code Owners', add required check 'CI \u2014 all checks passed', enable dismiss stale approvals (signed commits already required)",
+   "second maintainer with write access, for two-person review (GitHub cannot make an author approve their own PR)"
+  ],
+  "settings_not_enforceable_here": [
+   "code-owner review for the sole maintainer's own PRs (author cannot self-approve; admin bypass is on)",
+   "required status checks on the Vector performance workflow (path-filtered, matrix names depend on the baseline)"
+  ],
+  "evidence_release_asset": {
+   "release": "v0.12.1",
+   "asset": "taladb-v0.12.1-stage0-integration-evidence.tar.gz",
+   "sha256": "a9735ab991cb94327dd9c5ae074f18a36b5c5fe097f7cf9cd3964017477168b6"
+  }
  }
 }
