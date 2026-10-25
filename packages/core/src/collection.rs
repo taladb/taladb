@@ -1589,17 +1589,12 @@ impl Collection {
                     score(*id, values, retained.norm_sq(i))?;
                 }
             } else {
-                // Only cosine reads the stored norm; other metrics retain none.
-                let cosine = def.metric == VectorMetric::Cosine;
                 let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
-                let per_vector =
-                    def.dimensions
-                        .saturating_mul(4)
-                        .saturating_add(if cosine { 20 } else { 16 });
-                let estimate = count.checked_mul(per_vector);
+                let estimate =
+                    count.checked_mul(def.dimensions.saturating_mul(4).saturating_add(16));
                 // Reserve before decoding a full block. Concurrent exact
                 // queries that cannot claim space simply stream the table.
-                let mut reservation =
+                let reserve = |estimate: Option<usize>| {
                     estimate
                         .filter(|&n| n <= budget && budget > 0)
                         .and_then(|n| {
@@ -1607,7 +1602,19 @@ impl Collection {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .reserve(n)
-                        });
+                        })
+                };
+                // Only cosine reads the stored norm; other metrics retain none.
+                // A cosine block whose norms do not fit keeps its vectors alone,
+                // as before norms were cached, rather than streaming.
+                let mut norms = def.metric == VectorMetric::Cosine;
+                let mut reservation = norms
+                    .then(|| reserve(estimate.and_then(|n| n.checked_add(count.checked_mul(4)?))))
+                    .flatten();
+                if reservation.is_none() {
+                    norms = false;
+                    reservation = reserve(estimate);
+                }
                 let retain = reservation.is_some();
                 let mut retained = RetainedVectors::default();
                 retained.block.dimensions = def.dimensions;
@@ -1617,7 +1624,7 @@ impl Collection {
                         .block
                         .values
                         .reserve_exact(count.saturating_mul(def.dimensions));
-                    if cosine {
+                    if norms {
                         retained.norms.reserve_exact(count);
                     }
                 }
@@ -1632,8 +1639,7 @@ impl Collection {
                         {
                             // A retained cosine block computes each norm once,
                             // and this first query scores with it too.
-                            let norm_sq =
-                                (retain && cosine).then(|| crate::vector::norm_sq(&values));
+                            let norm_sq = norms.then(|| crate::vector::norm_sq(&values));
                             score(Ulid::from_bytes(id), &values, norm_sq)?;
                             if retain {
                                 retained.block.ids.push(Ulid::from_bytes(id));

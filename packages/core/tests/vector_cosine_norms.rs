@@ -241,8 +241,10 @@ fn filtered_searches_over_a_retained_block_match_streaming() {
 }
 
 #[test]
-fn norm_bytes_decide_retention_at_the_budget_boundary() {
-    // 1,000 × 8-d: 48,000 B without norms, 52,000 B with them.
+fn a_block_whose_norms_do_not_fit_keeps_its_vectors_alone() {
+    // 1,000 × 8-d: 48,000 B without norms, 52,000 B with them. Between the two,
+    // the vectors are retained without norms, as before norms were cached, and
+    // score from recomputed norms. Below 48,000 B the table streams.
     let data = corpus(8, 1000, 7);
     let db = Database::open_in_memory().unwrap();
     let cosine = collection(&db, "cosine", 8, VectorMetric::Cosine);
@@ -257,51 +259,49 @@ fn norm_bytes_decide_retention_at_the_budget_boundary() {
         10,
     );
 
-    for (budget, retained) in [(50_000, 0), (51_999, 0), (52_000, 52_000), (52_001, 52_000)] {
+    for (budget, retained) in [
+        (47_999, 0),
+        (48_000, 48_000),
+        (51_999, 48_000),
+        (52_000, 52_000),
+        (52_001, 52_000),
+    ] {
+        // Evict first: a block that still fits is kept when the budget grows.
+        db.set_vector_cache_budget(0);
         db.set_vector_cache_budget(budget);
-        assert_eq!(
-            search(&cosine, &query, 10, None),
-            expected,
-            "budget {budget}"
-        );
-        assert_eq!(
-            search(&cosine, &query, 10, None),
-            expected,
-            "budget {budget}"
-        );
-        assert_eq!(
-            db.vector_cache_stats().retained_bytes,
-            retained,
-            "budget {budget}"
-        );
+        for pass in ["cold", "warm"] {
+            assert_eq!(
+                search(&cosine, &query, 10, None),
+                expected,
+                "budget {budget}, {pass}"
+            );
+        }
+        let stats = db.vector_cache_stats();
+        assert_eq!(stats.retained_bytes, retained, "budget {budget}");
+        assert_eq!(stats.active_bytes, 0);
+        assert!(stats.peak_bytes <= stats.memory_budget_bytes);
     }
-    // A dot block of the same vectors still fits where the cosine block does not.
-    db.set_vector_cache_budget(50_000);
+    // Dot retains no norms, so its boundary is where it always was.
+    db.set_vector_cache_budget(0);
+    db.set_vector_cache_budget(48_000);
     search(&dot, &query, 10, None);
     assert_eq!(db.vector_cache_stats().retained_bytes, 48_000);
 
-    // The same boundary at 1 MiB and 384-d: 675 vectors take 1,047,600 B
-    // without norms and 1,050,300 B with them.
+    // The same band at 1 MiB and 384-d: 675 vectors take 1,047,600 B without
+    // norms and 1,050,300 B with them.
     let data = corpus(384, 675, 13);
     let db = Database::open_in_memory().unwrap();
     let col = collection(&db, "docs", 384, VectorMetric::Cosine);
     col.insert_many(docs(&data)).unwrap();
     let query = Rng(17).vector(384);
     let expected = oracle(VectorMetric::Cosine, &query, &stored(&col, Filter::All), 10);
-    db.set_vector_cache_budget(1024 * 1024);
-    assert_eq!(search(&col, &query, 10, None), expected);
-    assert_eq!(
-        db.vector_cache_stats().retained_bytes,
-        0,
-        "streams at 1 MiB"
-    );
-    db.set_vector_cache_budget(1_050_300);
-    assert_eq!(search(&col, &query, 10, None), expected);
-    assert_eq!(search(&col, &query, 10, None), expected);
-    assert_eq!(db.vector_cache_stats().retained_bytes, 1_050_300);
-    let stats = db.vector_cache_stats();
-    assert_eq!(stats.active_bytes, 0);
-    assert!(stats.peak_bytes <= stats.memory_budget_bytes);
+    for (budget, retained) in [(1024 * 1024, 1_047_600), (1_050_300, 1_050_300)] {
+        db.set_vector_cache_budget(0);
+        db.set_vector_cache_budget(budget);
+        assert_eq!(search(&col, &query, 10, None), expected, "budget {budget}");
+        assert_eq!(search(&col, &query, 10, None), expected, "budget {budget}");
+        assert_eq!(db.vector_cache_stats().retained_bytes, retained);
+    }
 }
 
 #[test]
