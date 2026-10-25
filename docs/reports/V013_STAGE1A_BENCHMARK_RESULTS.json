@@ -22,7 +22,21 @@
     "local i5-9400F (pinned core 5) vs PR base dev b905cd1": 7.128
    },
    "audit_probe_10k": 12.56,
-   "bottleneck": "result materialisation: the candidate runs at 1.03-1.20x the cost of fetching and decoding the same 800 documents via a one-sided indexed page (8 x doc/page_full), so no plan returning these documents can exceed 6.2x (arm64) to 8.2x (x86_64) on this fixture"
+   "bottleneck": "result materialisation: the candidate runs at 1.03-1.20x the cost of fetching and decoding the same 800 documents via a one-sided indexed page (8 x doc/page_full), so no plan returning these documents can exceed 6.2x (arm64) to 8.2x (x86_64) on this fixture",
+   "runner_cpu_dependence": {
+    "AMD EPYC 9V45": {
+     "speedup": 7.5,
+     "max_possible": 8.19
+    },
+    "Intel Xeon Platinum 8370C": {
+     "speedup": 7.26,
+     "max_possible": 8.11
+    },
+    "AMD EPYC 7763": {
+     "speedup": 5.94,
+     "max_possible": 5.98
+    }
+   }
   },
   "doc11_100k_50x": {
    "met": "x86_64 and local only",
@@ -1616,5 +1630,25 @@
    "ignored": 3
   },
   "mutation_check": "removing the array-counter check fails 6 of the 9 integration tests"
+ },
+ "pr_run": {
+  "id": "40163439155",
+  "event": "pull_request #103, PR size against dev",
+  "x86_64": {
+   "cpu": "AMD EPYC 7763 64-Core Processor",
+   "doc11_10k_speedup": 5.94,
+   "candidate_over_floor": 1.006,
+   "max_possible_speedup": 5.98
+  },
+  "aarch64": {
+   "doc11_10k_speedup": 5.78
+  },
+  "criterion_cases_per_runner": 47,
+  "verdicts": {
+   "neutral": 46,
+   "improvement": 1
+  },
+  "failures": [],
+  "all_pr_checks": "green, including ci-pass"
  }
 }

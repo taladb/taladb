@@ -14,7 +14,7 @@ Date: 2026-10-25. Branch: `feat/v013-index-range-bounds` → `dev` (PR opened; *
 | Existing tests and benchmarks unchanged and passing | Yes: 780/780 workspace tests; no assertion or benchmark edited |
 | No public API, ABI or storage-format change | Yes: only `query/executor.rs` and `query/index_filter.rs` (crate-private) change, plus a `planner.rs` comment |
 | No change to ANN, FTS hashing, vector caching; no new features | Yes |
-| DOC-11 ≥ 10× at 10k | **No**: 7.3–7.5× (x86_64), 5.8× (arm64) |
+| DOC-11 ≥ 10× at 10k | **No**: 5.9–7.5× (x86_64, depending on the runner CPU), 5.8× (arm64); always at the decoding floor (1.006–1.12×) |
 | DOC-11 ≥ 50× at 100k | **x86_64 yes** (53.6× vs `dev`, 58.7× vs v0.12.1); **arm64 no** (39×) |
 | No significant regression on adjacent workloads | Yes: every gated case is neutral on both runners against `dev` and v0.12.1 |
 | Allocations and peak memory | −81% / −97% bytes allocated and −71% / −96% peak live heap at 10k / 100k |
@@ -33,7 +33,7 @@ The targets came from the audit's probe, whose documents are small. There the ch
 
 ## 4. Before merging
 
-- The PR's own CI (PR-size gates against `dev`) must be green, including `ci-pass`.
+- The PR's own CI (PR-size gates against `dev`, run 40163439155, and CI 40163439132) is green, including `ci-pass`.
 - Read the behaviour note: unsorted two-sided ranges on scalar fields now return index-key order, so an unsorted `limit` selects a different, stable subset. Apps that rely on unsorted order should add a sort. They never had a guarantee, and the old order differed between runs.
 - Release notes must not claim mobile or browser gains for this change: measured on Linux x86_64 and arm64 runners and one local x86_64 machine only.
 

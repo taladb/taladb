@@ -118,7 +118,9 @@ Adjacent workloads: every case was neutral, on both runners, both gates and all 
 | x86_64 (vs `dev`) | 100k | 0.890 ms | 0.785 ms | 1.13 | 60.8× |
 | arm64 (vs `dev`) | 100k | 1.672 ms | 1.577 ms | 1.06 | 41.6× |
 
-The narrowed query has no headroom left: what remains is returning the documents. The roadmap's targets came from the audit probe (`artifacts/v013-baseline/harness/probe-range.rs`), whose documents are an integer and a short title. Re-run unchanged (local i5-9400F, median of 3 p50s):
+The narrowed query has no headroom left: what remains is returning the documents.
+
+The ceiling depends on the CPU: the decode-vs-scan cost ratio differs between machines, and GitHub assigns different x86_64 CPUs to different jobs. PR #103's own run (40163439155, PR size against `dev`) landed on an AMD EPYC 7763. There, DOC-11 at 10k came out at **5.94×**, with the candidate at **1.006×** of the floor and a ceiling of 5.98×. The dispatch run's x86_64 jobs used an AMD EPYC 9V45 (7.50×, ceiling 8.19×) and an Intel Xeon 8370C (7.26×, ceiling 8.11×). On every CPU measured, the candidate sits at the floor. The PR run's other results: 47 cases per runner, 46 neutral, 1 improvement (DOC-11), 0 failures; `ci-pass` green. The roadmap's targets came from the audit probe (`artifacts/v013-baseline/harness/probe-range.rs`), whose documents are an integer and a short title. Re-run unchanged (local i5-9400F, median of 3 p50s):
 
 | Audit probe | `dev` | Candidate | Speedup |
 |---|---:|---:|---:|
