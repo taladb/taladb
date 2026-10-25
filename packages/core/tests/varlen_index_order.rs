@@ -796,15 +796,16 @@ fn the_index_still_serves_sorted_pages_where_order_is_provable() {
             .collect(),
     );
     let (keys, docs) = page(&pair, &counters, &[SortSpec::asc("s")]);
-    // Probes read at most one key each; the docs probe's hit counts as one read.
+    // No key holds NUL, so the walk never probes for 0xFF ids: the page costs
+    // what it did before.
     assert!(keys <= 30 + 5, "derived ids, asc: walked {keys} keys");
-    assert!(docs <= 11, "derived ids, asc: read {docs} documents");
+    assert_eq!(docs, 10, "derived ids, asc");
     let (keys, docs) = page(&pair, &counters, &[SortSpec::desc("s")]);
     assert!(
         keys >= n as u64 && keys <= n as u64 + 5,
         "derived ids, desc: walked {keys}"
     );
-    assert!(docs <= 11, "derived ids, desc: read {docs} documents");
+    assert_eq!(docs, 10, "derived ids, desc");
 
     // Strings with NUL, no id starting 0xFF.
     let (pair, counters) = build(
@@ -836,10 +837,7 @@ fn the_index_still_serves_sorted_pages_where_order_is_provable() {
             .collect(),
     );
     let (_, docs) = page(&pair, &counters, &[SortSpec::asc("s")]);
-    assert!(
-        docs <= 11,
-        "NUL strings past the page, asc: read {docs} documents"
-    );
+    assert_eq!(docs, 10, "NUL strings past the page, asc");
     let (_, docs) = page(&pair, &counters, &[SortSpec::desc("s")]);
     assert!(
         docs >= n as u64,
