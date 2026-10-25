@@ -1,7 +1,7 @@
 # v0.13.0 Stage 0 — measurement foundation: implementation report
 
 Report date: 2026-10-24. Baseline: **v0.12.1**, commit `a2ef46602127919c60a0fe6333d676b1b1ab391e`.
-Branch: `feat/v013-stage0-benchmarks` at `565d94a` (pushed, not merged; `dev` and `main` untouched). Commits: `9d96682` foundation, `d931950` absolute evidence paths and `--pin`, `32e51ed` calibrated Criterion tolerances and Tier 0 references, `ab06759` calibrated vector floors, `f28238a` per-case Criterion floors, `37508b4` keep comparing after a failure, `2965eaa` run provenance in references, `925160a` baseline manifest and references, `565d94a` evidence asset in the manifest.
+Branch: `feat/v013-stage0-benchmarks`, **merged into `dev`** on 2026-10-24 by the repository owner (PR #100, merge commit `3f57bb7`; `dev` is now `20ed5df` after #99 and #101). `main` is unchanged at `a2ef466`. Commits: `9d96682` foundation, `d931950` absolute evidence paths and `--pin`, `32e51ed` calibrated Criterion tolerances and Tier 0 references, `ab06759` calibrated vector floors, `f28238a` per-case Criterion floors, `37508b4` keep comparing after a failure, `2965eaa` run provenance in references, `925160a` baseline manifest and references, `565d94a` evidence asset in the manifest, `a3b4ced` reports, `77cb01c` PR Criterion at 10k and the VEC-6 vectorisation rule, `765b01d` CODEOWNERS, `a15a39a` VEC-6 reference in the new format. Final integration: §8.
 Companions: [V013_STAGE0_GATE_RESULTS.json](V013_STAGE0_GATE_RESULTS.json) (machine-readable results), [V013_STAGE0_MERGE_READINESS.md](V013_STAGE0_MERGE_READINESS.md), the updated [V013_BENCHMARK_PLAN.md](V013_BENCHMARK_PLAN.md) (§7 has the calibration results). Raw evidence: [`artifacts/v013-stage0/`](artifacts/v013-stage0/), and the v0.12.1 GitHub release asset `taladb-v0.12.1-baseline-evidence.tar.gz` (10.4 MB, SHA-256 `0a14198979f17a36585c43bacbad0b26c4a5a49424c20a8e2f8ca7f505857c64`; the copy of this report inside it predates this line).
 
 ## 1. Summary
@@ -75,7 +75,7 @@ Existing case IDs and fixtures are unchanged, so the audit's v0.12.1 numbers sti
 |---|---|---|
 | Fingerprints | equal for every case | 77 cases, identical on both runners |
 | MEM-2 allocations | ≤ +2% per workload metric | index/update/delete at 1k docs; run-to-run variation ≤ 0.03% |
-| VEC-6 codegen | vector instructions per kernel must not fall | x86_64 41/48/115, aarch64 (Linux, iOS) 10/12/20, wasm32 34/40/74 for `dot_similarity`/`euclidean_similarity`/`score_with_query_norm` |
+| VEC-6 codegen | every kernel must stay vectorised (packed f32 multiply and add in its body) on every target; instruction-count changes are recorded, and noted beyond −25% | all 12 kernel × target pairs vectorised; counts x86_64 41/48/115, aarch64 (Linux, iOS) 10/12/20, wasm32 34/40/74 for `dot_similarity`/`euclidean_similarity`/`score_with_query_norm` |
 
 VEC-6 is a check on vectorisation, not on speed. The timed `vector/score_one` cases on both runners measure kernel performance; codegen counts do not substitute for them.
 
@@ -91,7 +91,8 @@ Every control is a single commit on a throwaway `bench/stage0-control-*` branch 
 | | | Criterion (C2c, run 40108078013, per-case floors) | **Fails** every gated cosine-dependent case on both runners, nothing else (§3.1) |
 | BM25 parameters | `k1` 1.2 → 1.25 | Tier 0 fingerprints, both runners (run 40104315455) | **Fails** `fts/bm25_zipf/10000` only |
 | Allocations | two extra allocations per updated document | Tier 0 MEM-2, both runners (run 40104324270) | **Fails** `update mutation_allocations` +2.8% |
-| Fused kernel | the 2026-09-20 `dot_and_norm_sq` | Tier 0 VEC-6 (run 40104333480) | **Fails** `score_with_query_norm`: aarch64 Linux 20 → 0, iOS 20 → 0, wasm32 74 → 0, x86_64 115 → 95 |
+| Fused kernel | the 2026-09-20 `dot_and_norm_sq` | Tier 0 VEC-6, count rule (run 40104333480) | Failed on every target whose count fell, x86_64 115 → 95 included |
+| | | Tier 0 VEC-6, vectorisation rule (run 40112426875) | **Fails** `score_with_query_norm` on aarch64 Linux, aarch64 iOS and wasm32 (scalar: 0 packed multiplies); x86_64 still vectorised (15 packed multiplies, 22 adds), so its −20 instructions are recorded, not failed |
 
 ### 3.1 C2c — fresh cosine control under per-case floors
 
@@ -130,8 +131,8 @@ Measured on the GitHub runners in these runs (minutes).
 
 | Workflow, event | Before Stage 0 (v0.12.1 release run, PR #98) | After |
 |---|---|---|
-| PR: longest job (wall) | 9.1 (browser) | **~40.5** (Criterion, both runners in parallel) |
-| PR: runner-minutes | ~24.5 | ~4 × 5 (vector) + 8 (browser) + 2 × 40.5 (Criterion) + 4 (Tier 0) ≈ **113** |
+| PR: longest job (wall) | 9.1 (browser) | ~40.5 with 1k + 10k Criterion; **25.8 (x86_64) / 27.5 (arm64)** with 10k only, measured on PR #100 |
+| PR: runner-minutes | ~24.5 | ≈ 113 with 1k + 10k Criterion; **≈ 84** with 10k only (PR #100: vector 18, browser 6.9, Criterion 53.3, Tier 0 5.7) |
 | Release / push / schedule: longest job | 11.1 | **~47** (Criterion incl. 100k step) |
 | Release: runner-minutes, one baseline | ~35 | 2 × 7 + 2 × 27 (vector) + 11 (browser) + 2 × 47 (Criterion) ≈ **173** |
 | Release with the cumulative comparison as a second baseline | — | ≈ **346** (wall still ~47 when jobs run in parallel) |
@@ -161,7 +162,55 @@ Maintenance:
 | HNSW-4 (maintenance), HNSW-5 (crossover), HNSW-7 (reopen), HYB-3, VEC-3, IDX-4, CONC-3/4/5, REC-1/3/4, MEM-4 | Not implemented (plan Tier 2/3; not in roadmap 0.4) |
 | L-size (100k) for `stabilization/*`, BULK, FTS-5 | Not in CI; 100k covers the read-only `doc/` family only |
 | CONC-2 | Measured A/B, report only (not gated) |
-| Exception approval enforcement | Needs a CODEOWNERS / branch-protection rule; not configured |
-| Plan target "Tier 0 < 2 min" | Not met: 2.8–3.7 min on x86_64 (codegen for four targets), 1.2 min on arm64; it runs in parallel with `rust-check` |
+| Exception approval enforcement | `.github/CODEOWNERS` is committed and valid; branch protection does **not** yet require code-owner review (repository setting, §8.4) |
+| Plan target "Tier 0 < 2 min" | Not met: 2.8–3.7 min on x86_64 (codegen for four targets; 3.6 on PR #100), 1.2–2.1 min on arm64; it runs in parallel with `rust-check` |
 | Local timing evidence | Local A/A passed and the local sorted-page control failed its 1k cases. Its 10k cases did not fail: I ran a container build on other cores during that run, and one baseline pair dropped to 0.73. The CI controls are the gating evidence |
 | `docs/reports/` | Gitignored; these reports are local files, copied into the release asset |
+
+## 8. Final integration (2026-10-24)
+
+### 8.1 Approved changes, implemented
+
+| Decision | Implementation | Verified |
+|---|---|---|
+| Criterion at 10k on pull requests | `performance.yml` passes `--criterion-sizes 10000` for PR-size runs; push, schedule, release and manual runs keep 1k + 10k, IDX and the 100k step | Fingerprint mode enumerates the selection: **47 PR cases** = every 10k case + `score_one` kernels + fixed-size `query/`/`write/`; dropped only the 25 1k cases and 5 IDX cases. PR #100 ran exactly 47 cases on both runners. Tolerances unchanged (same per-case protocol) |
+| Keep 64 MiB unquantized ANN gate with confirmation | Unchanged | V3: passes on both runners |
+| Full matrix on schedule and release | Unchanged | V3 (release size, all suites): 77 + 11 Criterion cases, 28 vector, 4 browser, Tier 0 — all pass |
+| No weakening of correctness or cumulative gates | Fingerprints, recall, MEM-2 and the cumulative comparison untouched | V3 cumulative jobs against `a2ef466` pass |
+| VEC-6 detects loss of vectorisation, not every count drop | `bench-tier0.py codegen`: fails when an expected kernel has no packed f32 multiply and add (expectation declared in the script for all 12 kernel × target pairs); counts and deltas recorded; note beyond −25%; Apple `fmul.4s` syntax recognised | Unchanged candidate: all 12 vectorised, counts identical to v0.12.1 (CI run 40112416232, = local). Fused control (40112426875): fails aarch64 Linux/iOS and wasm32, records x86_64 −20 without failing |
+
+The `codegen.json` reference was re-recorded on CI in the new format (counts unchanged). Re-recorded fingerprints were identical to the committed ones, and allocation counts were within 0.03%, so those references were kept.
+
+### 8.2 Pull requests
+
+| PR | Purpose | Result |
+|---|---|---|
+| #99 | Sync `dev` with `main` (the v0.12.1 release merge and changelog; 2 lines of `CHANGELOG.md`) | Docs-only path; `ci-pass` green. Merged (fast-forward to `a2ef466`) |
+| #101 | `ctutils` 0.4.5 and `tokio` 1.54.1 for RUSTSEC-2026-0385 (constant-time; ships via `encryption`) and RUSTSEC-2026-0386 (unsound; dev-dependency only), published after v0.12.1 and failing `cargo audit --deny warnings` on every branch | Lockfile-only; 19/19 checks green; merged |
+| #100 | Stage 0 | CI (40112967196): every job green except `Rust — cargo audit` (the advisories above) and hence `ci-pass`. Performance (40112967216): Tier 0 both runners, vector 4/4, browser, Criterion 47 cases × 2 runners, all neutral, fingerprints equal. Merged |
+
+After all three, the push CI on `dev` (40115549503, `20ed5df`) is green, including `cargo audit` and Tier 0. `ctutils` in `Cargo.lock` is the only dependency change since `a2ef466`, from #101. The engine source diff is still empty.
+
+### 8.3 Final validation
+
+| Check | Run | Result |
+|---|---|---|
+| Release size, all suites, A/A + cumulative against `a2ef466` (V3) | 40112985374 | Criterion 88 cases × 2 runners × 2 gates neutral (no confirmation needed), fingerprints equal; 28/28 vector; 4/4 browser; Tier 0 fingerprints, allocations, codegen pass |
+| PR size against `dev` | 40112967216 | All pass (above) |
+| Baseline provenance | local | Manifest commit = `a2ef466`; `v0.12.1` is a lightweight tag on it; `Cargo.lock` SHA-256 of `a2ef466` = manifest; all 20 references built from `a2ef466` and naming their CI run; `SHA256SUMS` verifies 26 files; the release asset downloads and matches its checksum |
+| No engine, storage-format, API or ABI change | `git diff a2ef466` | Empty for `packages/core/src`, `packages/core/Cargo.toml`, `packages/bindings`, `packages/clients`, `packages/tools`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo`; Stage 0 left `Cargo.lock` unchanged |
+
+### 8.4 Repository settings
+
+`.github/CODEOWNERS` assigns `/benchmarks/` (references, tolerances, exceptions), the gate scripts, the gate workflows and itself to `akosidencio`, the only organisation member and collaborator. GitHub reports no CODEOWNERS errors. The settings it relies on are **not** in place, and I did not change them:
+
+| Branch | Current | Required |
+|---|---|---|
+| `dev` | not protected | PR required, 1 approval, **require code-owner review**, required check `CI — all checks passed`, dismiss stale approvals |
+| `main` | PR + 1 approval, signed commits, no required checks, no code-owner review, admins not enforced | add **require code-owner review**, required check `CI — all checks passed`, dismiss stale approvals |
+
+Cannot be enforced from this environment, or at all with one maintainer: a second person's review of the owner's own PRs (the author cannot approve their own PR, and admin bypass is on), and required checks on the path-filtered `Vector performance` workflow, whose job names also depend on the baseline.
+
+### 8.5 Evidence
+
+This round's runs (40112416232, 40112426875, 40112967216, 40112985374), the selection listing and the job timings are attached to the v0.12.1 release as `taladb-v0.12.1-stage0-integration-evidence.tar.gz` (2.9 MB, SHA-256 `a9735ab991cb94327dd9c5ae074f18a36b5c5fe097f7cf9cd3964017477168b6`, verified after download), alongside the existing baseline archive. That archive is unchanged, and the baseline manifest still pins its checksum.

@@ -379,3 +379,11 @@ Fingerprints for 77 cases are bit-identical on CI x86_64, CI arm64 and a local x
 - L size (100k) runs in CI for the read-only `doc/` family only.
 - CONC-2 is measured A/B and reported, not gated.
 - Not implemented: HNSW-4/5/7, HYB-3, VEC-3, BULK-6/7 in CI, IDX-4, CONC-3/4/5, REC-1/3/4, MEM-4.
+
+### 7.7 Final integration (2026-10-24)
+
+- **Pull requests run Criterion on the 10k collections only.** That is 47 cases (every 10k case, the `score_one` kernels and the fixed-size `query/`/`write/` cases). Measured on PR #100: 25.8 min (x86_64) and 27.5 min (arm64), down from ~40.5. Push to `main`, the weekly schedule and releases keep the full 1k/10k + IDX + 100k matrix. Tolerances are unchanged.
+- **VEC-6 (§2.2) now fails on lost vectorisation, not on a lower count.** A kernel must contain packed f32 multiply and add on every target. Counts against v0.12.1 are recorded, with a note beyond −25%. The fused-kernel control fails aarch64 Linux, iOS and wasm32, and records x86_64's 115 → 95 without failing (run 40112426875).
+- **Merged:** #99 (sync `dev` with `main`), #101 (RUSTSEC-2026-0385/0386 lockfile fix), #100 (Stage 0). `dev` = `20ed5df`, post-merge CI green.
+- **Final validation V3** (40112985374, release size, A/A + cumulative against `a2ef466`, all suites): all pass on both runners.
+- **CODEOWNERS** covers `benchmarks/` and the gate scripts and workflows. Branch protection to require code-owner review is still to be configured (merge readiness §3).
