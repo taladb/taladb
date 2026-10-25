@@ -862,57 +862,6 @@ fn index_range_scan(
     table_range_scan_capped(txn, &table, start, end, cap)
 }
 
-/// One entry of a secondary index, in index order.
-pub(crate) struct IndexEntry {
-    /// The order-preserving encoding of the indexed value (the key without its
-    /// trailing ULID). Equal prefixes ⇒ equal values, so this is all we need to
-    /// spot the boundary of a run of ties.
-    pub value_prefix: Vec<u8>,
-    pub id: Ulid,
-}
-
-/// Walk a secondary index end to end, in **key order**, without decoding a
-/// single document.
-///
-/// Index keys are `encode_value_prefix(value) ++ ulid`, and the encoding is
-/// order-preserving — so this yields entries ordered by `(value asc, id asc)`,
-/// which is exactly the total order `cmp_rows` defines for an ascending sort.
-/// A descending sort is the same sequence reversed.
-///
-/// This is what lets a sorted page be served by decoding only the documents on
-/// that page, instead of materialising the whole collection to sort it.
-pub(crate) fn index_ordered_entries(
-    txn: &dyn ReadTxn,
-    collection: &str,
-    field: &str,
-) -> Result<Vec<IndexEntry>, TalaDbError> {
-    let table = index_table_name(collection, field);
-    let mut out = Vec::new();
-    txn.scan(&table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
-        // The ULID is the last 16 bytes; everything before it is the value.
-        if let Some(id) = ulid_from_index_key(k)
-            && let Some(split) = k.len().checked_sub(16)
-        {
-            out.push(IndexEntry {
-                value_prefix: k[..split].to_vec(),
-                id,
-            });
-        }
-        Ok(ScanFlow::Continue)
-    })?;
-    Ok(out)
-}
-
-/// Decode just the named documents. Public to the crate so `aggregate` can
-/// materialise only the page it is about to return.
-pub(crate) fn fetch_documents(
-    txn: &dyn ReadTxn,
-    collection: &str,
-    ulids: Vec<Ulid>,
-) -> Result<Vec<Document>, TalaDbError> {
-    fetch_by_ulids(txn, collection, &ulids)
-}
-
 fn table_range_scan(
     txn: &dyn ReadTxn,
     table: &str,

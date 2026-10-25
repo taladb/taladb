@@ -20,11 +20,10 @@ use crate::index::{
     adjust_index_arrays, compound_meta_key, compound_table_name, docs_table_name,
     encode_compound_keys, encode_index_keys, index_table_name, meta_key,
 };
-use crate::query::executor::{execute, fetch_documents, index_ordered_entries};
+use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{
-    FindOptions, SortDirection, exclude_fields, partial_sort_documents, project_document,
-    sort_documents,
+    FindOptions, exclude_fields, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
 use crate::time::now_ms;
@@ -2233,25 +2232,30 @@ impl Collection {
             None
         };
         let indexed = if matches!(filter, Filter::All) && options.timeout.is_none() {
-            if let (Some(spec), Some(limit)) = (options.sort.first(), options.limit) {
-                let keep = clamp_to_usize(options.skip).saturating_add(clamp_to_usize(limit));
-                self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)?
+            if let Some(limit) = options.limit {
+                let skip = clamp_to_usize(options.skip);
+                let keep = skip.saturating_add(clamp_to_usize(limit));
+                self.sorted_index_candidates(rtxn.as_ref(), &cache, &options.sort, skip, keep)?
             } else {
                 None
             }
         } else {
             None
         };
-        let mut docs = match indexed {
-            Some(docs) => docs,
-            None => crate::query::executor::execute_limited(
-                &qplan,
-                &filter,
-                rtxn.as_ref(),
-                &self.name,
-                deadline,
-                pushdown,
-            )?,
+        // Rows of rank below `skipped` were left out without being decoded.
+        let (mut docs, skipped) = match indexed {
+            Some(page) => (page.docs, page.skipped),
+            None => (
+                crate::query::executor::execute_limited(
+                    &qplan,
+                    &filter,
+                    rtxn.as_ref(),
+                    &self.name,
+                    deadline,
+                    pushdown,
+                )?,
+                0,
+            ),
         };
         // Decrypt encrypted fields before sorting/projecting.
         docs = self.decrypt_docs(docs)?;
@@ -2262,15 +2266,15 @@ impl Collection {
         if !options.sort.is_empty() {
             if let Some(limit) = options.limit {
                 let keep = clamp_to_usize(options.skip).saturating_add(clamp_to_usize(limit));
-                partial_sort_documents(&mut docs, &options.sort, keep);
+                partial_sort_documents(&mut docs, &options.sort, keep - skipped);
             } else {
                 sort_documents(&mut docs, &options.sort);
             }
         }
 
         // Skip
-        if options.skip > 0 {
-            let skip = clamp_to_usize(options.skip);
+        let skip = clamp_to_usize(options.skip) - skipped;
+        if skip > 0 {
             if skip >= docs.len() {
                 return Ok(vec![]);
             }
@@ -2330,9 +2334,9 @@ impl Collection {
         let Some(Stage::Sort(specs)) = pipeline.first() else {
             return Ok(None);
         };
-        let Some(spec) = specs.first() else {
+        if specs.is_empty() {
             return Ok(None);
-        };
+        }
         // Only worth it when the reachable set is bounded by a `$limit`.
         let Some(keep) = crate::aggregate::reachable_after_sort(&pipeline[1..]) else {
             return Ok(None);
@@ -2340,19 +2344,28 @@ impl Collection {
 
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
-        let Some(docs) = self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)? else {
+        // `$skip` runs inside the pipeline, so every row up to `keep` is needed.
+        let Some(page) = self.sorted_index_candidates(rtxn.as_ref(), &cache, specs, 0, keep)?
+        else {
             return Ok(None);
         };
-        Ok(Some(execute_pipeline(docs, pipeline)?))
+        Ok(Some(execute_pipeline(page.docs, pipeline)?))
     }
 
+    /// The candidates for the first `keep` rows of `sort`, read from the index
+    /// on its first key — or `None` when the index cannot prove its order is
+    /// the sort's order, and the caller must scan and sort.
     fn sorted_index_candidates(
         &self,
         rtxn: &dyn ReadTxn,
         cache: &CachedIndexes,
-        spec: &crate::query::options::SortSpec,
+        sort: &[crate::query::options::SortSpec],
+        skip: usize,
         keep: usize,
-    ) -> Result<Option<Vec<Document>>, TalaDbError> {
+    ) -> Result<Option<crate::query::sorted_index::SortedPage>, TalaDbError> {
+        let Some(spec) = sort.first() else {
+            return Ok(None);
+        };
         #[cfg(feature = "encryption")]
         if self.field_encryption.is_some() {
             return Ok(None);
@@ -2369,73 +2382,13 @@ impl Collection {
         if arrays.as_deref() != Some(0u64.to_le_bytes().as_slice()) {
             return Ok(None);
         }
-
-        let mut entries = index_ordered_entries(rtxn, &self.name, &spec.field)?;
-
-        // A document whose sort field is absent has no index entry, so the index
-        // is not a faithful ordering of the collection. Bail out rather than
-        // silently drop those documents from the result.
-        if entries.len() as u64 != rtxn.count_entries(&docs_table_name(&self.name))? {
+        // A document without the field has no index entry, and mixed Int/Float,
+        // NaN and signed zero order differently in the index than in the sort.
+        // Any of them sends the query to the scan-and-sort path.
+        if !crate::query::sorted_index::index_order_is_sort_order(rtxn, &self.name, &spec.field)? {
             return Ok(None);
         }
-
-        // Index order groups every Int before every Float (distinct type tags),
-        // but the sort comparator ranks them numerically — so on a field holding
-        // both, the index is not sorted the way the query asks. Truncating to a
-        // page here would drop documents the comparator would have ranked onto
-        // it, and the final sort could never pull them back (they are never
-        // decoded). Bail out to the scan-and-sort path, which is always correct.
-        let mut has_int = false;
-        let mut has_float = false;
-        for entry in &entries {
-            match entry.value_prefix.first() {
-                Some(&crate::index::TAG_INT) => has_int = true,
-                Some(&crate::index::TAG_FLOAT) => {
-                    has_float = true;
-                    let Some(bytes) = entry
-                        .value_prefix
-                        .get(1..)
-                        .and_then(|v| <[u8; 8]>::try_from(v).ok())
-                    else {
-                        return Ok(None);
-                    };
-                    let sortable = u64::from_be_bytes(bytes);
-                    let bits = if sortable >> 63 == 1 {
-                        sortable ^ (1 << 63)
-                    } else {
-                        !sortable
-                    };
-                    let value = f64::from_bits(bits);
-                    // NaN and signed zero have index ordering that differs
-                    // from the comparator's equality and ULID tie-breaking.
-                    if value.is_nan() || value == 0.0 {
-                        return Ok(None);
-                    }
-                }
-                _ => {}
-            }
-            if has_int && has_float {
-                return Ok(None);
-            }
-        }
-
-        if spec.direction == SortDirection::Desc {
-            entries.reverse();
-        }
-
-        // Take the page, then extend through the end of the tie-run it lands in.
-        let mut take = keep.min(entries.len());
-        if take > 0 {
-            let boundary = &entries[take - 1].value_prefix;
-            while take < entries.len() && &entries[take].value_prefix == boundary {
-                take += 1;
-            }
-        }
-
-        let ulids = entries.into_iter().take(take).map(|e| e.id).collect();
-        let docs = fetch_documents(rtxn, &self.name, ulids)?;
-
-        Ok(Some(docs))
+        crate::query::sorted_index::sorted_page(rtxn, &self.name, sort, skip, keep)
     }
 
     /// Execute an aggregation pipeline against the collection.
