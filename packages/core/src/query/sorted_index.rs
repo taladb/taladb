@@ -176,29 +176,29 @@ pub(crate) fn sorted_page(
             skipped: skip.min(seen),
         }));
     }
+    let multi_key = sort.len() > 1;
     let runs = match first.direction {
         SortDirection::Asc => ascending_runs(txn, &table, keep)?,
-        SortDirection::Desc => descending_runs(txn, &table, keep)?,
+        SortDirection::Desc => {
+            let Some(window) = DescendingWindow::walk(txn, &table, keep, multi_key)? else {
+                return Ok(None);
+            };
+            if !multi_key {
+                // Rows are the window's ids in order; the boundary run holds
+                // its lowest ids, which the `_id` tie-break ranks first.
+                let ids = window.ranked_ids(keep);
+                let skipped = skip.min(ids.len());
+                return Ok(Some(SortedPage {
+                    docs: fetch_by_ulids(txn, collection, &ids[skipped..])?,
+                    skipped,
+                }));
+            }
+            Some(window.into_runs())
+        }
     };
     let Some(runs) = runs else {
         return Ok(None);
     };
-
-    if sort.len() == 1 {
-        // Descending: rows are the runs' ids in order (highest run first, ids
-        // ascending inside a run); at least `keep` of them were kept.
-        let ids: Vec<Ulid> = runs
-            .iter()
-            .flat_map(|r| r.ids.iter().copied())
-            .take(keep)
-            .skip(skip)
-            .collect();
-        let skipped = skip.min(runs.iter().map(|r| r.ids.len()).sum());
-        return Ok(Some(SortedPage {
-            docs: fetch_by_ulids(txn, collection, &ids)?,
-            skipped,
-        }));
-    }
 
     // Multi-key: later keys order rows only inside a run. Runs wholly below
     // `skip` are dropped; the rest are decoded, a run that may exceed what the
@@ -300,58 +300,117 @@ fn ascending_runs(
     Ok(Some(runs))
 }
 
-/// Forward walk of the whole index that retains only the trailing runs able to
-/// reach rank `keep` of a descending order, returned highest value first.
+/// One run held by [`DescendingWindow`].
+struct HeldRun {
+    /// Ids of the run held in the window's `ids`: its first ones, at most `keep`.
+    held: usize,
+    /// Keys in the run.
+    size: usize,
+    /// Bytes of its value prefix in the window's `prefixes` (zero when they
+    /// are not kept).
+    prefix_len: usize,
+}
+
+/// The trailing runs of an index able to reach rank `keep` of a descending
+/// order, lowest value first.
 ///
-/// Invariant: either one run is held, or the runs after the first (lowest)
-/// hold fewer than `keep` rows between them, so the first run is the page's
-/// boundary and every later run lies wholly on the page. Each run keeps at most
-/// `keep` ids; dropped runs are recycled, so steady state allocates only when
-/// a value outgrows a recycled buffer.
-fn descending_runs(
-    txn: &dyn ReadTxn,
-    table: &str,
-    keep: usize,
-) -> Result<Option<Vec<Run>>, TalaDbError> {
-    let mut runs: VecDeque<Run> = VecDeque::new();
-    let mut spare: Vec<Run> = Vec::new();
-    // Rows held by every run but the first, each counted up to `keep`.
-    let mut tail = 0usize;
-    let mut malformed = false;
-    txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
-        let Some((prefix, id)) = split_key(k) else {
-            malformed = true;
-            return Ok(ScanFlow::Stop);
-        };
-        if runs.back().is_none_or(|r| r.prefix != prefix) {
-            let mut run = spare.pop().unwrap_or_default();
-            run.prefix.clear();
-            run.prefix.extend_from_slice(prefix);
-            run.ids.clear();
-            run.size = 0;
-            run.complete = true;
-            runs.push_back(run);
-        }
-        let held = runs.len();
-        let run = runs.back_mut().expect("pushed above");
-        run.size += 1;
-        if run.ids.len() < keep {
-            run.ids.push(id);
-            if held > 1 {
-                tail += 1;
+/// Invariant: either one run is held, or the runs after the first (lowest) hold
+/// fewer than `keep` rows between them, so the first run is the page's boundary
+/// and every later run lies wholly on the page. Runs, ids and prefixes are flat
+/// queues, so a key that starts a run and retires another costs a few pushes
+/// and pops, not an allocation.
+#[derive(Default)]
+struct DescendingWindow {
+    runs: VecDeque<HeldRun>,
+    ids: VecDeque<Ulid>,
+    prefixes: VecDeque<u8>,
+}
+
+impl DescendingWindow {
+    /// Walk the whole index forward. `with_prefixes` keeps each held run's value
+    /// prefix, which only a multi-key sort needs afterwards.
+    fn walk(
+        txn: &dyn ReadTxn,
+        table: &str,
+        keep: usize,
+        with_prefixes: bool,
+    ) -> Result<Option<Self>, TalaDbError> {
+        let mut w = Self::default();
+        // The newest run's prefix, to spot where it ends.
+        let mut last: Vec<u8> = Vec::new();
+        // Rows held by every run but the first.
+        let mut tail = 0usize;
+        let mut malformed = false;
+        txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
+            let Some((prefix, id)) = split_key(k) else {
+                malformed = true;
+                return Ok(ScanFlow::Stop);
+            };
+            if w.runs.is_empty() || last.as_slice() != prefix {
+                last.clear();
+                last.extend_from_slice(prefix);
+                if with_prefixes {
+                    w.prefixes.extend(prefix.iter().copied());
+                }
+                w.runs.push_back(HeldRun {
+                    held: 0,
+                    size: 0,
+                    prefix_len: if with_prefixes { prefix.len() } else { 0 },
+                });
             }
-        }
-        while runs.len() > 1 && tail >= keep {
-            let dropped = runs.pop_front().expect("more than one run");
-            spare.push(dropped);
-            tail -= runs.front().expect("more than one run").ids.len();
-        }
-        Ok(ScanFlow::Continue)
-    })?;
-    if malformed {
-        return Ok(None);
+            let held_runs = w.runs.len();
+            let run = w.runs.back_mut().expect("pushed above");
+            run.size += 1;
+            if run.held < keep {
+                run.held += 1;
+                w.ids.push_back(id);
+                if held_runs > 1 {
+                    tail += 1;
+                }
+            }
+            while w.runs.len() > 1 && tail >= keep {
+                let dropped = w.runs.pop_front().expect("more than one run");
+                w.ids.drain(..dropped.held);
+                w.prefixes.drain(..dropped.prefix_len);
+                tail -= w.runs.front().expect("more than one run").held;
+            }
+            Ok(ScanFlow::Continue)
+        })?;
+        Ok((!malformed).then_some(w))
     }
-    Ok(Some(runs.into_iter().rev().collect()))
+
+    /// Ids in the sort's order — highest run first, ids ascending inside a run
+    /// — up to `keep` of them.
+    fn ranked_ids(mut self, keep: usize) -> Vec<Ulid> {
+        let ids = self.ids.make_contiguous();
+        let mut out = Vec::with_capacity(ids.len().min(keep));
+        let mut end = ids.len();
+        for run in self.runs.iter().rev() {
+            let start = end - run.held;
+            out.extend_from_slice(&ids[start..end]);
+            end = start;
+        }
+        out.truncate(keep);
+        out
+    }
+
+    /// The held runs, highest value first.
+    fn into_runs(self) -> Vec<Run> {
+        let mut ids = self.ids.into_iter();
+        let mut prefixes = self.prefixes.into_iter();
+        let mut runs: Vec<Run> = self
+            .runs
+            .into_iter()
+            .map(|r| Run {
+                prefix: prefixes.by_ref().take(r.prefix_len).collect(),
+                ids: ids.by_ref().take(r.held).collect(),
+                size: r.size,
+                complete: true,
+            })
+            .collect();
+        runs.reverse();
+        runs
+    }
 }
 
 /// The `need` best documents of one run under `sort`, reading the run's keys in
