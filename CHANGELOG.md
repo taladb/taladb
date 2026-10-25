@@ -5,6 +5,7 @@
 ### Performance
 
 - **Two-sided indexed ranges** (`{ n: { $gte: x, $lt: y } }`) on a field that has never held an array now scan only the index keys inside the window. Before, they collected the IDs of both open-ended halves and intersected them. With 100 matching documents, the cost no longer grows with the collection, and the memory the query allocates falls by 81% at 10k documents and 97% at 100k. Fields that hold arrays keep the previous plan, because different array elements can satisfy each bound.
+- **Exact cosine search** on a vector index whose decoded vectors are retained in the cache no longer recomputes each stored vector's norm on every query. The norm is computed once, when the vectors are decoded, and scores are bit-for-bit identical. At 10,000 × 384-d vectors, an exact search takes 35–41% less time on Linux CI runners (x86_64 and arm64). Dot-product and Euclidean indexes, and indexes too large for the cache, are unchanged. The cached norms add 4 bytes per vector to the cache: a cosine block whose norms would not fit keeps its vectors without them and scores as before.
 
 ### Behavior changes
 
