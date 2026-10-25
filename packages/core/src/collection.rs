@@ -831,9 +831,7 @@ impl Collection {
             .map(|(id, (score, _))| (id, score))
             .collect();
         let compare = |a: &([u8; 16], f32), b: &([u8; 16], f32)| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::bm25::cmp_scores_desc(a.1, b.1).then_with(|| a.0.cmp(&b.0))
         };
         // Selection requires a total order. Keep the historical full sort for
         // non-finite scores permitted by caller-supplied BM25 parameters.
@@ -941,10 +939,7 @@ impl Collection {
         let mut ranked: Vec<([u8; 16], FusedEntry)> = fused.into_iter().collect();
         // Ties break on ULID so identical queries return identical order.
         ranked.sort_by(|a, b| {
-            b.1.score
-                .partial_cmp(&a.1.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::bm25::cmp_scores_desc(a.1.score, b.1.score).then_with(|| a.0.cmp(&b.0))
         });
         ranked.truncate(top_k);
 
