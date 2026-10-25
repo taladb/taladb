@@ -15,9 +15,8 @@
 //!
 //! One encoding quirk breaks "key order is `(value, id)` order": a Str/Bytes
 //! key whose id starts with 0xFF can sort after a longer value that extends it
-//! with an escaped NUL (see `crate::index`). [`ids_can_reorder_strings`] rules
-//! that out with two probes for nearly every collection; otherwise the walks
-//! give up at the first key whose value contains NUL.
+//! with an escaped NUL (see `crate::index`). The walks give up at the first key
+//! whose value contains NUL if the collection holds such an id ([`OrderGuard`]).
 //!
 //! An ascending page therefore stops the walk at rank `keep`. A descending page
 //! still walks every key — the internal read API iterates forward only — but
@@ -33,8 +32,7 @@ use crate::document::Document;
 use crate::engine::{ReadTxn, ScanFlow};
 use crate::error::TalaDbError;
 use crate::index::{
-    TAG_BYTES, TAG_FLOAT, TAG_INT, TAG_STR, docs_table_name, has_escaped_nul, index_table_name,
-    ulid_from_index_key,
+    TAG_FLOAT, TAG_INT, docs_table_name, has_escaped_nul, index_table_name, ulid_from_index_key,
 };
 use crate::query::executor::fetch_by_ulids;
 use crate::query::options::{SortDirection, SortSpec, partial_sort_documents};
@@ -126,36 +124,52 @@ fn float_ranges_out_of_order() -> [(Vec<u8>, Bound<Vec<u8>>); 3] {
     ]
 }
 
-/// Whether some key of the index may sort out of value order.
+/// Tells a walk when index order may no longer be value order.
 ///
 /// A Str/Bytes key followed by an id starting 0xFF sorts *after* the keys of a
 /// longer value that extends it with an escaped NUL, when that value's encoding
-/// is smaller than the id: `"a"` + `FF 70 …` comes after `"a\0b"`. That needs an
-/// id starting 0xFF — generated ids reach one only after the year 10889, but
-/// caller-supplied and `derive_doc_id` ones can — and a Str/Bytes key. A probe
-/// for each rules it out for nearly every collection.
+/// is smaller than the id: `"a"` + `FF 70 …` comes after `"a\0b"`. Generated
+/// ids start with 0xFF only after the year 10889; caller-supplied and
+/// `derive_doc_id` ones can.
 ///
-/// When neither can be ruled out, a walk gives up (and the query scans) at the
-/// first key whose value contains NUL. Every out-of-order pair has such a key,
-/// and it is the one that comes first in key order, so a walk that has met
-/// none has seen exactly the keys, in exactly the order, that value order
-/// gives it — even one that stopped early.
-fn ids_can_reorder_strings(
-    txn: &dyn ReadTxn,
-    collection: &str,
-    table: &str,
-) -> Result<bool, TalaDbError> {
-    Ok(any_key(
-        txn,
-        &docs_table_name(collection),
-        Bound::Included(&[0xFF]),
-        Bound::Unbounded,
-    )? && any_key(
-        txn,
-        table,
-        Bound::Included(&[TAG_STR]),
-        Bound::Excluded(&[TAG_BYTES + 1]),
-    )?)
+/// Every out-of-order pair has a key whose value contains NUL, and it is the
+/// one that comes first in key order. So a walk that has met no such key has
+/// seen exactly the keys, in exactly the order, that value order gives it, even
+/// one that stopped early. At the first such key the guard checks — once, with
+/// a one-key probe of the documents table — whether any id starts with 0xFF;
+/// if one does, the walk gives up and the query scans and sorts. A walk that
+/// meets no NUL pays nothing.
+struct OrderGuard<'a> {
+    txn: &'a dyn ReadTxn,
+    docs: String,
+    ff_ids: Option<bool>,
+}
+
+impl<'a> OrderGuard<'a> {
+    fn new(txn: &'a dyn ReadTxn, collection: &str) -> Self {
+        Self {
+            txn,
+            docs: docs_table_name(collection),
+            ff_ids: None,
+        }
+    }
+
+    /// Whether the walk must give up at a key with this value prefix.
+    fn rejects(&mut self, prefix: &[u8]) -> Result<bool, TalaDbError> {
+        if !has_escaped_nul(prefix) {
+            return Ok(false);
+        }
+        if self.ff_ids.is_none() {
+            let probe = any_key(
+                self.txn,
+                &self.docs,
+                Bound::Included(&[0xFF]),
+                Bound::Unbounded,
+            )?;
+            self.ff_ids = Some(probe);
+        }
+        Ok(self.ff_ids == Some(true))
+    }
 }
 
 fn any_key(
@@ -190,7 +204,7 @@ struct Run {
 /// decoding them. The index must satisfy [`index_order_is_sort_order`].
 ///
 /// Returns `None` if an index key is malformed, or may be out of order (see
-/// [`ids_can_reorder_strings`]); the caller then scans and sorts.
+/// [`OrderGuard`]); the caller then scans and sorts.
 pub(crate) fn sorted_page(
     txn: &dyn ReadTxn,
     collection: &str,
@@ -208,11 +222,11 @@ pub(crate) fn sorted_page(
         }));
     }
     let table = index_table_name(collection, &first.field);
-    let strict = ids_can_reorder_strings(txn, collection, &table)?;
+    let mut guard = OrderGuard::new(txn, collection);
     if sort.len() == 1 && first.direction == SortDirection::Asc {
         // Key order is the sort order: the page is the keys of rank
         // `skip..keep`, and the walk ends there.
-        let Some((ids, seen)) = ascending_ids(txn, &table, skip, keep, strict)? else {
+        let Some((ids, seen)) = ascending_ids(txn, &table, skip, keep, &mut guard)? else {
             return Ok(None);
         };
         return Ok(Some(SortedPage {
@@ -222,9 +236,10 @@ pub(crate) fn sorted_page(
     }
     let multi_key = sort.len() > 1;
     let runs = match first.direction {
-        SortDirection::Asc => ascending_runs(txn, &table, keep, strict)?,
+        SortDirection::Asc => ascending_runs(txn, &table, keep, &mut guard)?,
         SortDirection::Desc => {
-            let Some(window) = DescendingWindow::walk(txn, &table, keep, multi_key, strict)? else {
+            let Some(window) = DescendingWindow::walk(txn, &table, keep, multi_key, &mut guard)?
+            else {
                 return Ok(None);
             };
             if !multi_key {
@@ -277,16 +292,20 @@ fn ascending_ids(
     table: &str,
     skip: usize,
     keep: usize,
-    strict: bool,
+    guard: &mut OrderGuard<'_>,
 ) -> Result<Option<(Vec<Ulid>, usize)>, TalaDbError> {
     let mut ids = Vec::new();
     let mut seen = 0;
-    let mut malformed = false;
+    let mut give_up = false;
     txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
-        let Some((_, id)) = split_key(k, strict) else {
-            malformed = true;
+        let Some((prefix, id)) = split_key(k) else {
+            give_up = true;
             return Ok(ScanFlow::Stop);
         };
+        if guard.rejects(prefix)? {
+            give_up = true;
+            return Ok(ScanFlow::Stop);
+        }
         if seen >= skip {
             ids.push(id);
         }
@@ -297,7 +316,7 @@ fn ascending_ids(
             ScanFlow::Continue
         })
     })?;
-    Ok((!malformed).then_some((ids, seen)))
+    Ok((!give_up).then_some((ids, seen)))
 }
 
 /// Forward walk that stops at rank `keep`. The last run may be incomplete.
@@ -305,16 +324,20 @@ fn ascending_runs(
     txn: &dyn ReadTxn,
     table: &str,
     keep: usize,
-    strict: bool,
+    guard: &mut OrderGuard<'_>,
 ) -> Result<Option<Vec<Run>>, TalaDbError> {
     let mut runs: Vec<Run> = Vec::new();
     let mut seen = 0;
-    let mut malformed = false;
+    let mut give_up = false;
     txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
-        let Some((prefix, id)) = split_key(k, strict) else {
-            malformed = true;
+        let Some((prefix, id)) = split_key(k) else {
+            give_up = true;
             return Ok(ScanFlow::Stop);
         };
+        if guard.rejects(prefix)? {
+            give_up = true;
+            return Ok(ScanFlow::Stop);
+        }
         if runs.last().is_none_or(|r| r.prefix != prefix) {
             if let Some(r) = runs.last_mut() {
                 r.complete = true;
@@ -334,7 +357,7 @@ fn ascending_runs(
             ScanFlow::Continue
         })
     })?;
-    if malformed {
+    if give_up {
         return Ok(None);
     }
     // The walk ended with the index, so every run is whole.
@@ -380,19 +403,23 @@ impl DescendingWindow {
         table: &str,
         keep: usize,
         with_prefixes: bool,
-        strict: bool,
+        guard: &mut OrderGuard<'_>,
     ) -> Result<Option<Self>, TalaDbError> {
         let mut w = Self::default();
         // The newest run's prefix, to spot where it ends.
         let mut last: Vec<u8> = Vec::new();
         // Rows held by every run but the first.
         let mut tail = 0usize;
-        let mut malformed = false;
+        let mut give_up = false;
         txn.scan(table, Bound::Unbounded, Bound::Unbounded, &mut |k, _| {
-            let Some((prefix, id)) = split_key(k, strict) else {
-                malformed = true;
+            let Some((prefix, id)) = split_key(k) else {
+                give_up = true;
                 return Ok(ScanFlow::Stop);
             };
+            if guard.rejects(prefix)? {
+                give_up = true;
+                return Ok(ScanFlow::Stop);
+            }
             if w.runs.is_empty() || last.as_slice() != prefix {
                 last.clear();
                 last.extend_from_slice(prefix);
@@ -423,7 +450,7 @@ impl DescendingWindow {
             }
             Ok(ScanFlow::Continue)
         })?;
-        Ok((!malformed).then_some(w))
+        Ok((!give_up).then_some(w))
     }
 
     /// Ids in the sort's order — highest run first, ids ascending inside a run
@@ -487,7 +514,7 @@ fn best_of_run(
             Bound::Excluded(from.as_slice())
         };
         txn.scan(table, start, Bound::Included(&end), &mut |k, _| {
-            match split_key(k, false) {
+            match split_key(k) {
                 Some((p, id)) if p == prefix => ids.push(id),
                 // Another value whose encoding extends this prefix (a string
                 // with an escaped NUL) can sort inside the range: not ours.
@@ -519,15 +546,10 @@ fn best_of_run(
     }
 }
 
-/// `(value prefix, id)` of an index key; `None` if it is malformed or, when
-/// `strict`, holds a value containing NUL (see [`ids_can_reorder_strings`]).
-fn split_key(key: &[u8], strict: bool) -> Option<(&[u8], Ulid)> {
+/// `(value prefix, id)` of an index key.
+fn split_key(key: &[u8]) -> Option<(&[u8], Ulid)> {
     let split = key.len().checked_sub(16)?;
-    let prefix = &key[..split];
-    if strict && has_escaped_nul(prefix) {
-        return None;
-    }
-    Some((prefix, ulid_from_index_key(key)?))
+    Some((&key[..split], ulid_from_index_key(key)?))
 }
 
 #[cfg(test)]
