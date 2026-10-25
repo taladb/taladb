@@ -164,7 +164,7 @@ impl Pair {
                 .unwrap();
         }
         counters.take();
-        Pair { db, counters }
+        Self { db, counters }
     }
     fn indexed(&self) -> taladb::Collection {
         self.db.collection("indexed").unwrap()
@@ -394,7 +394,7 @@ fn fallback_fixtures_match_a_full_sort_on_every_page() {
         ),
         (
             "missing field",
-            int_rows(len, |i| (i % 13 != 0).then(|| Value::Int(i as i64 % 5))),
+            int_rows(len, |i| (i % 13 != 0).then_some(Value::Int(i as i64 % 5))),
         ),
         (
             "array values",
@@ -743,7 +743,7 @@ fn ineligible_fields_take_the_scan_path() {
     for (label, rows) in [
         (
             "missing",
-            int_rows(len, |i| (i != 9).then(|| Value::Int(i as i64))),
+            int_rows(len, |i| (i != 9).then_some(Value::Int(i as i64))),
         ),
         (
             "mixed",
