@@ -22,14 +22,14 @@ Date: 2026-10-25. Branch: `feat/v013-index-range-bounds` → `dev` (PR opened; *
 
 ## 2. Why the targets are missed
 
-The optimised query costs 1.03–1.20× what fetching and decoding its 800 result documents costs (8 × `doc/page_full` on the same fixture). On that fixture, no plan returning the documents can exceed 6.2× (arm64) to 8.2× (x86_64) at 10k, or 41× at 100k on arm64.
+The optimised query costs 1.006–1.20× what fetching and decoding its 800 result documents costs (8 × `doc/page_full` on the same fixture). On that fixture, no plan returning the documents can exceed about 6× (arm64, and x86_64 on an AMD EPYC 7763) to 8.2× (x86_64 on newer CPUs) at 10k, or 41× at 100k on arm64.
 
 The targets came from the audit's probe, whose documents are small. There the change gives **12.6× at 10k and 130× at 100k**, with a two-sided window costing the same as a one-sided one. I did not try to close the gap: faster document decoding is roadmap item 4 (Stage 2), and the instructions ruled out speculative changes.
 
 ## 3. Decision for you
 
 1. **Accept as is** (recommended). The optimisation reaches the floor of its workload. Record DOC-11's acceptance as "at the result-decoding floor", with the measured factors per runner.
-2. **Or** redefine the DOC-11 target against the floor, e.g. "within 1.25× of 8 × `doc/page_full`", which every runner meets (1.03–1.20). Add a small-document variant to the Criterion `doc/` group that reproduces the audit probe's fixture. That changes the benchmark harness and needs recalibrated tolerances for the new case, so it belongs in its own small change, not in this PR.
+2. **Or** redefine the DOC-11 target against the floor, e.g. "within 1.25× of 8 × `doc/page_full`", which every runner meets (1.006–1.20). Add a small-document variant to the Criterion `doc/` group that reproduces the audit probe's fixture. That changes the benchmark harness and needs recalibrated tolerances for the new case, so it belongs in its own small change, not in this PR.
 
 ## 4. Before merging
 
