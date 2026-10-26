@@ -255,6 +255,7 @@ fn is_variable_length(prefix: &[u8]) -> bool {
 
 /// Whether an encoded value prefix is a Str or Bytes value containing NUL: the
 /// only values whose keys can sort out of value order (see the module docs).
+#[inline]
 pub(crate) fn has_escaped_nul(prefix: &[u8]) -> bool {
     is_variable_length(prefix) && prefix.len() > 2 && prefix[1..prefix.len() - 1].contains(&0)
 }
