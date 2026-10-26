@@ -155,10 +155,19 @@ impl<'a> OrderGuard<'a> {
     }
 
     /// Whether the walk must give up at a key with this value prefix.
+    ///
+    /// Runs once per key of a walk, so the common case — no NUL — stays a
+    /// first-byte check inlined into the walk's loop.
+    #[inline]
     fn rejects(&mut self, prefix: &[u8]) -> Result<bool, TalaDbError> {
         if !has_escaped_nul(prefix) {
             return Ok(false);
         }
+        self.ff_ids_exist()
+    }
+
+    #[cold]
+    fn ff_ids_exist(&mut self) -> Result<bool, TalaDbError> {
         if self.ff_ids.is_none() {
             let probe = any_key(
                 self.txn,
