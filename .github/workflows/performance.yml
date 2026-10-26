@@ -226,6 +226,14 @@ jobs:
           python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
             --workload concurrency --count 2000 --repeats 3 --steady 400 --cache-bytes 8388608 \
             --output vector-benchmark-concurrency.json
+      # The same with the decoded vector block retained first, so ANN rescoring
+      # can read candidates from it instead of storage.
+      - name: Compare concurrent search with a retained block (report only)
+        if: ${{ !cancelled() && matrix.quantization == 'none' && env.BENCH_SIZE != 'pr' && steps.baseline.outputs.compatible == 'true' }}
+        run: |
+          python scripts/vector-bench-ci.py "$RUNNER_TEMP/vector-baseline" "$GITHUB_WORKSPACE" --gate-kind "$BENCH_KIND" --tolerances-profile "$BENCH_PROFILE" \
+            --workload concurrency --count 2000 --repeats 3 --steady 400 --cache-bytes 8388608 --retain \
+            --output vector-benchmark-concurrency-retained.json
       - name: Check concurrent search memory at phone budgets
         if: ${{ !cancelled() && matrix.quantization == 'none' }}
         run: |
