@@ -13,6 +13,8 @@
   - Memory is bounded by `skip + limit`, even for a run of equal values spanning the collection.
   - With `find`, documents before `skip` are no longer decoded.
   - Fields the index cannot order — missing values, arrays, mixed integers and floats, NaN or zero floats, field encryption — still scan and sort.
+- **Selective unindexed queries** (`find`, `findOne`, paged or sorted `find`, and an aggregation that starts with `$match`, when no index serves the filter) now decode only the fields the filter reads, and decode the rest of a document only when it matches. On documents carrying a 1 KiB string, a query that matches nothing takes 44–52% less time on Linux CI runners (x86_64 and arm64) and allocates 2 instead of 12 times per document. The scan watches its match rate, and goes back to decoding whole documents when most of them match or when the filter reads most of each one, so broad scans cost what they did. Results, their order, and the errors returned for damaged records are unchanged.
+- **Unindexed `count`** already decoded only the filtered fields. It is now 20–27% faster, because field names are no longer hashed and the document id is no longer copied. The matching step of `updateMany`, `deleteMany` and filtered vector search uses the same decoder; their total time, dominated by other work, did not measurably change.
 
 ### Fixes
 
