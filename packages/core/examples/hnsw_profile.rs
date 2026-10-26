@@ -17,8 +17,15 @@
 //!
 //! Storage point reads (`get` keys) are counted per query through a wrapping
 //! backend, as a node-cache miss proxy: a change that moves ANN latency at one
-//! cache budget but not the other usually moves this count too.
+//! cache budget but not the other usually moves this count too. Reads of the
+//! vector table — ANN rescoring's — are also counted on their own.
+//!
+//! `--rescore` adds a report-only section: ANN at efSearch 100 and 400 from a
+//! reset cache, without and with the block an unfiltered exact search retains,
+//! cold (first pass) and warm (second pass), plus a per-candidate cost model of
+//! rescoring.
 
+use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,6 +43,7 @@ use taladb::{
 struct CountingBackend {
     inner: RedbBackend,
     reads: Arc<AtomicU64>,
+    vector_reads: Arc<AtomicU64>,
 }
 
 impl StorageBackend for CountingBackend {
@@ -46,6 +54,7 @@ impl StorageBackend for CountingBackend {
         Ok(Box::new(CountingRead {
             inner: self.inner.begin_read()?,
             reads: &self.reads,
+            vector_reads: &self.vector_reads,
         }))
     }
     fn compact(&self) -> Result<(), TalaDbError> {
@@ -62,15 +71,25 @@ impl StorageBackend for CountingBackend {
 struct CountingRead<'a> {
     inner: Box<dyn ReadTxn + 'a>,
     reads: &'a AtomicU64,
+    vector_reads: &'a AtomicU64,
+}
+
+impl CountingRead<'_> {
+    fn count(&self, table: &str, keys: u64) {
+        self.reads.fetch_add(keys, Ordering::Relaxed);
+        if table.starts_with("vec::") {
+            self.vector_reads.fetch_add(keys, Ordering::Relaxed);
+        }
+    }
 }
 
 impl ReadTxn for CountingRead<'_> {
     fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
-        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.count(table, 1);
         self.inner.get(table, key)
     }
     fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, TalaDbError> {
-        self.reads.fetch_add(keys.len() as u64, Ordering::Relaxed);
+        self.count(table, keys.len() as u64);
         self.inner.get_many(table, keys)
     }
     fn range(
@@ -193,6 +212,7 @@ fn main() {
         );
     }
     let json_output = std::env::args().any(|a| a == "--json");
+    let rescore_sweep = std::env::args().any(|a| a == "--rescore");
     let count: usize = std::env::args()
         .nth(1)
         .and_then(|a| a.parse().ok())
@@ -228,22 +248,25 @@ fn main() {
         .collect();
 
     let reads = Arc::new(AtomicU64::new(0));
+    let vector_reads = Arc::new(AtomicU64::new(0));
     let db = Database::open_with_backend(Box::new(CountingBackend {
         inner: RedbBackend::open_in_memory().unwrap(),
         reads: reads.clone(),
+        vector_reads: vector_reads.clone(),
     }))
     .unwrap();
     db.set_vector_cache_budget(cache_bytes);
     let col = db.collection("docs").unwrap();
 
     let t = Instant::now();
-    col.insert_many(
-        points
-            .iter()
-            .map(|v| vec![("embedding".to_string(), to_value(v))])
-            .collect(),
-    )
-    .unwrap();
+    let doc_ids = col
+        .insert_many(
+            points
+                .iter()
+                .map(|v| vec![("embedding".to_string(), to_value(v))])
+                .collect(),
+        )
+        .unwrap();
     let insert_ms = t.elapsed().as_secs_f64() * 1000.0;
     if !json_output {
         println!("insert {count}      {:>8.2?}", t.elapsed());
@@ -325,6 +348,11 @@ fn main() {
     if !json_output {
         println!("\nexact              {exact_ms:>8.3} ms/query");
     }
+    let position: HashMap<ulid::Ulid, u32> = doc_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u32))
+        .collect();
     let mut measurements = Vec::new();
     // Start ANN without the exact ground-truth block displacing graph nodes.
     db.set_vector_cache_budget(0);
@@ -346,6 +374,7 @@ fn main() {
         let mut query_times = Vec::new();
         let mut recall = 0.0;
         let mut distances = 0usize;
+        let mut fingerprint = Fingerprint::default();
         for (i, q) in probes.iter().enumerate() {
             let start = Instant::now();
             let result = col
@@ -354,6 +383,7 @@ fn main() {
             query_times.push(start.elapsed().as_secs_f64() * 1000.0);
             assert_eq!(result.execution.path, "hnsw");
             distances += result.execution.distance_computations;
+            fingerprint.add(&result, &position);
             let found = ids(result)
                 .iter()
                 .filter(|id| truth[i].contains(id))
@@ -374,8 +404,84 @@ fn main() {
         measurements.push(serde_json::json!({ "ef_search": ef, "mean_ms": elapsed_ms,
             "p50_ms": query_times[queries / 2], "p95_ms": query_times[queries * 95 / 100],
             "recall_at_10": recall / queries as f64, "distances": distances / queries,
-            "storage_reads": storage_reads,
+            "storage_reads": storage_reads, "fingerprint": fingerprint.hex(),
             "retained_cache_bytes": db.vector_cache_stats().retained_bytes }));
+    }
+
+    let mut rescore = Vec::new();
+    let mut rescore_model = serde_json::Value::Null;
+    if rescore_sweep {
+        // The exact query that runs first in the `block` cases retains the
+        // decoded vectors, as any unfiltered exact search does when they fit.
+        for ef in [100usize, 400] {
+            for block in [false, true] {
+                db.set_vector_cache_budget(0);
+                db.set_vector_cache_budget(cache_bytes);
+                if block {
+                    col.search_vectors("embedding", &probes[0], 1, None, &exact_opts)
+                        .unwrap();
+                }
+                let resident = db.vector_cache_stats().vector_indexes == 1;
+                let opts = VectorQueryOptions {
+                    mode: VectorSearchMode::Ann,
+                    ef_search: Some(ef),
+                    ..Default::default()
+                };
+                let pass = || {
+                    let mut times = Vec::new();
+                    let mut recall = 0.0;
+                    let mut distances = 0usize;
+                    let mut fingerprint = Fingerprint::default();
+                    for (i, q) in probes.iter().enumerate() {
+                        let start = Instant::now();
+                        let result = col
+                            .search_vectors("embedding", q, TOP_K, None, &opts)
+                            .unwrap();
+                        times.push(start.elapsed().as_secs_f64() * 1000.0);
+                        assert_eq!(result.execution.path, "hnsw");
+                        distances += result.execution.distance_computations;
+                        fingerprint.add(&result, &position);
+                        let found = ids(result)
+                            .iter()
+                            .filter(|id| truth[i].contains(id))
+                            .count();
+                        recall += found as f64 / TOP_K as f64;
+                    }
+                    (
+                        times,
+                        recall / queries as f64,
+                        distances / queries,
+                        fingerprint,
+                    )
+                };
+                let (cold, cold_recall, _, cold_fingerprint) = pass();
+                let reads_before = reads.load(Ordering::Relaxed);
+                let vector_reads_before = vector_reads.load(Ordering::Relaxed);
+                let cpu_before = thread_cpu_ns();
+                let (mut warm, recall, distances, fingerprint) = pass();
+                let cpu_ms = cpu_before
+                    .zip(thread_cpu_ns())
+                    .map(|(a, b)| (b - a) as f64 / 1e6 / queries as f64);
+                let per_query = |n: u64| n as f64 / queries as f64;
+                assert_eq!(cold_fingerprint.hex(), fingerprint.hex());
+                assert_eq!(cold_recall, recall);
+                let mean = |t: &[f64]| t.iter().sum::<f64>() / t.len() as f64;
+                let cold_mean_ms = mean(&cold);
+                let mean_ms = mean(&warm);
+                warm.sort_by(f64::total_cmp);
+                let stats = db.vector_cache_stats();
+                rescore.push(serde_json::json!({ "ef_search": ef, "block": block,
+                    "block_resident_before": resident, "block_resident_after": stats.vector_indexes == 1,
+                    "cold_mean_ms": cold_mean_ms, "mean_ms": mean_ms,
+                    "p50_ms": warm[queries / 2], "p95_ms": warm[queries * 95 / 100],
+                    "cpu_ms_per_query": cpu_ms, "recall_at_10": recall, "distances": distances,
+                    "storage_reads": per_query(reads.load(Ordering::Relaxed) - reads_before),
+                    "vector_reads": per_query(vector_reads.load(Ordering::Relaxed) - vector_reads_before),
+                    "fingerprint": fingerprint.hex(),
+                    "retained_bytes": stats.retained_bytes, "peak_bytes": stats.peak_bytes }));
+            }
+        }
+        rescore_model = rescore_cost_model(&db, &doc_ids, &probes[0]);
     }
     if json_output {
         step_times.sort_by(f64::total_cmp);
@@ -399,7 +505,94 @@ fn main() {
             "cache_bytes": cache_bytes,
             "batch_size": batch_size, "build_steps": step_times.len(), "step_p95_ms": step_p95_ms,
             "insert_ms": insert_ms, "build_ms": build.as_secs_f64() * 1000.0,
-            "exact_mean_ms": exact_ms, "exact_storage_reads": exact_reads, "ann": measurements, "peak_rss_bytes": peak_rss_bytes })
+            "exact_mean_ms": exact_ms, "exact_storage_reads": exact_reads, "ann": measurements, "peak_rss_bytes": peak_rss_bytes,
+            "rescore": rescore, "rescore_model": rescore_model })
         );
     }
+}
+
+/// FNV-1a over every hit's insertion position and score bits, in result
+/// order. Positions, not ULIDs: ULIDs differ between runs, positions do not,
+/// so two builds or two runs of the same workload can be compared.
+struct Fingerprint(u64);
+impl Default for Fingerprint {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+impl Fingerprint {
+    fn add(&mut self, result: &taladb::VectorQueryResult, position: &HashMap<ulid::Ulid, u32>) {
+        for hit in &result.hits {
+            let index = position[&hit.document.id].to_le_bytes();
+            for byte in index.iter().chain(&hit.score.to_bits().to_le_bytes()) {
+                self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    fn hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+/// Per-candidate cost of the pieces of ANN rescoring, measured with the public
+/// API on IDs spread over the collection: a storage get plus decode (the
+/// point-read path), a binary search over the sorted IDs (the retained
+/// block's lookup), and the cosine score itself (either path).
+fn rescore_cost_model(db: &Database, doc_ids: &[ulid::Ulid], query: &[f32]) -> serde_json::Value {
+    use std::hint::black_box;
+    use taladb::vector::{decode_f32_vec, l2_norm, score_with_query_norm, vec_table_name};
+    let mut sorted = doc_ids.to_vec();
+    sorted.sort_unstable();
+    let stride = (sorted.len() / 400).max(1);
+    let sample: Vec<_> = sorted.iter().step_by(stride).copied().collect();
+    let table = vec_table_name("docs", "embedding");
+    let txn = db.backend().begin_read().unwrap();
+    let vectors: Vec<Vec<f32>> = sample
+        .iter()
+        .map(|id| decode_f32_vec(&txn.get(&table, &id.to_bytes()).unwrap().unwrap()).unwrap())
+        .collect();
+    let query_norm = l2_norm(query);
+    let rounds = 50;
+    let per_candidate = |f: &mut dyn FnMut()| {
+        let start = Instant::now();
+        for _ in 0..rounds {
+            f();
+        }
+        start.elapsed().as_secs_f64() * 1e9 / (rounds * sample.len()) as f64
+    };
+    let get_decode_ns = per_candidate(&mut || {
+        for id in &sample {
+            black_box(decode_f32_vec(
+                &txn.get(&table, &id.to_bytes()).unwrap().unwrap(),
+            ));
+        }
+    });
+    let binary_search_ns = per_candidate(&mut || {
+        for id in &sample {
+            black_box(sorted.binary_search(black_box(id)).ok());
+        }
+    });
+    let score_ns = per_candidate(&mut || {
+        for v in &vectors {
+            black_box(score_with_query_norm(
+                &VectorMetric::Cosine,
+                query,
+                query_norm,
+                v,
+            ));
+        }
+    });
+    serde_json::json!({ "candidates_sampled": sample.len(), "get_decode_ns": get_decode_ns,
+        "binary_search_ns": binary_search_ns, "score_ns": score_ns })
+}
+
+/// This thread's CPU time in nanoseconds, from `/proc/thread-self/schedstat`;
+/// `None` where that file does not exist.
+fn thread_cpu_ns() -> Option<u64> {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }

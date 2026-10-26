@@ -223,6 +223,9 @@ class Hnsw(ExampleWorkload):
         command = [str(a.count), "0.6", "--json", "--quantization", a.quantization, "--queries", str(a.queries)]
         if a.batch_size is not None:
             command += ["--batch-size", str(a.batch_size)]
+        else:
+            # Report-only ANN rescoring with and without a retained block.
+            command += ["--rescore"]
         if a.cache_bytes is not None:
             command += ["--cache-bytes", str(a.cache_bytes)]
         return command
@@ -240,6 +243,13 @@ class Hnsw(ExampleWorkload):
             rows[f"ann ef={r['ef_search']} p50_ms"] = ("ann_p50_ms", r["p50_ms"])
             if "storage_reads" in r:
                 rows[f"ann ef={r['ef_search']} storage_reads"] = ("report", r["storage_reads"])
+        for r in report.get("rescore", []):
+            case = f"rescore ef={r['ef_search']} {'block' if r['block'] else 'no block'}"
+            rows[f"{case} warm p50_ms"] = ("report", r["p50_ms"])
+            rows[f"{case} cold mean_ms"] = ("report", r["cold_mean_ms"])
+            rows[f"{case} vector_reads"] = ("report", r["vector_reads"])
+            if r.get("cpu_ms_per_query") is not None:
+                rows[f"{case} cpu_ms_per_query"] = ("report", r["cpu_ms_per_query"])
         return rows
 
     def correctness(self, before, after):
@@ -251,6 +261,17 @@ class Hnsw(ExampleWorkload):
             elif new["recall_at_10"] != old["recall_at_10"]:
                 notes.append(f"recall at ef={new['ef_search']} changed {old['recall_at_10']:.3f} -> "
                              f"{new['recall_at_10']:.3f}; list it in the PR description")
+        # Score fingerprints (IDs and score bits of every hit). The same graph
+        # walk scoring differently is a scoring change, never noise.
+        for key in ("ann", "rescore"):
+            for old, new in zip(before.get(key, []), after.get(key, [])):
+                if old.get("fingerprint") in (None, new.get("fingerprint")):
+                    continue
+                case = f"{key} ef={new['ef_search']}" + (f" block={new['block']}" if key == "rescore" else "")
+                if (old["recall_at_10"], old["distances"]) == (new["recall_at_10"], new["distances"]):
+                    failures.append(f"{case}: same candidates, different result IDs or score bits")
+                else:
+                    notes.append(f"{case}: score fingerprint changed with the candidates")
         return failures, notes
 
 
@@ -281,7 +302,8 @@ class Concurrency(ExampleWorkload):
 
     def command(self):
         return ["--cache-bytes", str(self.args.cache_bytes or 8 * 1024 * 1024), "--count", str(self.args.count),
-                "--queries", "20", "--steady", str(self.args.steady), "--mode", self.args.mode]
+                "--queries", "20", "--steady", str(self.args.steady), "--mode", self.args.mode,
+                *(["--retain"] if self.args.retain else [])]
 
     def signature(self, report):
         return [(c["concurrency"], c["requests"], c["memory_fallbacks"], c["recall_at_10"]) for c in report["cases"]]
@@ -768,6 +790,8 @@ def main():
     parser.add_argument("--cache-bytes", type=int, help="vector cache budget (hnsw: the harness default is 8 MiB)")
     parser.add_argument("--steady", type=int, default=400, help="concurrency: requests per thread")
     parser.add_argument("--mode", choices=("ann", "exact"), default="ann", help="concurrency: search mode")
+    parser.add_argument("--retain", action="store_true",
+                        help="concurrency: retain the exact-search vector block before each case")
     parser.add_argument("--criterion-filter", help="Criterion regex over case ids")
     parser.add_argument("--criterion-groups", help="TALADB_BENCH_GROUPS, e.g. doc,stabilization")
     parser.add_argument("--criterion-sizes", help="TALADB_BENCH_SIZES, e.g. 1000,10000")
