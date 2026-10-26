@@ -103,15 +103,15 @@ impl GroupWindow {
 pub(super) struct Ranker<'a> {
     window: Window,
     group_by: Option<&'a str>,
-    fields: std::collections::HashSet<&'a str>,
+    fields: crate::query::filter_document::Fields<'a>,
     threshold: Option<f32>,
 }
 impl<'a> Ranker<'a> {
     pub(super) fn new(limit: usize, options: &'a super::VectorQueryOptions) -> Self {
         let group_by = options.group_by.as_deref();
-        let fields = group_by.map_or_else(Default::default, |f| {
-            std::collections::HashSet::from([f.split('.').next().unwrap_or(f)])
-        });
+        let fields = crate::query::filter_document::Fields::of(
+            group_by.map(|f| f.split('.').next().unwrap_or(f)),
+        );
         Self {
             window: Window::new(limit, group_by.map(|_| options.group_size.unwrap_or(1))),
             group_by,

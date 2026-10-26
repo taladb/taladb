@@ -5,11 +5,33 @@ use crate::document::{Document, Value};
 use crate::query::Filter;
 use serde::de::{DeserializeSeed, EnumAccess, SeqAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::collections::HashSet;
 use std::fmt;
+use ulid::Ulid;
 
-pub(crate) fn fields(filter: &Filter) -> HashSet<&str> {
-    fn visit<'a>(filter: &'a Filter, out: &mut HashSet<&'a str>) {
+/// The top-level field names to decode, sorted by length and then bytes. A
+/// filter names a handful of fields, and every field of every scanned document
+/// is looked up here: comparing a few short names is cheaper than hashing each
+/// one, and most comparisons end at the length.
+pub(crate) struct Fields<'a>(Vec<&'a str>);
+
+impl<'a> Fields<'a> {
+    pub(crate) fn of(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut names: Vec<&str> = names.into_iter().collect();
+        names.sort_unstable_by(|a, b| by_length(a, b));
+        names.dedup();
+        Self(names)
+    }
+    fn contains(&self, name: &str) -> bool {
+        self.0.binary_search_by(|f| by_length(f, name)).is_ok()
+    }
+}
+
+fn by_length(a: &str, b: &str) -> std::cmp::Ordering {
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+pub(crate) fn fields(filter: &Filter) -> Fields<'_> {
+    fn visit<'a>(filter: &'a Filter, out: &mut Vec<&'a str>) {
         match filter {
             Filter::All => {}
             Filter::And(children) | Filter::Or(children) => {
@@ -29,21 +51,42 @@ pub(crate) fn fields(filter: &Filter) -> HashSet<&str> {
             | Filter::Exists(f, _)
             | Filter::Contains(f, _)
             | Filter::Regex(f, _) => {
-                out.insert(f.split('.').next().unwrap_or(f));
+                out.push(f.split('.').next().unwrap_or(f));
             }
         }
     }
-    let mut out = HashSet::new();
+    let mut out = Vec::new();
     visit(filter, &mut out);
-    out
+    Fields::of(out)
 }
 
-pub(crate) fn decode(bytes: &[u8], fields: &HashSet<&str>) -> Result<Document, postcard::Error> {
+pub(crate) fn decode(bytes: &[u8], fields: &Fields<'_>) -> Result<Document, postcard::Error> {
     let mut de = postcard::Deserializer::from_bytes(bytes);
     DocumentSeed(fields).deserialize(&mut de)
 }
 
-struct DocumentSeed<'a>(&'a HashSet<&'a str>);
+/// About how many encoded bytes a projected document was decoded from: its id
+/// and the fields it kept. Lengths and tags count as one byte and numbers as
+/// nine, an upper bound, so the share of skipped bytes is never overstated.
+pub(crate) fn decoded_len(doc: &Document) -> u64 {
+    fn value(v: &Value) -> u64 {
+        match v {
+            Value::Null | Value::Bool(_) => 2,
+            Value::Int(_) | Value::Float(_) => 9,
+            Value::Str(s) => s.len() as u64 + 2,
+            Value::Bytes(b) => b.len() as u64 + 2,
+            Value::Array(items) => 2 + items.iter().map(value).sum::<u64>(),
+            Value::Object(fields) => 2 + fields.iter().map(field).sum::<u64>(),
+        }
+    }
+    fn field((name, v): &(String, Value)) -> u64 {
+        name.len() as u64 + 1 + value(v)
+    }
+    // A ULID string and its length.
+    27 + doc.fields.iter().map(field).sum::<u64>()
+}
+
+struct DocumentSeed<'a>(&'a Fields<'a>);
 impl<'de> DeserializeSeed<'de> for DocumentSeed<'_> {
     type Value = Document;
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Document, D::Error> {
@@ -56,16 +99,19 @@ impl<'de> Visitor<'de> for DocumentSeed<'_> {
         f.write_str("a document")
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Document, A::Error> {
-        let id = seq
+        // `Ulid`'s own impl reads the id into a `String` first; borrowing it
+        // saves an allocation per document and fails on the same inputs.
+        let id: &str = seq
             .next_element()?
             .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        let id = Ulid::from_string(id).map_err(serde::de::Error::custom)?;
         let fields = seq
             .next_element_seed(FieldsSeed(self.0))?
             .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
         Ok(Document { id, fields })
     }
 }
-struct FieldsSeed<'a>(&'a HashSet<&'a str>);
+struct FieldsSeed<'a>(&'a Fields<'a>);
 impl<'de> DeserializeSeed<'de> for FieldsSeed<'_> {
     type Value = Vec<(String, Value)>;
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
@@ -87,7 +133,7 @@ impl<'de> Visitor<'de> for FieldsSeed<'_> {
         Ok(fields)
     }
 }
-struct FieldSeed<'a>(&'a HashSet<&'a str>);
+struct FieldSeed<'a>(&'a Fields<'a>);
 impl<'de> DeserializeSeed<'de> for FieldSeed<'_> {
     type Value = Option<(String, Value)>;
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {

@@ -161,23 +161,50 @@ pub fn execute_limited(
         }
         let matcher = Matcher::new(filter)?;
         let mut docs = Vec::new();
-        txn.scan(
-            &docs_table_name(collection),
-            Bound::Unbounded,
-            Bound::Unbounded,
-            &mut |_, bytes| {
-                check_deadline(deadline)?;
-                let doc = postcard::from_bytes(bytes)?;
-                if matcher.matches(&doc)? {
-                    docs.push(doc);
-                }
-                Ok(if limit.is_some_and(|n| docs.len() >= n) {
-                    ScanFlow::Stop
-                } else {
-                    ScanFlow::Continue
-                })
-            },
-        )?;
+        let more = |docs: &Vec<Document>| {
+            if limit.is_some_and(|n| docs.len() >= n) {
+                ScanFlow::Stop
+            } else {
+                ScanFlow::Continue
+            }
+        };
+        let table = docs_table_name(collection);
+        if matches!(filter, Filter::All) {
+            txn.scan(
+                &table,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                &mut |_, bytes| {
+                    check_deadline(deadline)?;
+                    let doc = postcard::from_bytes(bytes)?;
+                    if matcher.matches(&doc)? {
+                        docs.push(doc);
+                    }
+                    Ok(more(&docs))
+                },
+            )?;
+        } else {
+            let mut decoder = ScanDecoder::new(filter);
+            txn.scan(
+                &table,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                &mut |_, bytes| {
+                    check_deadline(deadline)?;
+                    // The whole-document branch is the loop above, unchanged.
+                    let matched = if decoder.project {
+                        decoder
+                            .projected(bytes, &matcher)?
+                            .map(|doc| docs.push(doc))
+                    } else {
+                        let doc = postcard::from_bytes(bytes)?;
+                        matcher.matches(&doc)?.then(|| docs.push(doc))
+                    };
+                    decoder.tick(matched.is_some());
+                    Ok(more(&docs))
+                },
+            )?;
+        }
         return Ok(docs);
     }
     let mut docs = Vec::new();
@@ -219,7 +246,7 @@ pub(crate) fn candidate_ids(
 struct DocumentSink<'a> {
     emit: &'a mut dyn FnMut(Document),
     count: usize,
-    fields: Option<HashSet<&'a str>>,
+    fields: Option<super::filter_document::Fields<'a>>,
 }
 
 impl DocumentSink<'_> {
@@ -567,6 +594,109 @@ impl<'a> Matcher<'a> {
                 })
             }
             Matcher::General { filter, regexes } => filter.matches_with_cache(doc, regexes),
+        }
+    }
+}
+
+/// Documents per [`ScanDecoder`] decision.
+const DECODE_WINDOW: u64 = 32;
+
+/// Decodes the documents of a filtered full scan, choosing per window of
+/// [`DECODE_WINDOW`] documents between two strategies:
+///
+/// * **projected** — decode only the top-level fields the filter reads, test
+///   that, and decode the whole document again only when it matches;
+/// * **whole** — decode every document whole and test it, as a scan always did.
+///
+/// Projection saves what a miss would have allocated and copied, and costs a
+/// second decode per match. It pays while the share of matches stays below a
+/// third of the share of bytes the projection skips. After each window the
+/// rule is applied to the match rate of the recent windows (decayed by 1/8 per
+/// window, so a run of matches in periodic data does not flip the choice back
+/// and forth) and to the bytes measured in the last projected window. A
+/// selective filter over wide documents keeps projecting; a filter that most
+/// documents pass, or that reads most of each document, goes back to whole
+/// decoding within a few windows, and returns to projecting if matches become
+/// rare again.
+///
+/// Either way the returned document comes from the full decoder, and the
+/// projection holds every field the filter can read (see
+/// [`super::filter_document`]), so the result is the same document in the same
+/// order.
+struct ScanDecoder<'a> {
+    fields: super::filter_document::Fields<'a>,
+    project: bool,
+    seen: u64,
+    matched: u64,
+    /// Decayed `(matched, seen)` counts of the windows so far.
+    rate: (u64, u64),
+    /// Encoded bytes and decoded (not skipped) bytes in this projected window.
+    bytes: u64,
+    kept: u64,
+    /// `(skipped, total)` bytes of the last projected window.
+    share: (u64, u64),
+}
+
+impl<'a> ScanDecoder<'a> {
+    fn new(filter: &'a Filter) -> Self {
+        Self {
+            fields: super::filter_document::fields(filter),
+            project: true,
+            seen: 0,
+            matched: 0,
+            rate: (0, 0),
+            bytes: 0,
+            kept: 0,
+            share: (0, 0),
+        }
+    }
+
+    /// The document, decoded whole, if its projection matches. While
+    /// `project` is false the caller decodes and tests documents itself.
+    fn projected(
+        &mut self,
+        bytes: &[u8],
+        matcher: &Matcher<'_>,
+    ) -> Result<Option<Document>, TalaDbError> {
+        match super::filter_document::decode(bytes, &self.fields) {
+            Ok(projected) => {
+                self.bytes += bytes.len() as u64;
+                self.kept += super::filter_document::decoded_len(&projected);
+                Ok(if matcher.matches(&projected)? {
+                    Some(postcard::from_bytes(bytes)?)
+                } else {
+                    None
+                })
+            }
+            // The full decoder is the reference: return its error, or its
+            // document should it accept what the projection did not.
+            Err(_) => {
+                let doc: Document = postcard::from_bytes(bytes)?;
+                Ok(matcher.matches(&doc)?.then_some(doc))
+            }
+        }
+    }
+
+    /// Count one scanned document, and choose the strategy for the next
+    /// window when this one is complete.
+    fn tick(&mut self, matched: bool) {
+        self.seen += 1;
+        self.matched += u64::from(matched);
+        if self.seen == DECODE_WINDOW {
+            if self.project {
+                self.share = (self.bytes.saturating_sub(self.kept), self.bytes);
+            }
+            let (matched, seen) = self.rate;
+            self.rate = (
+                matched - matched / 8 + self.matched,
+                seen - seen / 8 + self.seen,
+            );
+            let (skipped, total) = self.share;
+            self.project = self.rate.0 * 3 * total < skipped * self.rate.1;
+            self.seen = 0;
+            self.matched = 0;
+            self.bytes = 0;
+            self.kept = 0;
         }
     }
 }
@@ -1148,4 +1278,326 @@ fn visit_fts_documents(
         },
     )?;
     Ok(more)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    /// Documents covering every value variant, nesting, arrays, missing
+    /// versus null, mixed numbers, NaN, signed zero, bytes and large payloads.
+    fn corpus() -> Vec<Document> {
+        (0..120u32)
+            .map(|i| {
+                let mut fields = vec![("i".to_string(), Value::Int(i64::from(i)))];
+                let n = match i % 9 {
+                    0 => Some(Value::Int(3)),
+                    1 => Some(Value::Float(3.0)),
+                    2 => Some(Value::Float(3.5)),
+                    3 => Some(Value::Float(f64::NAN)),
+                    4 => Some(Value::Float(-0.0)),
+                    5 => Some(Value::Int(0)),
+                    6 => Some(s("3")),
+                    7 => Some(Value::Null),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    fields.push(("n".into(), n));
+                }
+                if i % 5 != 0 {
+                    fields.push((
+                        "s".into(),
+                        s(["a", "a\0b", "ünï", "", "zz"][i as usize % 5]),
+                    ));
+                }
+                if i % 4 == 0 {
+                    fields.push(("b".into(), Value::Bytes(vec![i as u8 % 3, 0xFF])));
+                }
+                fields.push((
+                    "tags".into(),
+                    match i % 6 {
+                        0 => Value::Array(vec![s("rust"), s("db")]),
+                        1 => s("rust"),
+                        2 => Value::Array(vec![Value::Array(vec![s("rust")]), Value::Int(1)]),
+                        3 => Value::Array(vec![]),
+                        4 => Value::Null,
+                        _ => Value::Array(vec![Value::Int(3), Value::Float(0.0)]),
+                    },
+                ));
+                if i % 7 != 3 {
+                    fields.push((
+                        "meta".into(),
+                        if i % 7 == 6 {
+                            Value::Int(1)
+                        } else {
+                            Value::Object(vec![
+                                ("tag".into(), s(if i % 2 == 0 { "yes" } else { "no" })),
+                                (
+                                    "depth".into(),
+                                    Value::Object(vec![("x".into(), Value::Int(i64::from(i % 4)))]),
+                                ),
+                            ])
+                        },
+                    ));
+                }
+                fields.push((
+                    "body".into(),
+                    s(&format!("rust database storage token{}", i % 5)),
+                ));
+                fields.push(("flag".into(), Value::Bool(i % 2 == 0)));
+                fields.push((
+                    "payload".into(),
+                    s(&"x".repeat(if i % 40 == 0 { 70_000 } else { 1_024 })),
+                ));
+                fields.push((
+                    "vec".into(),
+                    Value::Array((0..64).map(|j| Value::Float(f64::from(j))).collect()),
+                ));
+                Document::with_id(Ulid::from(u128::from(i) + 1), fields)
+            })
+            .collect()
+    }
+
+    fn filters() -> Vec<Filter> {
+        let f = |v: f64| Value::Float(v);
+        let mut out = vec![Filter::All];
+        for v in [
+            Value::Int(3),
+            f(3.0),
+            f(3.5),
+            f(f64::NAN),
+            f(0.0),
+            f(-0.0),
+            s("3"),
+            Value::Null,
+        ] {
+            for make in [
+                Filter::Eq as fn(String, Value) -> Filter,
+                Filter::Ne,
+                Filter::Gt,
+                Filter::Gte,
+                Filter::Lt,
+                Filter::Lte,
+            ] {
+                out.push(make("n".into(), v.clone()));
+            }
+        }
+        out.extend([
+            Filter::Eq("s".into(), s("a")),
+            Filter::Gt("s".into(), s("a")),
+            Filter::Lte("s".into(), s("a\0b")),
+            Filter::In("s".into(), vec![s(""), s("zz"), Value::Null]),
+            Filter::Nin("n".into(), vec![Value::Int(3), f(f64::NAN)]),
+            Filter::Exists("n".into(), true),
+            Filter::Exists("n".into(), false),
+            Filter::Eq("n".into(), Value::Null),
+            Filter::Exists("zz".into(), false),
+            Filter::Eq("tags".into(), s("rust")),
+            Filter::Eq("tags".into(), Value::Array(vec![s("rust"), s("db")])),
+            Filter::Ne("tags".into(), s("rust")),
+            Filter::In("tags".into(), vec![s("db"), Value::Int(3)]),
+            Filter::Eq("tags".into(), f(-0.0)),
+            Filter::Eq("meta.tag".into(), s("yes")),
+            Filter::Gte("meta.depth.x".into(), Value::Int(2)),
+            Filter::Exists("meta.tag".into(), false),
+            Filter::Exists("meta.depth.y".into(), false),
+            Filter::Eq("b".into(), Value::Bytes(vec![1, 0xFF])),
+            Filter::Gt("b".into(), Value::Bytes(vec![0])),
+            Filter::Eq("flag".into(), Value::Bool(true)),
+            Filter::And(vec![
+                Filter::Eq("flag".into(), Value::Bool(true)),
+                Filter::Lt("i".into(), Value::Int(60)),
+            ]),
+            Filter::Or(vec![
+                Filter::Eq("meta.tag".into(), s("no")),
+                Filter::Exists("b".into(), true),
+            ]),
+            Filter::Not(Box::new(Filter::Exists("s".into(), true))),
+            Filter::Not(Box::new(Filter::Or(vec![
+                Filter::Eq("n".into(), Value::Int(3)),
+                Filter::Eq("zz".into(), Value::Null),
+            ]))),
+            Filter::Regex("s".into(), "^a".into()),
+            Filter::Regex("tags".into(), "^ru".into()),
+            Filter::Not(Box::new(Filter::Regex("meta.tag".into(), "y".into()))),
+            Filter::Contains("body".into(), "rust token3".into()),
+            Filter::Contains("body".into(), String::new()),
+            Filter::Contains("zz".into(), "rust".into()),
+            Filter::Eq("_id".into(), s(&Ulid::from(6u128).to_string())),
+            Filter::Ne("_id".into(), s(&Ulid::from(6u128).to_string())),
+            Filter::In("_id".into(), vec![s(&Ulid::from(9u128).to_string())]),
+            Filter::Exists("_id".into(), false),
+            Filter::Eq("payload".into(), s(&"x".repeat(1_024))),
+            Filter::Lt("i".into(), Value::Int(1)),
+        ]);
+        out
+    }
+
+    /// The full scan before projection: decode whole, then test.
+    fn oracle(bytes: &[u8], matcher: &Matcher<'_>) -> Result<Option<Vec<u8>>, String> {
+        let doc: Document =
+            postcard::from_bytes(bytes).map_err(|e| TalaDbError::from(e).to_string())?;
+        Ok(matcher
+            .matches(&doc)
+            .map_err(|e| e.to_string())?
+            .then(|| postcard::to_allocvec(&doc).unwrap()))
+    }
+
+    fn projected(
+        bytes: &[u8],
+        filter: &Filter,
+        matcher: &Matcher<'_>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        ScanDecoder::new(filter)
+            .projected(bytes, matcher)
+            .map(|doc| doc.map(|d| postcard::to_allocvec(&d).unwrap()))
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn projected_decision_and_document_match_the_full_decode_for_every_filter() {
+        let docs: Vec<Vec<u8>> = corpus()
+            .iter()
+            .map(|d| postcard::to_allocvec(d).unwrap())
+            .collect();
+        let filters = filters();
+        let mut split = 0;
+        for filter in &filters {
+            let matcher = Matcher::new(filter).unwrap();
+            let mut matched = 0;
+            for bytes in &docs {
+                let expected = oracle(bytes, &matcher).unwrap();
+                matched += usize::from(expected.is_some());
+                assert_eq!(
+                    projected(bytes, filter, &matcher).unwrap(),
+                    expected,
+                    "{filter:?}"
+                );
+            }
+            split += usize::from(matched > 0 && matched < docs.len());
+        }
+        // A filter that matches all or nothing proves little about a
+        // projection; most of these split the corpus.
+        assert!(
+            split * 3 > filters.len() * 2,
+            "{split} of {}",
+            filters.len()
+        );
+    }
+
+    #[test]
+    fn corrupt_encodings_fail_or_succeed_exactly_as_the_full_decode_does() {
+        let doc = &corpus()[12];
+        let mut small = doc.clone();
+        small.fields.retain(|(k, _)| k != "payload" && k != "vec");
+        small.fields.push(("payload".into(), s("xyz")));
+        small
+            .fields
+            .push(("vec".into(), Value::Array(vec![Value::Float(1.0)])));
+        let good = postcard::to_allocvec(&small).unwrap();
+        let mut variants: Vec<Vec<u8>> = (0..good.len()).map(|n| good[..n].to_vec()).collect();
+        for at in 0..good.len() {
+            for byte in [0x00, 0x01, 0x02, 0x08, 0x09, 0x7F, 0x80, 0xC3, 0xFF] {
+                let mut v = good.clone();
+                v[at] = byte;
+                variants.push(v);
+            }
+        }
+        let mut trailing = good;
+        trailing.extend_from_slice(&[0xFF, 0x00]);
+        variants.push(trailing);
+
+        let mut errors = 0;
+        for filter in filters() {
+            let fields = super::super::filter_document::fields(&filter);
+            let matcher = Matcher::new(&filter).unwrap();
+            for v in &variants {
+                let expected = oracle(v, &matcher);
+                errors += usize::from(expected.is_err());
+                assert_eq!(
+                    projected(v, &filter, &matcher),
+                    expected,
+                    "{filter:?} {v:?}"
+                );
+                // `count` and the ID collectors decode the projection only.
+                assert_eq!(
+                    super::super::filter_document::decode(v, &fields).is_ok(),
+                    expected.is_ok(),
+                    "{filter:?} {v:?}"
+                );
+            }
+        }
+        assert!(errors > 0);
+    }
+
+    #[test]
+    fn decoder_projects_selective_scans_and_decodes_whole_when_matches_are_dense() {
+        let docs: Vec<Vec<u8>> = corpus()
+            .iter()
+            .map(|d| postcard::to_allocvec(d).unwrap())
+            .collect();
+        let run = |filter: &Filter, windows: usize, matching: &dyn Fn(usize) -> bool| {
+            let matcher = Matcher::new(filter).unwrap();
+            let mut decoder = ScanDecoder::new(filter);
+            let mut modes = Vec::new();
+            for k in 0..windows * DECODE_WINDOW as usize {
+                let bytes = &docs[k % docs.len()];
+                let hit = if decoder.project {
+                    decoder.projected(bytes, &matcher).unwrap().is_some()
+                } else {
+                    let doc: Document = postcard::from_bytes(bytes).unwrap();
+                    matcher.matches(&doc).unwrap()
+                };
+                assert_eq!(hit, matching(k), "{filter:?} at {k}");
+                decoder.tick(hit);
+                if (k + 1) % DECODE_WINDOW as usize == 0 {
+                    modes.push(decoder.project);
+                }
+            }
+            modes
+        };
+        // No match: wide documents keep projecting.
+        let none = Filter::Lt("i".into(), Value::Int(-1));
+        assert!(run(&none, 20, &|_| false).iter().all(|p| *p));
+        // Every document matches: whole decoding from the first decision on.
+        let all = Filter::Gte("i".into(), Value::Int(0));
+        assert!(run(&all, 20, &|_| true).iter().all(|p| !*p));
+        // A filter that reads every field skips nothing, so projection never
+        // pays, whatever the matches.
+        let every = Filter::Or(
+            [
+                "i", "n", "s", "b", "tags", "meta", "body", "flag", "payload", "vec",
+            ]
+            .map(|f| Filter::Eq(f.into(), s("never")))
+            .to_vec(),
+        );
+        assert!(run(&every, 20, &|_| false).iter().all(|p| !*p));
+        // Matches arrive, then stop: whole decoding while they last, then
+        // projection again.
+        let late = Filter::Gte("i".into(), Value::Int(0));
+        let modes = run(&late, 4, &|_| true);
+        assert_eq!(modes, [false; 4]);
+        let mut decoder = ScanDecoder::new(&late);
+        let matcher = Matcher::new(&late).unwrap();
+        for _ in 0..DECODE_WINDOW {
+            decoder.projected(&docs[1], &matcher).unwrap();
+            decoder.tick(true);
+        }
+        assert!(!decoder.project);
+        let mut back = None;
+        for w in 0..64 {
+            for _ in 0..DECODE_WINDOW {
+                decoder.tick(false);
+            }
+            if decoder.project {
+                back = Some(w);
+                break;
+            }
+        }
+        assert!(back.is_some_and(|w| w < 32), "{back:?}");
+    }
 }
