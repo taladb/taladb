@@ -349,6 +349,22 @@ impl SearchCache {
             _ => None,
         }
     }
+    /// The block for exactly `generation`, for a reader that only borrows it.
+    /// Unlike [`Self::vectors`] it neither refreshes the entry's recency nor
+    /// drops an older generation, so eviction order stays what exact searches
+    /// made it. The loan is still recorded: a block evicted while borrowed
+    /// stays counted as active memory until the reader drops it.
+    pub fn peek_vectors(&mut self, key: &str, generation: u64) -> Option<Arc<RetainedVectors>> {
+        let vectors = match &self.entries.get(&format!("v:{key}"))?.value {
+            Value::Vectors(v) if v.generation == generation => Arc::clone(&v.vectors),
+            _ => return None,
+        };
+        let loan = Arc::downgrade(&vectors);
+        if !self.vector_loans.iter().any(|l| l.ptr_eq(&loan)) {
+            self.vector_loans.push(loan);
+        }
+        Some(vectors)
+    }
     pub fn insert_vectors(
         &mut self,
         key: &str,
@@ -600,6 +616,31 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(shared.lock().unwrap().stats().active_bytes, 0);
+    }
+    #[test]
+    fn peeking_borrows_one_generation_without_changing_eviction_order() {
+        let mut cache = SearchCache::default();
+        cache.set_budget(block(10).bytes() * 2);
+        let epoch = cache.epoch;
+        cache.insert_vectors("a", 1, block(10), epoch);
+        cache.insert_vectors("b", 1, block(10), epoch);
+        // Unlike `vectors`, a peek leaves `a` least recently used.
+        assert!(cache.peek_vectors("a", 1).is_some());
+        cache.insert_vectors("c", 1, block(10), epoch);
+        assert!(cache.peek_vectors("a", 1).is_none());
+        assert!(cache.peek_vectors("b", 1).is_some());
+        // Other generations are neither returned nor dropped.
+        assert!(cache.peek_vectors("b", 0).is_none());
+        assert!(cache.peek_vectors("b", 2).is_none());
+        assert_eq!(cache.stats().vector_indexes, 2);
+        // A peeked block evicted while borrowed stays charged until dropped.
+        let borrowed = cache.peek_vectors("b", 1).unwrap();
+        cache.set_budget(0);
+        assert_eq!(cache.stats().retained_bytes, 0);
+        assert_eq!(cache.stats().active_bytes, block(10).bytes());
+        assert!(cache.reserve(64 * 1024 - block(10).bytes() + 1).is_none());
+        drop(borrowed);
+        assert_eq!(cache.stats().active_bytes, 0);
     }
     #[test]
     fn obsolete_vectors_are_freed_without_an_old_snapshot_evicting_newer_vectors() {
