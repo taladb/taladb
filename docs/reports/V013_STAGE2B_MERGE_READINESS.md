@@ -13,9 +13,9 @@ Engine change: PR #116 (`feat/v013-ann-retained-rescore`: `6f90eeb` engine and t
 | Vector performance (dispatch: release size, vector + Criterion + browser + Tier 0, against `dev` 2c0c170 and v0.12.1 a2ef466) | 40328873601 | **failure**: 15 of 17 jobs pass. Both x86 Criterion jobs fail on `doc/count_indexed_eq` (§1.1). |
 | CI on `dev` after the merge (`0d16416`) | 40329800897 | success |
 
-**Not every performance gate passed.** The one failure is on a code path this change does not touch, with identical executed instructions (§1.1). I found no correctness problem, and I do not recommend a revert. The failure stays open until it is either confirmed as code placement or explained some other way. Stage 2C has not been started.
+**Not every performance gate passed.** The one failure is on a code path this change does not touch. Control runs have since shown it to be a Zen 3 code-placement effect, not something Stage 2B computes (§1.1). I found no correctness problem, and I do not recommend a revert. Stage 2C has not been started.
 
-## 1.1 Open item: x86 Criterion `doc/count_indexed_eq`
+## 1.1 Resolved: x86 Criterion `doc/count_indexed_eq` is a code-placement effect
 
 | Case (AMD EPYC 7763) | vs `dev` 2c0c170 | vs v0.12.1 |
 |---|---|---|
@@ -30,7 +30,23 @@ arm64 is neutral on this case. Evidence that it is code placement, not work:
 - **No change on Intel.** On the local i5-9400F both builds are equal within 5% (single rounds), with and without the JCC mitigation.
 - **Base inside history.** The baseline's times match this case's x86 history from Stage 2A. Only the candidate is out of range.
 
-What would confirm or refute it: one dispatch of `suites=criterion` comparing `dev` 2c0c170 against 2c0c170 plus a padding-only change (an unused but retained function in the same module). If `count_indexed_eq` moves the same way, the cause is placement. I did not push that branch, because pushed branches have been merged within minutes before. It needs your go-ahead, or you can run it yourself.
+**Confirmed by control runs (2026-10-28).** With your approval I ran four throwaway control branches, each adding only inert padding inside a never-taken branch of `search_vectors_in`: read-only bytes (which lld places before `.text`, shifting all code) and/or NOP bytes (which shift only code after that function). I verified each layout locally against the CI-equivalent bench build (fat LTO, one codegen unit, lld). GitHub assigns x86 runner CPUs at random, so the x86 jobs were re-run until each relevant variant drew an EPYC 7763.
+
+| Variant (x86 Criterion, `doc/count_indexed_eq/10000`, against 2c0c170) | Main hot loop (`Range::next`, AccessGuard drop, `scan`, leaf accessors, `get_page`) | Count closure | EPYC 7763 (Zen 3) | Other x86 CPUs |
+|---|---|---|---|---|
+| **Stage 2B as merged** | moved (+0x140) | moved (+0x3e0, 32 → 0 mod 64) | **+20% to +23%** in 4 of 4 jobs (+32% to +36% at 100k) | not drawn |
+| A: `dev` + 0x140 read-only bytes | at Stage 2B's addresses | base alignment | 0.988, neutral | 1.007 (9V74), 1.005 (Xeon) |
+| B: Stage 2B + 0xec0 read-only bytes | back to base, mod 4 KiB | third placement | not drawn | 0.994, 0.995 (9V74), 1.010 (9V45) |
+| **C: `dev` + 0x140 bytes + 0x280 NOPs** | at Stage 2B's addresses | **at Stage 2B's address** | **1.223, regression** (6/6 pairs) | 1.003 (9V74) |
+| **D: Stage 2B + 0xc10 NOPs** | at Stage 2B's addresses | **back to base, mod 4 KiB** | **0.992, neutral** | 1.020 (9V45) |
+
+- Control C carries none of Stage 2B's logic, only its placement of the count closure (`count_plan_entries::{closure#0}`, called once per index entry through `&mut dyn FnMut`). It reproduces the regression to within a point.
+- Control D carries all of Stage 2B's logic, with only that closure moved back. The regression disappears.
+- Moving just the hot loop to Stage 2B's addresses (A) does nothing. No CPU other than Zen 3 reacts to any of these layouts.
+
+The regression is therefore a Zen 3 microarchitectural sensitivity to where that closure lands, about 40 cycles per index entry. Stage 2B's logic is not involved. Any later change to the engine can move the closure again, in either direction.
+
+Evidence: runs 40340816901 (A), 40340823128 (B), 40622005142 (C), 40622008266 (D), 40328873601 (Stage 2B), with all attempts; the table in `V013_STAGE2B_BENCHMARK_RESULTS.json` under `layout_controls`. All four control branches were deleted after their runs, and none was merged or opened as a PR.
 
 ## 2. Checklist
 
@@ -51,12 +67,22 @@ What would confirm or refute it: one dispatch of `suites=criterion` comparing `d
 | Workspace tests, fmt, clippy, MSRV, wasm32 builds and tests | Done | Local gates and CI |
 | Tier 0 fingerprints and SIMD codegen, MEM-2 | Done | CI Tier 0 (ci.yml and the dispatch), both architectures |
 | Native vector CI at 8 and 64 MiB, browser, cumulative v0.12.1 | Done | Dispatch 40328873601, all pass (implementation report §6.6) |
-| Criterion A/B | **Open** | arm64 pass; x86 fails on `doc/count_indexed_eq` (§1.1) |
+| Criterion A/B | Done, with one explained failure | arm64 pass; x86 fails on `doc/count_indexed_eq`, a Zen 3 code-placement effect confirmed by controls (§1.1) |
 | No public API, C ABI, format, cache-default, graph-construction or selection changes | Done | `peek_vectors` is `pub` inside the crate-private `search_cache` module; diff limited to `vector_api.rs`, `search_cache.rs`, tests, examples, the bench script and one report-only workflow step |
 
 ## 3. For the maintainer to decide
 
-1. **The x86 Criterion failure (§1.1).** Accept it as code placement on the strength of the local evidence, or have the padding-only control run first. I recommend the control run before the v0.13.0 release gate, since the release runs this same Criterion comparison against v0.12.1 and may keep failing on it while this layout persists (any later change can move it again).
+1. **The x86 Criterion failure (§1.1).** The cause is confirmed. PR gates now compare against a `dev` that already has this layout, so they will not flag it unless the closure moves again. The release gate compares against v0.12.1 and **will** flag it on any EPYC 7763 runner while this layout persists. Your choices:
+   - **Accept it with a bounded exception** (owner-approved, per `benchmarks/README.md` §Exceptions). Suggested entry, which I have not committed because the approval is yours:
+     ```json
+     { "case": "doc/count_indexed_eq/10000", "gate": "cumulative", "platform": "ci-linux-x86_64", "max_ratio": 1.28,
+       "reason": "Zen 3 code placement of count_plan_entries' closure (Stage 2B layout controls, V013_STAGE2B_MERGE_READINESS §1.1); identical instructions; arm64 and other x86 neutral",
+       "approved_by": "<you>", "approved_in": "<PR URL>" },
+     { "case": "doc/count_indexed_eq/100000", "gate": "cumulative", "platform": "ci-linux-x86_64", "max_ratio": 1.40, "reason": "same", "approved_by": "<you>", "approved_in": "<PR URL>" }
+     ```
+     A cumulative exception must also be named in the release changelog.
+   - **Wait.** Later stages will move the closure again, which may well clear it (as control D shows).
+   - **Pin function alignment.** For example, `-C llvm-args=-align-all-functions=6` in the release profile would make such placement effects less likely. That is a build-configuration change with its own size and performance cost, and it would need measuring. I do not recommend it for v0.13.0.
 2. **Keep it, knowing hits are rare.** By default a block and a ready graph almost never coexist: only an unfiltered exact search builds a block, Auto mode then chooses ANN, and building or rebuilding the graph evicts the block. The change costs one mutex lock per walk when there is no block and has no measurable effect then. When a block is present, which happens with explicit `mode: Exact` alongside ANN (including the `recall` command) and after `memoryBudget` fallbacks, it saves 10–28% on unquantized graphs (13–21% on arm64 CI at 10k × 384). I recommend keeping it. Reverting is a two-file revert if you prefer less code for a rare case.
 3. **The four-thread target needs a different change.** CPU per request at four threads is +45% to +122% over one thread (local and CI) and is not caused by rescoring. `CacheLease::take` lends the graph's node cache to one query at a time, so overlapping walks start cold and read roughly 80–95 graph nodes per request from storage, even at 64 MiB with every node cacheable (implementation report §6.4). Fixing that means letting concurrent walks share a read-only node cache, which changes the cache's ownership and accounting. It would need its own roadmap item, design and Risk M review. I did not attempt it.
 4. **At 8 MiB the block can crowd out the graph.** At 10k × 128 a retained block leaves the graph too little room, and ANN is 1.4–3.7× slower until the block is evicted. This happens on `dev` and v0.12.1 alike. Changing the admission policy (for example, not retaining a block that would displace a graph in use) is a behaviour decision about cache policy, which is why I left it alone. Stage 2C (partial retention) touches the same admission code and should take this into account.

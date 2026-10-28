@@ -13,7 +13,7 @@ After the graph walk, ANN rescoring used to read every candidate with its own st
 | CONC-2 as defined (filtered, no block) | Unchanged. With a block: −5% to −7%, because the graph walk dominates filtered queries. |
 | 4-thread CPU per request ≤ +40% over 1 thread | **Not met:** +45% on the candidate (+48% on `dev`) for CONC-2. The inflation comes from the graph cache lease, not rescoring (§6.4). |
 | Correctness | 11 new integration tests and 1 unit test. 8 of 9 mutants killed; the survivor is equivalent. Fingerprints identical across `dev`, candidate and v0.12.1 in 128 sweeps. All local gates pass. |
-| CI | All vector, browser and Tier 0 jobs pass. arm64 with a block: −11% to −21% vs `dev`. **x86 Criterion failed** on `doc/count_indexed_eq` (+22% to +34%, Zen 3 only, path untouched, identical instruction counts): attributed to code placement, unconfirmed (§6.6). |
+| CI | All vector, browser and Tier 0 jobs pass. arm64 with a block: −11% to −21% vs `dev`. **x86 Criterion failed** on `doc/count_indexed_eq` (+22% to +34%, Zen 3 only): a code-placement effect of the count closure, **confirmed by control runs** (§6.6). |
 
 The main finding is that **a block and a ready graph rarely coexist by default**. Only unfiltered *exact* search builds the block, Auto mode chooses ANN whenever the graph is ready, and finishing a graph build evicts the field. §6.5 lists where hits do occur. I did not add machinery to create blocks for ANN, or raise any budget, to manufacture hits.
 
@@ -154,7 +154,7 @@ The first run hung on M1: a reader panic in the scoped stress test left its help
 | `actionlint performance.yml` | pass |
 | Score fingerprints, 16 HNSW configurations × 8 sweeps, `dev` / candidate / v0.12.1 | 128 of 128 identical; block, no-block and plain sweeps agree at each `ef` |
 | CI: Tier 0 (fingerprints, VEC-6, MEM-2), native vector 8/64 MiB, browser, cumulative | pass (§6.6) |
-| CI Criterion | arm64 pass; **x86 fail** on `doc/count_indexed_eq` (§6.6) |
+| CI Criterion | arm64 pass; **x86 fail** on `doc/count_indexed_eq`: Zen 3 code placement, confirmed (§6.6) |
 
 ## 6. Phase 4 — performance
 
@@ -260,7 +260,17 @@ This change does not touch that path. `count({ bucket: 42 })` goes through `coun
 - **No change on Intel.** Locally (i5-9400F, Criterion, 3 interleaved rounds, with and without the JCC mitigation), both sides are equal within 5% per round.
 - **Base inside history.** Stage 2A's CI history for this case on x86 is 5.0–5.5 µs (10k) and 35–39 µs (100k). This run's baseline (5.35 / 35.7 µs) is in range; the candidate (6.5 / 48 µs) is not.
 
-I attribute the regression to code placement on Zen 3: the moved code makes the same redb loop slower there, as the JCC erratum did on Intel in Stage 1B. I have not confirmed it on Zen 3. That would need a CI run of a padding-only change against the same base. The merge-readiness file lists it as an open item.
+**Control runs confirm code placement.** Throwaway branches added only inert padding, adjusted so that particular functions land at chosen addresses, and their x86 jobs were re-run until they drew an EPYC 7763:
+
+| Variant (x86 Criterion, `doc/count_indexed_eq/10000`, against 2c0c170) | Main hot loop (`Range::next`, AccessGuard drop, `scan`, leaf accessors, `get_page`) | Count closure | EPYC 7763 (Zen 3) | Other x86 CPUs |
+|---|---|---|---|---|
+| **Stage 2B as merged** | moved (+0x140) | moved (+0x3e0, 32 → 0 mod 64) | **+20% to +23%** in 4 of 4 jobs (+32% to +36% at 100k) | not drawn |
+| A: `dev` + 0x140 read-only bytes | at Stage 2B's addresses | base alignment | 0.988, neutral | 1.007 (9V74), 1.005 (Xeon) |
+| B: Stage 2B + 0xec0 read-only bytes | back to base, mod 4 KiB | third placement | not drawn | 0.994, 0.995 (9V74), 1.010 (9V45) |
+| **C: `dev` + 0x140 bytes + 0x280 NOPs** | at Stage 2B's addresses | **at Stage 2B's address** | **1.223, regression** (6/6 pairs) | 1.003 (9V74) |
+| **D: Stage 2B + 0xc10 NOPs** | at Stage 2B's addresses | **back to base, mod 4 KiB** | **0.992, neutral** | 1.020 (9V45) |
+
+The cause is where the closure that `count_plan_entries` passes to `scan` lands: one indirect call per index entry, about 40 cycles slower per entry on Zen 3 at Stage 2B's placement. Stage 2B's logic plays no part (C reproduces the regression without it, D removes it with it). The hot loop's own placement does not matter (A). Merge readiness §1.1 and §3 cover the consequences for the release gate.
 
 ### 6.7 Memory
 
@@ -272,7 +282,7 @@ No new allocations. A hit avoids one `Vec<f32>` per candidate. Peak accounted me
 |---|---|
 | ≥ 15% on HNSW-3 where a block is retained | **Met** for unquantized graphs at 10k × 384 / 64 MiB (−19.4% / −14.9% warm at `ef` 100/400, −18.6% / −19.7% cold), and at 2k × 128 / 384. **Missed** for binary-quantized graphs (−4% to −18%) and for 10k × 128 / 64 MiB at `ef` 100 (−10%). |
 | CONC-2 4-thread CPU ≤ +40% over 1 thread | **Missed:** +45% (from +48% on `dev`; the audit's +80% was measured on v0.12.1). Not attributable to rescoring (§6.4). |
-| No regression without a block | Met on every vector row (local and CI, both architectures). **One Criterion gate failed on x86** (`doc/count_indexed_eq`, +22% to +34% on Zen 3) on a path this change does not touch, with identical executed instructions; attributed to code placement but unconfirmed (§6.6). |
+| No regression without a block | Met on every vector row (local and CI, both architectures). **One Criterion gate failed on x86** (`doc/count_indexed_eq`, +22% to +34% on Zen 3) on a path this change does not touch: a code-placement effect, confirmed by control runs (§6.6). |
 
 ## 8. Limitations
 
