@@ -862,8 +862,9 @@ impl Collection {
                 // same snapshot as the graph, filter, and returned document.
                 // A retained block of this exact revision holds the same
                 // vectors, so it stands in for the point reads. The block holds
-                // only vectors of the index's dimensions; any other candidate
-                // is read from storage, as without a block.
+                // only vectors of the index's dimensions, and a partial block
+                // only those up to its last ID; any other candidate is read
+                // from storage, as without a block.
                 let retained = self
                     .node_cache()
                     .lock()
