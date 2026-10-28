@@ -8156,5 +8156,153 @@
    "code_path": "Collection::count -> count_plan_entries: redb range scan with a counting closure; not touched by this change",
    "conclusion": "same executed work; Zen 3-only slowdown attributed to code placement; unconfirmed on Zen 3 without a padding-only control run"
   }
+ },
+ "layout_controls": {
+  "question": "Is the x86 Criterion doc/count_indexed_eq regression caused by Stage 2B's logic or by code placement?",
+  "method": "Throwaway branches with inert padding in a never-taken branch of search_vectors_in: read-only bytes (shift all .text; lld puts .rodata first) and x86_64 NOPs (shift code after that function). Layouts verified against the local CI-equivalent bench build. x86 jobs re-run until an EPYC 7763 was drawn.",
+  "variants": {
+   "A": "2c0c170 + 0x140 rodata: main hot set at Stage 2B's addresses, count closure at base alignment",
+   "B": "Stage 2B + 0xec0 rodata: main hot set congruent to base mod 4 KiB",
+   "C": "2c0c170 + 0x140 rodata + 0x280 NOPs: main hot set and count closure at Stage 2B's addresses, no Stage 2B logic",
+   "D": "Stage 2B + 0xc10 NOPs: Stage 2B logic and hot set, count closure back at base placement mod 4 KiB"
+  },
+  "columns": [
+   "variant",
+   "run",
+   "attempt",
+   "gate",
+   "cpu",
+   "ratio_10k",
+   "verdict"
+  ],
+  "results": [
+   [
+    "A",
+    "40340816901",
+    "1",
+    "pr",
+    "EPYC 9V74",
+    1.007,
+    "neutral"
+   ],
+   [
+    "A",
+    "40340816901",
+    "2",
+    "pr",
+    "Intel(R) Xeon(R) Plati",
+    1.005,
+    "neutral"
+   ],
+   [
+    "A",
+    "40340816901",
+    "3",
+    "pr",
+    "EPYC 7763",
+    0.988,
+    "neutral"
+   ],
+   [
+    "B",
+    "40340823128",
+    "1",
+    "pr",
+    "EPYC 9V74",
+    0.994,
+    "neutral"
+   ],
+   [
+    "B",
+    "40340823128",
+    "2",
+    "pr",
+    "EPYC 9V74",
+    0.995,
+    "neutral"
+   ],
+   [
+    "B",
+    "40340823128",
+    "3",
+    "pr",
+    "EPYC 9V45",
+    1.01,
+    "neutral"
+   ],
+   [
+    "C",
+    "40622005142",
+    "1",
+    "pr",
+    "EPYC 9V74",
+    1.003,
+    "neutral"
+   ],
+   [
+    "C",
+    "40622005142",
+    "2",
+    "pr",
+    "EPYC 7763",
+    1.223,
+    "regression"
+   ],
+   [
+    "D",
+    "40622008266",
+    "1",
+    "pr",
+    "EPYC 9V45",
+    1.02,
+    "neutral"
+   ],
+   [
+    "D",
+    "40622008266",
+    "2",
+    "pr",
+    "EPYC 7763",
+    0.992,
+    "neutral"
+   ],
+   [
+    "Stage 2B (as merged)",
+    "40328873601",
+    "1",
+    "cumulative",
+    "EPYC 7763",
+    1.223,
+    "regression"
+   ],
+   [
+    "Stage 2B (as merged)",
+    "40328873601",
+    "1",
+    "pr",
+    "EPYC 7763",
+    1.232,
+    "regression"
+   ],
+   [
+    "Stage 2B (as merged)",
+    "40328873601",
+    "2",
+    "cumulative",
+    "EPYC 7763",
+    1.222,
+    "regression"
+   ],
+   [
+    "Stage 2B (as merged)",
+    "40328873601",
+    "2",
+    "pr",
+    "EPYC 7763",
+    1.199,
+    "regression"
+   ]
+  ],
+  "conclusion": "Zen 3-only sensitivity to the placement of count_plan_entries::{closure#0}; reproduced without Stage 2B logic (C), removed with it (D); hot-loop placement irrelevant (A). Control branches deleted; none merged."
  }
 }
