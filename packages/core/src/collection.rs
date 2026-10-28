@@ -43,6 +43,9 @@ mod vector_window;
 // worst-case footprint), because streaming it needs a doc-to-node lookup per match.
 const VECTOR_FILTER_MIN_IDS: usize = 256;
 const VECTOR_FILTER_BUDGET_BYTES_PER_ID: usize = 1024;
+/// A partial vector block must hold at least this share (1/n) of the table, so
+/// a sliver of idle memory never pins a block that saves almost nothing.
+const PARTIAL_BLOCK_MIN_SHARE: usize = 8;
 
 const WRITE_BATCH_DOCS: usize = 128;
 const WRITE_BATCH_BYTES: usize = 1024 * 1024;
@@ -1460,7 +1463,9 @@ impl Collection {
             };
         // Sparse filters batch point reads in key order. Dense filters use an
         // existing decoded block or one contiguous scan, decoding only matches.
-        // Filtered reads never populate the full-vector cache.
+        // Filtered reads never populate the full-vector cache. A partial block
+        // supplies only the vectors up to its last ID; the rest come from
+        // storage exactly as they would without a block.
         if let Some(filter) = &pre_filter
             && allowed.is_none()
         {
@@ -1469,7 +1474,7 @@ impl Collection {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .vectors(&cache_key, generation);
-            if let Some(retained) = cached {
+            if let Some(retained) = cached.as_ref().filter(|r| !r.partial) {
                 // Blocks are built by ordered scans. Reuse their vectors without
                 // building an ID map or copying a collection-sized block.
                 let block = &retained.block;
@@ -1486,9 +1491,29 @@ impl Collection {
                     Ok(())
                 })?;
             } else {
+                let prefix = cached.as_ref().and_then(|r| Some((r, r.resume_after()?)));
                 let chunk_size = (64 * 1024 / def.dimensions.saturating_mul(4)).clamp(1, 256);
                 let mut keys = Vec::with_capacity(chunk_size);
                 let mut flush = |keys: &mut Vec<[u8; 16]>| -> Result<(), TalaDbError> {
+                    // The batch visits keys in sorted order; score the ones the
+                    // prefix covers from it, in that order, and read the rest.
+                    if let Some((retained, last)) = prefix {
+                        keys.sort_unstable();
+                        keys.dedup();
+                        let covered = keys.partition_point(|key| *key <= last);
+                        let block = &retained.block;
+                        for key in keys.drain(..covered) {
+                            let id = Ulid::from_bytes(key);
+                            if let Ok(i) = block.ids.binary_search(&id) {
+                                let start = i * block.dimensions;
+                                score(
+                                    id,
+                                    &block.values[start..start + block.dimensions],
+                                    retained.norm_sq(i),
+                                )?;
+                            }
+                        }
+                    }
                     crate::query::key_batch::visit(txn, &table, keys, &mut |id, bytes| {
                         if let Some(values) = decode_f32_vec(bytes) {
                             score(Ulid::from_bytes(*id), &values, None)?;
@@ -1531,7 +1556,8 @@ impl Collection {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .vectors(&cache_key, generation);
-                if let Some(retained) = cached {
+                let mut resume = None;
+                if let Some(retained) = &cached {
                     let block = &retained.block;
                     for (i, (id, values)) in block
                         .ids
@@ -1543,10 +1569,15 @@ impl Collection {
                             score(*id, values, retained.norm_sq(i))?;
                         }
                     }
-                } else {
+                    resume = retained.resume_after();
+                }
+                // Without a block, or after a partial one, scan in key order.
+                if cached.is_none() || resume.is_some() {
                     txn.scan(
                         &table,
-                        std::ops::Bound::Unbounded,
+                        resume.as_ref().map_or(std::ops::Bound::Unbounded, |key| {
+                            std::ops::Bound::Excluded(key.as_slice())
+                        }),
                         std::ops::Bound::Unbounded,
                         &mut |key, bytes| {
                             if let Ok(id) = <[u8; 16]>::try_from(key)
@@ -1582,6 +1613,23 @@ impl Collection {
                 {
                     score(*id, values, retained.norm_sq(i))?;
                 }
+                // A partial block ends at its last ID: stream the rest of the
+                // table after it, in key order, as an uncached scan would.
+                if let Some(after) = retained.resume_after() {
+                    txn.scan(
+                        &table,
+                        std::ops::Bound::Excluded(after.as_slice()),
+                        std::ops::Bound::Unbounded,
+                        &mut |key, bytes| {
+                            if let Ok(id) = <[u8; 16]>::try_from(key)
+                                && let Some(values) = decode_f32_vec(bytes)
+                            {
+                                score(Ulid::from_bytes(id), &values, None)?;
+                            }
+                            Ok(crate::engine::ScanFlow::Continue)
+                        },
+                    )?;
+                }
             } else {
                 let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
                 let estimate =
@@ -1609,17 +1657,42 @@ impl Collection {
                     norms = false;
                     reservation = reserve(estimate);
                 }
+                // When no full block fits, keep the prefix that fits in idle
+                // memory, with norms for cosine (`SearchCache::reserve_partial`).
+                let mut capacity = count;
+                if reservation.is_none() {
+                    let cosine = def.metric == VectorMetric::Cosine;
+                    let norm_bytes = if cosine { 4 } else { 0 };
+                    let vector_bytes = def
+                        .dimensions
+                        .saturating_mul(4)
+                        .saturating_add(16 + norm_bytes);
+                    if let Some((partial, vectors)) = self
+                        .search_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .reserve_partial(
+                            vector_bytes,
+                            count,
+                            count.div_ceil(PARTIAL_BLOCK_MIN_SHARE),
+                        )
+                    {
+                        norms = cosine;
+                        reservation = Some(partial);
+                        capacity = vectors;
+                    }
+                }
                 let retain = reservation.is_some();
                 let mut retained = RetainedVectors::default();
                 retained.block.dimensions = def.dimensions;
                 if retain {
-                    retained.block.ids.reserve_exact(count);
+                    retained.block.ids.reserve_exact(capacity);
                     retained
                         .block
                         .values
-                        .reserve_exact(count.saturating_mul(def.dimensions));
+                        .reserve_exact(capacity.saturating_mul(def.dimensions));
                     if norms {
-                        retained.norms.reserve_exact(count);
+                        retained.norms.reserve_exact(capacity);
                     }
                 }
                 txn.scan(
@@ -1631,11 +1704,15 @@ impl Collection {
                             && let Some(values) = decode_f32_vec(bytes)
                             && values.len() == def.dimensions
                         {
+                            // The prefix ends at the first valid vector that
+                            // does not fit; that one and all after it stream.
+                            let keep = retain && retained.block.ids.len() < capacity;
+                            retained.partial |= retain && !keep;
                             // A retained cosine block computes each norm once,
                             // and this first query scores with it too.
-                            let norm_sq = norms.then(|| crate::vector::norm_sq(&values));
+                            let norm_sq = (keep && norms).then(|| crate::vector::norm_sq(&values));
                             score(Ulid::from_bytes(id), &values, norm_sq)?;
-                            if retain {
+                            if keep {
                                 retained.block.ids.push(Ulid::from_bytes(id));
                                 retained.block.values.extend(values);
                                 retained.norms.extend(norm_sq);

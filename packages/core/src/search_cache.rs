@@ -78,6 +78,9 @@ impl Entry {
             Value::Graph(g) => g.cache.bytes(),
         }
     }
+    fn partial(&self) -> bool {
+        matches!(&self.value, Value::Vectors(v) if v.vectors.partial)
+    }
 }
 
 pub(crate) type SharedSearchCache = Arc<Mutex<SearchCache>>;
@@ -168,6 +171,10 @@ impl SearchCache {
         })
     }
     pub fn reserve_graph(&mut self, minimum: usize) -> MemoryReservation {
+        // Partial vector blocks occupy memory that was idle when they were
+        // built; a graph walk or build gets all of it back, as if they had
+        // never been retained.
+        self.entries.retain(|_, entry| !entry.partial());
         // Leave other retained indexes resident when they fit. Evict only if
         // a cached graph or a useful minimum workspace needs their allowance.
         self.trim_memory(minimum.max(64 * 1024).min(self.memory_budget()));
@@ -190,6 +197,45 @@ impl SearchCache {
             .max(minimum.max(64 * 1024).min(available));
         self.reserve(grant)
             .expect("available graph reservation fits")
+    }
+    /// Reserve a partial vector block: up to `wanted` vectors of
+    /// `vector_bytes` each from memory that no entry, reservation or loan
+    /// holds, and at least `minimum`. Returns the reservation and the number
+    /// of vectors it covers.
+    ///
+    /// It is refused while a graph is resident or anything is reserved or
+    /// pinned, and it never evicts, so it cannot displace another entry. It
+    /// leaves the 64 KiB walk workspace idle, so a graph walk that starts
+    /// while the block is built still gets a working allowance instead of
+    /// falling back to exact search. Once retained it is the first entry
+    /// evicted, and graph reservations drop it.
+    pub fn reserve_partial(
+        &mut self,
+        vector_bytes: usize,
+        wanted: usize,
+        minimum: usize,
+    ) -> Option<(MemoryReservation, usize)> {
+        self.vector_loans.retain(|block| block.strong_count() > 0);
+        if vector_bytes == 0
+            || self.active_bytes() > 0
+            || self
+                .entries
+                .values()
+                .any(|entry| matches!(entry.value, Value::Graph(_)))
+        {
+            return None;
+        }
+        let retained = self.stats().retained_bytes;
+        let idle = self.budget.saturating_sub(retained).min(
+            self.memory_budget()
+                .saturating_sub(retained)
+                .saturating_sub(64 * 1024),
+        );
+        let vectors = (idle / vector_bytes).min(wanted);
+        if vectors == 0 || vectors < minimum {
+            return None;
+        }
+        Some((self.reserve(vectors * vector_bytes)?, vectors))
     }
     pub fn stats(&self) -> VectorCacheStats {
         VectorCacheStats {
@@ -256,6 +302,9 @@ impl SearchCache {
     fn apply_budget(&mut self, budget: usize) {
         self.budget = budget;
         self.epoch = self.epoch.wrapping_add(1);
+        // A partial block was sized to the memory idle under the old budget;
+        // the next exact search sizes a new one.
+        self.entries.retain(|_, entry| !entry.partial());
         self.trim(0);
         self.trim_memory(0);
         // Existing loans keep their reservation until exit. Reducing a live
@@ -265,14 +314,17 @@ impl SearchCache {
             .retained_bytes
             .saturating_add(self.active_bytes());
     }
+    /// The next entry to evict: partial vector blocks first, then the least
+    /// recently used, so a partial block only ever gives way.
+    fn victim(&self) -> Option<String> {
+        self.entries
+            .iter()
+            .min_by_key(|(_, e)| (!e.partial(), e.touched))
+            .map(|(k, _)| k.clone())
+    }
     fn trim(&mut self, incoming: usize) {
         while self.stats().retained_bytes.saturating_add(incoming) > self.budget {
-            let Some(key) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.touched)
-                .map(|(k, _)| k.clone())
-            else {
+            let Some(key) = self.victim() else {
                 break;
             };
             self.entries.remove(&key);
@@ -287,12 +339,7 @@ impl SearchCache {
             .saturating_add(incoming)
             > self.memory_budget()
         {
-            let Some(key) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.touched)
-                .map(|(k, _)| k.clone())
-            else {
+            let Some(key) = self.victim() else {
                 break;
             };
             self.entries.remove(&key);
@@ -307,10 +354,20 @@ impl SearchCache {
             return;
         }
         self.entries.remove(&key);
-        self.trim(entry.bytes());
-        self.trim_memory(entry.bytes());
-        if self.active_bytes().saturating_add(entry.bytes()) > self.memory_budget() {
-            return;
+        if entry.partial() {
+            // Admitted only into idle memory: a partial block never evicts.
+            let retained = self.stats().retained_bytes.saturating_add(entry.bytes());
+            if retained > self.budget
+                || retained.saturating_add(self.active_bytes()) > self.memory_budget()
+            {
+                return;
+            }
+        } else {
+            self.trim(entry.bytes());
+            self.trim_memory(entry.bytes());
+            if self.active_bytes().saturating_add(entry.bytes()) > self.memory_budget() {
+                return;
+            }
         }
         self.clock = self.clock.wrapping_add(1);
         self.entries.insert(
@@ -372,15 +429,15 @@ impl SearchCache {
         vectors: RetainedVectors,
         epoch: u64,
     ) {
-        if self.epoch != epoch {
+        if self.epoch != epoch || (vectors.partial && vectors.block.ids.is_empty()) {
             return;
         }
         let key = format!("v:{key}");
-        if self
-            .entries
-            .get(&key)
-            .is_some_and(|e| matches!(&e.value, Value::Vectors(v) if v.generation > generation))
-        {
+        // Never replace a newer block, nor a complete block with a partial one.
+        if self.entries.get(&key).is_some_and(|e| {
+            matches!(&e.value, Value::Vectors(v) if v.generation > generation
+                || (v.generation == generation && !v.vectors.partial && vectors.partial))
+        }) {
             return;
         }
         self.insert(
@@ -507,6 +564,7 @@ mod tests {
                 dimensions: 2,
             },
             norms: vec![2.0; n],
+            partial: false,
         }
     }
     #[test]
@@ -641,6 +699,106 @@ mod tests {
         assert!(cache.reserve(64 * 1024 - block(10).bytes() + 1).is_none());
         drop(borrowed);
         assert_eq!(cache.stats().active_bytes, 0);
+    }
+    fn partial(n: usize) -> RetainedVectors {
+        RetainedVectors {
+            partial: true,
+            ..block(n)
+        }
+    }
+    fn graph() -> CachedGraph {
+        CachedGraph {
+            revision: 1,
+            cache: Box::new(crate::vector_graph::NodeCache::with_budget(0)),
+        }
+    }
+    #[test]
+    fn partial_blocks_take_only_idle_memory_and_never_evict() {
+        let (per, walk) = (block(1).bytes(), 64 * 1024);
+        let budget = walk + per * 100;
+        let mut cache = SearchCache::default();
+        cache.set_budget(budget);
+        cache.insert_vectors("full", 1, block(30), cache.epoch);
+        // Sized to what is idle beyond the walk workspace, bounded by the
+        // table and the minimum.
+        let (reservation, n) = cache.reserve_partial(per, 10_000, 10).unwrap();
+        assert_eq!((reservation.bytes, n), (per * 70, 70));
+        // Anything live, reserved or pinned, refuses a second one.
+        assert!(cache.reserve_partial(per, 10_000, 1).is_none());
+        drop(reservation);
+        assert!(cache.reserve_partial(per, 10_000, 71).is_none());
+        assert_eq!(cache.reserve_partial(per, 20, 1).unwrap().1, 20);
+        assert!(cache.reserve_partial(0, 20, 1).is_none());
+        let pinned = cache.vectors("full", 1).unwrap();
+        cache.insert_vectors("other", 1, block(40), cache.epoch);
+        cache.entries.remove("v:full");
+        assert!(cache.reserve_partial(per, 10_000, 1).is_none(), "pinned");
+        drop(pinned);
+        assert_eq!(cache.reserve_partial(per, 10_000, 1).unwrap().1, 60);
+        // A partial insert that does not fit beside the others is refused
+        // rather than evicting them.
+        let over = (budget - per * 40) / per + 1;
+        cache.insert_vectors("p", 1, partial(over), cache.epoch);
+        assert_eq!(cache.stats().vector_indexes, 1);
+        assert_eq!(cache.stats().retained_bytes, per * 40);
+        cache.insert_vectors("p", 1, partial(60), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, per * 100);
+        // An empty prefix is never retained.
+        cache.insert_vectors("q", 1, partial(0), cache.epoch);
+        assert!(cache.vectors("q", 1).is_none());
+        // Budgets inside the walk workspace never hold a prefix.
+        cache.set_budget(walk);
+        assert!(cache.reserve_partial(per, 10_000, 1).is_none());
+    }
+    #[test]
+    fn a_resident_graph_refuses_partial_blocks_and_graph_reservations_reclaim_them() {
+        let per = block(1).bytes();
+        let budget = per * 10_000;
+        let mut cache = SearchCache::default();
+        cache.set_budget(budget);
+        cache.insert_graph("g", graph(), cache.epoch);
+        assert_eq!(cache.stats().graph_indexes, 1);
+        assert!(cache.reserve_partial(per, 10_000, 1).is_none());
+        cache.take_graph("g");
+        let (reservation, held) = cache.reserve_partial(per, 10_000, 1).unwrap();
+        assert_eq!(held, (budget - 64 * 1024) / per);
+        // A walk starting meanwhile still gets the workspace (three quarters
+        // of it, the rest held back for overlapping walks).
+        let walk = cache.reserve_graph(0);
+        assert!(walk.bytes >= 48 * 1024, "{}", walk.bytes);
+        drop(walk);
+        drop(reservation);
+        cache.insert_vectors("p", 1, partial(held), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, per * held);
+        // The walk gets the allowance it would have had without the block.
+        let lease = cache.reserve_graph(0);
+        assert_eq!(cache.stats().vector_indexes, 0);
+        assert_eq!(lease.bytes, budget - budget / 4);
+    }
+    #[test]
+    fn partial_blocks_are_evicted_first_and_dropped_when_the_budget_changes() {
+        let per = block(1).bytes();
+        let mut cache = SearchCache::default();
+        cache.set_budget(per * 100);
+        let epoch = cache.epoch;
+        cache.insert_vectors("old", 1, block(30), epoch);
+        cache.insert_vectors("p", 1, partial(40), epoch);
+        // `p` is the most recently used, yet it gives way first.
+        assert!(cache.vectors("p", 1).is_some());
+        cache.insert_vectors("new", 1, block(40), epoch);
+        assert!(cache.vectors("p", 1).is_none());
+        assert!(cache.vectors("old", 1).is_some());
+        assert!(cache.vectors("new", 1).is_some());
+        // A complete block of the same generation is never replaced by a
+        // partial one; a newer generation's prefix replaces an older block.
+        cache.insert_vectors("old", 1, partial(10), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, per * 70);
+        cache.insert_vectors("old", 2, partial(10), cache.epoch);
+        assert_eq!(cache.stats().retained_bytes, per * 50);
+        // Any budget change drops prefixes, even when they would still fit.
+        cache.set_budget(per * 200);
+        assert_eq!(cache.stats().retained_bytes, per * 40);
+        assert!(cache.vectors("old", 2).is_none());
     }
     #[test]
     fn obsolete_vectors_are_freed_without_an_old_snapshot_evicting_newer_vectors() {

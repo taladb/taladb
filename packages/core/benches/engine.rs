@@ -73,18 +73,17 @@ fn bench_vector_scoring(s: &mut Suite) {
 }
 
 /// End-to-end exact vector search, which is what the README's numbers describe.
+/// `vector/find_nearest_8mib` repeats it at the phone and WASM cache budget,
+/// where a 10k × 384-d block no longer fits and only a prefix is retained.
 fn bench_find_nearest(s: &mut Suite) {
     const DIMS: usize = 384;
     if !s.enabled("vector") {
         return;
     }
-    let mut group = s.group("vector/find_nearest");
-    group.sample_size(20);
-
-    for count in suite::sizes(&[1_000, 10_000]) {
+    let fixture = |count: usize| {
         let db = Database::open_in_memory().unwrap();
         let col = db.collection("docs").unwrap();
-        let vectors = make_vectors(count + 1, DIMS);
+        let mut vectors = make_vectors(count + 1, DIMS);
         let docs: Vec<Vec<(String, Value)>> = vectors[1..]
             .iter()
             .map(|v| {
@@ -97,12 +96,35 @@ fn bench_find_nearest(s: &mut Suite) {
         col.insert_many(docs).unwrap();
         col.create_vector_index("embedding", DIMS, None, None)
             .unwrap();
+        (db, col, vectors.swap_remove(0))
+    };
 
-        let query = &vectors[0];
+    let mut group = s.group("vector/find_nearest");
+    group.sample_size(20);
+    for count in suite::sizes(&[1_000, 10_000]) {
+        let (_db, col, query) = fixture(count);
         group.throughput(Throughput::Elements(count as u64));
         group.run_param(count, || {
             Scores(
-                col.find_nearest(black_box("embedding"), black_box(query), 10, None)
+                col.find_nearest(black_box("embedding"), black_box(&query), 10, None)
+                    .unwrap(),
+            )
+        });
+    }
+    group.finish();
+
+    let mut group = s.group("vector/find_nearest_8mib");
+    group.sample_size(20);
+    for count in suite::sizes(&[1_000, 10_000])
+        .into_iter()
+        .filter(|&n| n >= 10_000)
+    {
+        let (db, col, query) = fixture(count);
+        db.set_vector_cache_budget(8 * 1024 * 1024);
+        group.throughput(Throughput::Elements(count as u64));
+        group.run_param(count, || {
+            Scores(
+                col.find_nearest(black_box("embedding"), black_box(&query), 10, None)
                     .unwrap(),
             )
         });

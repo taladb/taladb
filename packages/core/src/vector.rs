@@ -60,15 +60,32 @@ impl VectorBlock {
 /// streamed scans produce the same scores. The norms sit beside the block, not
 /// in it, so the public `VectorBlock` keeps its shape. They count against the
 /// cache budget through [`RetainedVectors::bytes`].
+///
+/// A block that does not fit the budget may be retained as a prefix instead
+/// (`partial`): every valid vector of the revision whose key is at most the
+/// last ID in `block`, and none after it. Readers score the prefix, then stream
+/// the table from [`RetainedVectors::resume_after`], so each vector is scored
+/// once and in the same key order as a full scan.
 #[derive(Default)]
 pub(crate) struct RetainedVectors {
     pub block: VectorBlock,
     /// `norm_sq` of each vector, in `block` order. Empty unless built for cosine.
     pub norms: Vec<f32>,
+    /// The block is a non-empty prefix of the table's valid vectors.
+    pub partial: bool,
 }
 impl RetainedVectors {
     pub fn bytes(&self) -> usize {
         self.block.bytes() + self.norms.capacity() * 4
+    }
+    /// The key after which a partial block's vectors must be read from
+    /// storage; `None` when the block holds every valid vector.
+    pub fn resume_after(&self) -> Option<[u8; 16]> {
+        self.block
+            .ids
+            .last()
+            .filter(|_| self.partial)
+            .map(ulid::Ulid::to_bytes)
     }
     /// The cached squared norm of vector `i`, if this block carries norms.
     #[inline]
