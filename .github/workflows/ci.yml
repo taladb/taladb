@@ -59,6 +59,7 @@ jobs:
       node: ${{ steps.matrix.outputs.node }}
       cli: ${{ steps.matrix.outputs.cli }}
       code: ${{ steps.changes.outputs.code }}
+      tier0: ${{ steps.changes.outputs.tier0 }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -73,6 +74,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != pull_request ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "tier0=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # HEAD is GitHub's merge of the PR into its base; its first parent is the base.
@@ -82,6 +84,10 @@ jobs:
           if grep -qvE "$ignored" <<<"$changed"; then code=true; else code=false; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "Code changed: $code"
+          # Benchmark Tier 0 also runs when only its script or its committed
+          # references change, which the list above treats as docs/tooling.
+          if [ "$code" = true ] || grep -qE '^(scripts/bench-tier0\.py|benchmarks/)' <<<"$changed"; then tier0=true; else tier0=false; fi
+          echo "tier0=$tier0" >> "$GITHUB_OUTPUT"
 
       - name: Pick matrix for ${{ github.event_name }}
         id: matrix
@@ -177,6 +183,23 @@ jobs:
 
       - name: cargo test (wasm32, node)
         run: cargo test -p taladb-web --target wasm32-unknown-unknown
+
+  # ---------------------------------------------------------------------------
+  # Benchmark Tier 0 — deterministic gates that need no baseline build
+  #
+  # Compared with the committed v0.12.1 references in benchmarks/baselines/:
+  # result fingerprints of every Criterion workload, MEM-2 heap allocation
+  # counts, and VEC-6 vector instruction counts of the scoring kernels on
+  # x86_64, aarch64 (Linux, iOS) and wasm32. The codegen check is what catches
+  # a kernel that compiles scalar on phones and in the browser while staying
+  # vectorised on the x86 machines benchmarks run on. Timing gates are in
+  # performance.yml. See benchmarks/README.md.
+  # ---------------------------------------------------------------------------
+  bench-tier0:
+    name: Benchmarks — Tier 0
+    needs: setup
+    if: needs.setup.outputs.tier0 == 'true'
+    uses: ./.github/workflows/benchmark-tier0.yml
 
   # ---------------------------------------------------------------------------
   # Supply chain — advisories against the committed Cargo.lock
@@ -806,6 +829,7 @@ jobs:
       - build-cli
       - build-taladb
       - build-taladb-react
+      - bench-tier0
     if: always()
     steps:
       # Apart from docs-only pull requests (handled first), every job above
@@ -815,6 +839,12 @@ jobs:
       - name: Check all jobs succeeded
         run: |
           if [ "${{ needs.setup.result }}" = success ] && [ "${{ needs.setup.outputs.code }}" = false ]; then
+            # Tier 0 still runs when only its script or references changed.
+            tier0="${{ needs.bench-tier0.result }}"
+            if [ "$tier0" != success ] && [ "$tier0" != skipped ]; then
+              echo "Benchmark Tier 0: $tier0"
+              exit 1
+            fi
             echo "Docs-only change: every build and test job was skipped on purpose."
             exit 0
           fi

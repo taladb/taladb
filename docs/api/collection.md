@@ -75,7 +75,7 @@ const all   = await users.find()
 const young = await users.find({ age: { $lt: 30 } })
 ```
 
-Documents are returned in ULID insertion order (ascending). For sorting, pagination, or field projection, see [Sorting, pagination and projection](#sorting-pagination-and-projection) below.
+Without a sort, the order depends on how the filter is answered. A filter that uses no index returns documents in ULID insertion order (ascending). A filter answered from an index returns them in index order: by the indexed value, then `_id`. For a numeric field holding both kinds of numbers, all integers come before all floating-point values. A string containing a NUL character can also come before a shorter string it extends (`'a\0b'` before `'a'`) when the shorter one's `_id` starts with byte `0xFF`. That includes two-sided ranges such as `{ n: { $gte: 10, $lt: 20 } }` on a field that has never held an array; before 0.13 they came back in an unspecified order that differed between runs. Other combined index filters (`$or`, several indexed equalities) return an unspecified order. Pass an explicit sort when order matters, and especially when taking a limited page: which documents an unsorted limit returns follows the same order. For sorting, pagination, or field projection, see [Sorting, pagination and projection](#sorting-pagination-and-projection) below.
 
 ## Sorting, pagination and projection
 

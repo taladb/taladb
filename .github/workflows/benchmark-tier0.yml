@@ -1,0 +1,67 @@
+name: Benchmark Tier 0
+
+# Deterministic benchmark gates that need no baseline build, compared with the
+# committed v0.12.1 references in benchmarks/baselines/v0.12.1/:
+#   - result fingerprints of every Criterion workload
+#   - MEM-2 heap allocation counts of examples/stabilization_memory.rs
+#   - VEC-6 vector instruction counts of the scoring kernels on x86_64,
+#     aarch64 (Linux, iOS) and wasm32
+# Called by ci.yml as a required check, and by performance.yml on request with
+# `record: true` to regenerate the references (benchmarks/README.md).
+
+on:
+  workflow_call:
+    inputs:
+      record:
+        description: 'Write the references instead of checking against them'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  tier0:
+    name: Tier 0 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    env:
+      RECORD: ${{ inputs.record && '--record' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      # The arm64 runner image is not guaranteed to ship rustup.
+      - name: Sync pinned toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-tier0
+      - name: Result fingerprints
+        run: python3 scripts/bench-tier0.py fingerprints $RECORD --output tier0-fingerprints.json
+      - name: Heap allocation counts
+        run: python3 scripts/bench-tier0.py allocations $RECORD --output tier0-allocations.json
+      # Cross-compiled, so the result does not depend on the runner: once is enough.
+      - name: Vector kernel codegen
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          rustup target add aarch64-unknown-linux-gnu aarch64-apple-ios
+          python3 scripts/bench-tier0.py codegen $RECORD --target-dir target/codegen --output tier0-codegen.json
+      - name: Publish Tier 0 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-tier0-${{ runner.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            tier0-*.json
+            benchmarks/baselines/
+          retention-days: 90

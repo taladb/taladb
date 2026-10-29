@@ -20,11 +20,10 @@ use crate::index::{
     adjust_index_arrays, compound_meta_key, compound_table_name, docs_table_name,
     encode_compound_keys, encode_index_keys, index_table_name, meta_key,
 };
-use crate::query::executor::{execute, fetch_documents, index_ordered_entries};
+use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{
-    FindOptions, SortDirection, exclude_fields, partial_sort_documents, project_document,
-    sort_documents,
+    FindOptions, exclude_fields, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
 use crate::time::now_ms;
@@ -44,6 +43,9 @@ mod vector_window;
 // worst-case footprint), because streaming it needs a doc-to-node lookup per match.
 const VECTOR_FILTER_MIN_IDS: usize = 256;
 const VECTOR_FILTER_BUDGET_BYTES_PER_ID: usize = 1024;
+/// A partial vector block must hold at least this share (1/n) of the table, so
+/// a sliver of idle memory never pins a block that saves almost nothing.
+const PARTIAL_BLOCK_MIN_SHARE: usize = 8;
 
 const WRITE_BATCH_DOCS: usize = 128;
 const WRITE_BATCH_BYTES: usize = 1024 * 1024;
@@ -832,9 +834,7 @@ impl Collection {
             .map(|(id, (score, _))| (id, score))
             .collect();
         let compare = |a: &([u8; 16], f32), b: &([u8; 16], f32)| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::bm25::cmp_scores_desc(a.1, b.1).then_with(|| a.0.cmp(&b.0))
         };
         // Selection requires a total order. Keep the historical full sort for
         // non-finite scores permitted by caller-supplied BM25 parameters.
@@ -942,10 +942,7 @@ impl Collection {
         let mut ranked: Vec<([u8; 16], FusedEntry)> = fused.into_iter().collect();
         // Ties break on ULID so identical queries return identical order.
         ranked.sort_by(|a, b| {
-            b.1.score
-                .partial_cmp(&a.1.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::bm25::cmp_scores_desc(a.1.score, b.1.score).then_with(|| a.0.cmp(&b.0))
         });
         ranked.truncate(top_k);
 
@@ -1408,7 +1405,7 @@ impl Collection {
         pre_filter: Option<Filter>,
         options: &VectorQueryOptions,
     ) -> Result<(Vec<VectorSearchResult>, usize), TalaDbError> {
-        use crate::vector::VectorBlock;
+        use crate::vector::{RetainedVectors, VectorMetric};
         let cache = self.load_indexes_in(txn)?;
         let def = cache
             .vec_indexes
@@ -1448,17 +1445,27 @@ impl Collection {
         let norm = crate::vector::l2_norm(query);
         let mut ranker = vector_window::Ranker::new(top_k, options);
         let mut computations = 0;
-        let mut score = |id: Ulid, values: &[f32]| -> Result<(), TalaDbError> {
-            if values.len() != query.len() {
-                return Ok(());
-            }
-            computations += 1;
-            let similarity = crate::vector::score_with_query_norm(&def.metric, query, norm, values);
-            ranker.offer(self, txn, id, similarity)
-        };
+        // `stored_norm_sq` comes from a retained block; streamed vectors
+        // recompute it. Both give the same bits (see `RetainedVectors`).
+        let mut score =
+            |id: Ulid, values: &[f32], stored_norm_sq: Option<f32>| -> Result<(), TalaDbError> {
+                if values.len() != query.len() {
+                    return Ok(());
+                }
+                computations += 1;
+                let similarity = match stored_norm_sq {
+                    Some(norm_sq) => {
+                        crate::vector::score_with_norms(&def.metric, query, norm, values, norm_sq)
+                    }
+                    None => crate::vector::score_with_query_norm(&def.metric, query, norm, values),
+                };
+                ranker.offer(self, txn, id, similarity)
+            };
         // Sparse filters batch point reads in key order. Dense filters use an
         // existing decoded block or one contiguous scan, decoding only matches.
-        // Filtered reads never populate the full-vector cache.
+        // Filtered reads never populate the full-vector cache. A partial block
+        // supplies only the vectors up to its last ID; the rest come from
+        // storage exactly as they would without a block.
         if let Some(filter) = &pre_filter
             && allowed.is_none()
         {
@@ -1467,24 +1474,49 @@ impl Collection {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .vectors(&cache_key, generation);
-            if let Some(block) = cached {
+            if let Some(retained) = cached.as_ref().filter(|r| !r.partial) {
                 // Blocks are built by ordered scans. Reuse their vectors without
                 // building an ID map or copying a collection-sized block.
+                let block = &retained.block;
                 self.visit_vector_ids_in(txn, filter, &mut |id| {
                     let id = Ulid::from_bytes(id);
                     if let Ok(i) = block.ids.binary_search(&id) {
                         let start = i * block.dimensions;
-                        score(id, &block.values[start..start + block.dimensions])?;
+                        score(
+                            id,
+                            &block.values[start..start + block.dimensions],
+                            retained.norm_sq(i),
+                        )?;
                     }
                     Ok(())
                 })?;
             } else {
+                let prefix = cached.as_ref().and_then(|r| Some((r, r.resume_after()?)));
                 let chunk_size = (64 * 1024 / def.dimensions.saturating_mul(4)).clamp(1, 256);
                 let mut keys = Vec::with_capacity(chunk_size);
                 let mut flush = |keys: &mut Vec<[u8; 16]>| -> Result<(), TalaDbError> {
+                    // The batch visits keys in sorted order; score the ones the
+                    // prefix covers from it, in that order, and read the rest.
+                    if let Some((retained, last)) = prefix {
+                        keys.sort_unstable();
+                        keys.dedup();
+                        let covered = keys.partition_point(|key| *key <= last);
+                        let block = &retained.block;
+                        for key in keys.drain(..covered) {
+                            let id = Ulid::from_bytes(key);
+                            if let Ok(i) = block.ids.binary_search(&id) {
+                                let start = i * block.dimensions;
+                                score(
+                                    id,
+                                    &block.values[start..start + block.dimensions],
+                                    retained.norm_sq(i),
+                                )?;
+                            }
+                        }
+                    }
                     crate::query::key_batch::visit(txn, &table, keys, &mut |id, bytes| {
                         if let Some(values) = decode_f32_vec(bytes) {
-                            score(Ulid::from_bytes(*id), &values)?;
+                            score(Ulid::from_bytes(*id), &values, None)?;
                         }
                         Ok(())
                     })
@@ -1514,7 +1546,7 @@ impl Collection {
                         if let Some(bytes) = bytes
                             && let Some(values) = decode_f32_vec(&bytes)
                         {
-                            score(Ulid::from_bytes(*id), &values)?;
+                            score(Ulid::from_bytes(*id), &values, None)?;
                         }
                     }
                 }
@@ -1524,27 +1556,35 @@ impl Collection {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .vectors(&cache_key, generation);
-                if let Some(block) = cached {
-                    for (id, values) in block
+                let mut resume = None;
+                if let Some(retained) = &cached {
+                    let block = &retained.block;
+                    for (i, (id, values)) in block
                         .ids
                         .iter()
                         .zip(block.values.chunks_exact(block.dimensions))
+                        .enumerate()
                     {
                         if ids.contains(&id.to_bytes()) {
-                            score(*id, values)?;
+                            score(*id, values, retained.norm_sq(i))?;
                         }
                     }
-                } else {
+                    resume = retained.resume_after();
+                }
+                // Without a block, or after a partial one, scan in key order.
+                if cached.is_none() || resume.is_some() {
                     txn.scan(
                         &table,
-                        std::ops::Bound::Unbounded,
+                        resume.as_ref().map_or(std::ops::Bound::Unbounded, |key| {
+                            std::ops::Bound::Excluded(key.as_slice())
+                        }),
                         std::ops::Bound::Unbounded,
                         &mut |key, bytes| {
                             if let Ok(id) = <[u8; 16]>::try_from(key)
                                 && ids.contains(&id)
                                 && let Some(values) = decode_f32_vec(bytes)
                             {
-                                score(Ulid::from_bytes(id), &values)?;
+                                score(Ulid::from_bytes(id), &values, None)?;
                             }
                             Ok(crate::engine::ScanFlow::Continue)
                         },
@@ -1552,50 +1592,84 @@ impl Collection {
                 }
             }
         } else {
-            let (cached, budget, epoch) = {
+            // An older block stays resident until `reserve_block` below,
+            // which may reuse its buffers for this revision's block.
+            let (cached, epoch) = {
                 let mut cache = self
                     .search_cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (
-                    cache.vectors(&cache_key, generation),
-                    cache.budget(),
-                    cache.epoch,
-                )
+                (cache.current_vectors(&cache_key, generation), cache.epoch)
             };
-            if let Some(block) = cached {
-                for (id, values) in block
+            if let Some(retained) = cached {
+                let block = &retained.block;
+                for (i, (id, values)) in block
                     .ids
                     .iter()
                     .zip(block.values.chunks_exact(block.dimensions))
+                    .enumerate()
                 {
-                    score(*id, values)?;
+                    score(*id, values, retained.norm_sq(i))?;
+                }
+                // A partial block ends at its last ID: stream the rest of the
+                // table after it, in key order, as an uncached scan would.
+                if let Some(after) = retained.resume_after() {
+                    txn.scan(
+                        &table,
+                        std::ops::Bound::Excluded(after.as_slice()),
+                        std::ops::Bound::Unbounded,
+                        &mut |key, bytes| {
+                            if let Ok(id) = <[u8; 16]>::try_from(key)
+                                && let Some(values) = decode_f32_vec(bytes)
+                            {
+                                score(Ulid::from_bytes(id), &values, None)?;
+                            }
+                            Ok(crate::engine::ScanFlow::Continue)
+                        },
+                    )?;
                 }
             } else {
                 let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
-                let estimate =
-                    count.checked_mul(def.dimensions.saturating_mul(4).saturating_add(16));
-                // Reserve before decoding a full block. Concurrent exact
-                // queries that cannot claim space simply stream the table.
-                let mut reservation =
-                    estimate
-                        .filter(|&n| n <= budget && budget > 0)
-                        .and_then(|n| {
-                            self.search_cache
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .reserve(n)
-                        });
-                let retain = reservation.is_some();
-                let mut block = VectorBlock {
-                    dimensions: def.dimensions,
-                    ..Default::default()
+                // Reserve before decoding a block: a full one, with norms for
+                // cosine if they fit, else the prefix that fits in idle memory
+                // (`SearchCache::reserve_block`). Only cosine reads the stored
+                // norm; other metrics retain none. Concurrent exact queries
+                // that cannot claim space simply stream the table.
+                let lease = self
+                    .search_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .reserve_block(
+                        &cache_key,
+                        generation,
+                        count,
+                        def.dimensions,
+                        def.metric == VectorMetric::Cosine,
+                        count.div_ceil(PARTIAL_BLOCK_MIN_SHARE),
+                    );
+                let retain = lease.is_some();
+                let (mut reservation, capacity, norms, block) = match lease {
+                    Some(lease) => (
+                        Some(lease.reservation),
+                        lease.capacity,
+                        lease.norms,
+                        lease.block,
+                    ),
+                    None => (None, count, false, RetainedVectors::default()),
                 };
+                // Declared after the reservation, so it is freed first.
+                let mut retained = block;
+                retained.block.dimensions = def.dimensions;
+                // No-ops for buffers reused from a stale block.
                 if retain {
-                    block.ids.reserve_exact(count);
-                    block
+                    retained.block.ids.reserve_exact(capacity);
+                    retained
+                        .block
                         .values
-                        .reserve_exact(count.saturating_mul(def.dimensions));
+                        .reserve_exact(capacity.saturating_mul(def.dimensions));
+                    if norms {
+                        retained.norms.reserve_exact(capacity);
+                    }
                 }
                 txn.scan(
                     &table,
@@ -1606,22 +1680,30 @@ impl Collection {
                             && let Some(values) = decode_f32_vec(bytes)
                             && values.len() == def.dimensions
                         {
-                            score(Ulid::from_bytes(id), &values)?;
-                            if retain {
-                                block.ids.push(Ulid::from_bytes(id));
-                                block.values.extend(values);
+                            // The prefix ends at the first valid vector that
+                            // does not fit; that one and all after it stream.
+                            let keep = retain && retained.block.ids.len() < capacity;
+                            retained.partial |= retain && !keep;
+                            // A retained cosine block computes each norm once,
+                            // and this first query scores with it too.
+                            let norm_sq = (keep && norms).then(|| crate::vector::norm_sq(&values));
+                            score(Ulid::from_bytes(id), &values, norm_sq)?;
+                            if keep {
+                                retained.block.ids.push(Ulid::from_bytes(id));
+                                retained.block.values.extend(values);
+                                retained.norms.extend(norm_sq);
                             }
                         }
                         Ok(crate::engine::ScanFlow::Continue)
                     },
                 )?;
-                if retain && block.bytes() <= reservation.as_ref().unwrap().bytes {
+                if retain && retained.bytes() <= reservation.as_ref().unwrap().bytes {
                     let mut cache = self
                         .search_cache
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     drop(reservation.take());
-                    cache.insert_vectors(&cache_key, generation, block, epoch);
+                    cache.insert_vectors(&cache_key, generation, retained, epoch);
                 }
             }
         }
@@ -2198,25 +2280,30 @@ impl Collection {
             None
         };
         let indexed = if matches!(filter, Filter::All) && options.timeout.is_none() {
-            if let (Some(spec), Some(limit)) = (options.sort.first(), options.limit) {
-                let keep = clamp_to_usize(options.skip).saturating_add(clamp_to_usize(limit));
-                self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)?
+            if let Some(limit) = options.limit {
+                let skip = clamp_to_usize(options.skip);
+                let keep = skip.saturating_add(clamp_to_usize(limit));
+                self.sorted_index_candidates(rtxn.as_ref(), &cache, &options.sort, skip, keep)?
             } else {
                 None
             }
         } else {
             None
         };
-        let mut docs = match indexed {
-            Some(docs) => docs,
-            None => crate::query::executor::execute_limited(
-                &qplan,
-                &filter,
-                rtxn.as_ref(),
-                &self.name,
-                deadline,
-                pushdown,
-            )?,
+        // Rows of rank below `skipped` were left out without being decoded.
+        let (mut docs, skipped) = match indexed {
+            Some(page) => (page.docs, page.skipped),
+            None => (
+                crate::query::executor::execute_limited(
+                    &qplan,
+                    &filter,
+                    rtxn.as_ref(),
+                    &self.name,
+                    deadline,
+                    pushdown,
+                )?,
+                0,
+            ),
         };
         // Decrypt encrypted fields before sorting/projecting.
         docs = self.decrypt_docs(docs)?;
@@ -2227,15 +2314,15 @@ impl Collection {
         if !options.sort.is_empty() {
             if let Some(limit) = options.limit {
                 let keep = clamp_to_usize(options.skip).saturating_add(clamp_to_usize(limit));
-                partial_sort_documents(&mut docs, &options.sort, keep);
+                partial_sort_documents(&mut docs, &options.sort, keep - skipped);
             } else {
                 sort_documents(&mut docs, &options.sort);
             }
         }
 
         // Skip
-        if options.skip > 0 {
-            let skip = clamp_to_usize(options.skip);
+        let skip = clamp_to_usize(options.skip) - skipped;
+        if skip > 0 {
             if skip >= docs.len() {
                 return Ok(vec![]);
             }
@@ -2295,9 +2382,9 @@ impl Collection {
         let Some(Stage::Sort(specs)) = pipeline.first() else {
             return Ok(None);
         };
-        let Some(spec) = specs.first() else {
+        if specs.is_empty() {
             return Ok(None);
-        };
+        }
         // Only worth it when the reachable set is bounded by a `$limit`.
         let Some(keep) = crate::aggregate::reachable_after_sort(&pipeline[1..]) else {
             return Ok(None);
@@ -2305,19 +2392,28 @@ impl Collection {
 
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
-        let Some(docs) = self.sorted_index_candidates(rtxn.as_ref(), &cache, spec, keep)? else {
+        // `$skip` runs inside the pipeline, so every row up to `keep` is needed.
+        let Some(page) = self.sorted_index_candidates(rtxn.as_ref(), &cache, specs, 0, keep)?
+        else {
             return Ok(None);
         };
-        Ok(Some(execute_pipeline(docs, pipeline)?))
+        Ok(Some(execute_pipeline(page.docs, pipeline)?))
     }
 
+    /// The candidates for the first `keep` rows of `sort`, read from the index
+    /// on its first key — or `None` when the index cannot prove its order is
+    /// the sort's order, and the caller must scan and sort.
     fn sorted_index_candidates(
         &self,
         rtxn: &dyn ReadTxn,
         cache: &CachedIndexes,
-        spec: &crate::query::options::SortSpec,
+        sort: &[crate::query::options::SortSpec],
+        skip: usize,
         keep: usize,
-    ) -> Result<Option<Vec<Document>>, TalaDbError> {
+    ) -> Result<Option<crate::query::sorted_index::SortedPage>, TalaDbError> {
+        let Some(spec) = sort.first() else {
+            return Ok(None);
+        };
         #[cfg(feature = "encryption")]
         if self.field_encryption.is_some() {
             return Ok(None);
@@ -2334,73 +2430,13 @@ impl Collection {
         if arrays.as_deref() != Some(0u64.to_le_bytes().as_slice()) {
             return Ok(None);
         }
-
-        let mut entries = index_ordered_entries(rtxn, &self.name, &spec.field)?;
-
-        // A document whose sort field is absent has no index entry, so the index
-        // is not a faithful ordering of the collection. Bail out rather than
-        // silently drop those documents from the result.
-        if entries.len() as u64 != rtxn.count_entries(&docs_table_name(&self.name))? {
+        // A document without the field has no index entry, and mixed Int/Float,
+        // NaN and signed zero order differently in the index than in the sort.
+        // Any of them sends the query to the scan-and-sort path.
+        if !crate::query::sorted_index::index_order_is_sort_order(rtxn, &self.name, &spec.field)? {
             return Ok(None);
         }
-
-        // Index order groups every Int before every Float (distinct type tags),
-        // but the sort comparator ranks them numerically — so on a field holding
-        // both, the index is not sorted the way the query asks. Truncating to a
-        // page here would drop documents the comparator would have ranked onto
-        // it, and the final sort could never pull them back (they are never
-        // decoded). Bail out to the scan-and-sort path, which is always correct.
-        let mut has_int = false;
-        let mut has_float = false;
-        for entry in &entries {
-            match entry.value_prefix.first() {
-                Some(&crate::index::TAG_INT) => has_int = true,
-                Some(&crate::index::TAG_FLOAT) => {
-                    has_float = true;
-                    let Some(bytes) = entry
-                        .value_prefix
-                        .get(1..)
-                        .and_then(|v| <[u8; 8]>::try_from(v).ok())
-                    else {
-                        return Ok(None);
-                    };
-                    let sortable = u64::from_be_bytes(bytes);
-                    let bits = if sortable >> 63 == 1 {
-                        sortable ^ (1 << 63)
-                    } else {
-                        !sortable
-                    };
-                    let value = f64::from_bits(bits);
-                    // NaN and signed zero have index ordering that differs
-                    // from the comparator's equality and ULID tie-breaking.
-                    if value.is_nan() || value == 0.0 {
-                        return Ok(None);
-                    }
-                }
-                _ => {}
-            }
-            if has_int && has_float {
-                return Ok(None);
-            }
-        }
-
-        if spec.direction == SortDirection::Desc {
-            entries.reverse();
-        }
-
-        // Take the page, then extend through the end of the tie-run it lands in.
-        let mut take = keep.min(entries.len());
-        if take > 0 {
-            let boundary = &entries[take - 1].value_prefix;
-            while take < entries.len() && &entries[take].value_prefix == boundary {
-                take += 1;
-            }
-        }
-
-        let ulids = entries.into_iter().take(take).map(|e| e.id).collect();
-        let docs = fetch_documents(rtxn, &self.name, ulids)?;
-
-        Ok(Some(docs))
+        crate::query::sorted_index::sorted_page(rtxn, &self.name, sort, skip, keep)
     }
 
     /// Execute an aggregation pipeline against the collection.

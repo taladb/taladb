@@ -91,9 +91,22 @@ pub struct FindOptions {
 /// Compare two `Value`s for ordering.
 ///
 /// Ordering is defined as:
-///   Null < Bool < Int/Float (numeric) < Str < Bytes < Array < Object
+///   Null < Bool < Int/Float (numeric) < Str < Bytes < Array/Object
 ///
-/// Mixed numeric types (Int vs Float) are compared numerically.
+/// This must be a total order — reflexive, antisymmetric and transitive — or
+/// the standard library's sort may panic ("user-provided comparison function
+/// does not correctly implement a total order") or return an arbitrary order.
+/// Numbers therefore compare by their exact value, Int against Float included:
+///
+/// * an `i64` is never rounded through `f64`: `2^53 + 1` sorts after the float
+///   `2^53` instead of equal to it (`document::cmp_i64_f64`);
+/// * `-0.0`, `0.0` and `Int(0)` are equal, so they tie on `_id` as before;
+/// * every NaN, of either sign and any payload, sorts after `+inf` and equal
+///   to every other NaN. The `$gt`/`$lt` filters never match NaN; a sort has to
+///   put it somewhere, and after every number is where the index puts the NaN
+///   that `f64::NAN` and JavaScript produce.
+///
+/// Arrays and objects all compare equal to one another.
 pub(crate) fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
@@ -105,11 +118,11 @@ pub(crate) fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Bool(_), _) => Ordering::Less,
         (_, Value::Bool(_)) => Ordering::Greater,
 
-        // Numeric: Int and Float compare numerically across types
+        // Numeric: Int and Float compare by exact value across types
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
-        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal),
-        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal),
+        (Value::Float(x), Value::Float(y)) => cmp_floats(*x, *y),
+        (Value::Int(x), Value::Float(y)) => cmp_int_float(*x, *y),
+        (Value::Float(x), Value::Int(y)) => cmp_int_float(*y, *x).reverse(),
         (Value::Int(_) | Value::Float(_), _) => Ordering::Less,
         (_, Value::Int(_) | Value::Float(_)) => Ordering::Greater,
 
@@ -121,9 +134,21 @@ pub(crate) fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Bytes(_), _) => Ordering::Less,
         (_, Value::Bytes(_)) => Ordering::Greater,
 
-        // Arrays and objects — compare by debug representation (stable but not meaningful)
+        // Arrays and objects: one class of equal values, ordered by `_id`.
         _ => Ordering::Equal,
     }
+}
+
+/// Floats by value, with every NaN equal to every other and above `+inf`.
+/// `partial_cmp` decides any pair without a NaN, so `-0.0 == 0.0`.
+fn cmp_floats(x: f64, y: f64) -> std::cmp::Ordering {
+    x.partial_cmp(&y)
+        .unwrap_or_else(|| x.is_nan().cmp(&y.is_nan()))
+}
+
+/// An Int against a Float, exactly; a NaN float is above every Int.
+fn cmp_int_float(x: i64, y: f64) -> std::cmp::Ordering {
+    crate::document::cmp_i64_f64(x, y).unwrap_or(std::cmp::Ordering::Less)
 }
 
 /// One document's sort keys, lifted out ahead of the sort.
@@ -242,4 +267,247 @@ pub fn project_document(mut doc: Document, fields: &[String]) -> Document {
 pub fn exclude_fields(mut doc: Document, exclude: &[String]) -> Document {
     doc.fields.retain(|(k, _)| !exclude.iter().any(|f| f == k));
     doc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering::{self, Equal, Greater, Less};
+
+    const TWO_53: i64 = 1 << 53;
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+
+    /// Every value the comparator has an edge for, then seeded random ones:
+    /// raw f64 bit patterns (NaN payloads of both signs included), raw i64s,
+    /// and Int/Float pairs straddling 2^53 and the i64 limits.
+    fn pool() -> Vec<Value> {
+        let mut v = vec![
+            Value::Null,
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Str(String::new()),
+            Value::Str("a".into()),
+            Value::Str("a\0".into()),
+            Value::Str("a\0b".into()),
+            Value::Str("é".into()),
+            Value::Bytes(vec![]),
+            Value::Bytes(vec![0]),
+            Value::Bytes(vec![0, 0xFF]),
+            Value::Bytes(vec![1]),
+            Value::Array(vec![]),
+            Value::Array(vec![Value::Int(1)]),
+            Value::Object(vec![]),
+            Value::Object(vec![("k".into(), Value::Null)]),
+        ];
+        for n in [
+            i64::MIN,
+            i64::MIN + 1,
+            -TWO_53 - 1,
+            -TWO_53,
+            -TWO_53 + 1,
+            -1,
+            0,
+            1,
+            TWO_53 - 1,
+            TWO_53,
+            TWO_53 + 1,
+            TWO_53 + 2,
+            1 << 62,
+            i64::MAX - 1,
+            i64::MAX,
+        ] {
+            v.push(Value::Int(n));
+        }
+        for bits in [
+            0x7FF8_0000_0000_0000u64, // f64::NAN
+            0xFFF8_0000_0000_0000,    // -NaN, x86's default NaN
+            0x7FF0_0000_0000_0001,
+            0x7FFF_FFFF_FFFF_FFFF,
+            0xFFF0_0000_0000_0001,
+            0xFFFF_FFFF_FFFF_FFFF,
+            1,                     // smallest subnormal
+            0x8000_0000_0000_0001, // its negative
+        ] {
+            v.push(Value::Float(f64::from_bits(bits)));
+        }
+        for f in [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            f64::MAX,
+            f64::MIN,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            0.1,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            (TWO_53 - 1) as f64,
+            TWO_53 as f64,
+            (TWO_53 + 2) as f64,
+            -(TWO_53 as f64),
+            TWO_63,
+            -TWO_63,
+            9_223_372_036_854_774_784.0, // largest f64 below 2^63
+            1e300,
+            -1e300,
+        ] {
+            v.push(Value::Float(f));
+        }
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..400 {
+            let r = next();
+            v.push(Value::Float(f64::from_bits(r)));
+            v.push(Value::Int(r as i64));
+            let near = TWO_53 + (r % 9) as i64 - 4;
+            v.push(Value::Int(near));
+            v.push(Value::Float(near as f64));
+            let wide = i64::MAX - (r % 4096) as i64;
+            v.push(Value::Int(wide));
+            v.push(Value::Float(wide as f64));
+            v.push(Value::Int(-wide));
+            v.push(Value::Float(-(wide as f64)));
+        }
+        v
+    }
+
+    /// Independent numeric oracle: NaN above everything, zeros equal, and
+    /// Int-vs-Float by comparing integer parts via `floor` in i128 (the
+    /// comparator uses `trunc` in i64).
+    fn oracle(a: &Value, b: &Value) -> Option<Ordering> {
+        fn int_float(x: i64, y: f64) -> Ordering {
+            if y.is_nan() || y >= TWO_63 {
+                return Less;
+            }
+            if y < -TWO_63 {
+                return Greater;
+            }
+            let floor = y.floor();
+            match i128::from(x).cmp(&(floor as i128)) {
+                Equal if y == floor => Equal,
+                Equal => Less,
+                ord => ord,
+            }
+        }
+        let canon = |f: f64| if f == 0.0 { 0.0 } else { f };
+        Some(match (a, b) {
+            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+            (Value::Int(x), Value::Float(y)) => int_float(*x, *y),
+            (Value::Float(x), Value::Int(y)) => int_float(*y, *x).reverse(),
+            (Value::Float(x), Value::Float(y)) => match (x.is_nan(), y.is_nan()) {
+                (true, true) => Equal,
+                (true, false) => Greater,
+                (false, true) => Less,
+                (false, false) => canon(*x).total_cmp(&canon(*y)),
+            },
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn cmp_values_is_a_total_preorder() {
+        let values = pool();
+        for a in &values {
+            assert_eq!(cmp_values(a, a), Equal, "reflexive: {a:?}");
+            for b in &values {
+                assert_eq!(
+                    cmp_values(a, b),
+                    cmp_values(b, a).reverse(),
+                    "antisymmetric: {a:?} vs {b:?}"
+                );
+            }
+        }
+        // A relation is a total preorder exactly when some arrangement puts
+        // every pair in order, with equal values adjacent. Sort, then check
+        // every pair of the result rather than trusting the sort.
+        let mut sorted = values;
+        sorted.sort_by(cmp_values);
+        for i in 0..sorted.len() {
+            for j in i + 1..sorted.len() {
+                let ord = cmp_values(&sorted[i], &sorted[j]);
+                assert_ne!(ord, Greater, "{:?} > {:?}", sorted[i], sorted[j]);
+                if ord == Equal {
+                    assert_eq!(
+                        cmp_values(&sorted[j - 1], &sorted[j]),
+                        Equal,
+                        "equal values must be contiguous: {:?} .. {:?}",
+                        sorted[i],
+                        sorted[j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numbers_compare_by_exact_value() {
+        let values = pool();
+        for a in &values {
+            for b in &values {
+                if let Some(expected) = oracle(a, b) {
+                    assert_eq!(cmp_values(a, b), expected, "{a:?} vs {b:?}");
+                }
+            }
+        }
+    }
+
+    /// Wherever the old comparator was already well-defined — no NaN, and no
+    /// Int that `as f64` rounds — the order is unchanged.
+    #[test]
+    fn finite_order_is_unchanged() {
+        let old = |a: &Value, b: &Value| -> Ordering {
+            match (a, b) {
+                (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(Equal),
+                (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Equal),
+                (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Equal),
+                _ => cmp_values(a, b),
+            }
+        };
+        let exact = |v: &Value| match v {
+            Value::Float(f) => !f.is_nan(),
+            Value::Int(n) => n.unsigned_abs() <= TWO_53 as u64,
+            _ => true,
+        };
+        let values: Vec<Value> = pool().into_iter().filter(exact).collect();
+        for a in &values {
+            for b in &values {
+                assert_eq!(cmp_values(a, b), old(a, b), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn documented_positions() {
+        let nan = Value::Float(f64::NAN);
+        let neg_nan = Value::Float(-f64::NAN);
+        let inf = Value::Float(f64::INFINITY);
+        assert_eq!(cmp_values(&nan, &neg_nan), Equal);
+        assert_eq!(cmp_values(&nan, &inf), Greater);
+        assert_eq!(cmp_values(&neg_nan, &inf), Greater);
+        assert_eq!(cmp_values(&nan, &Value::Int(i64::MAX)), Greater);
+        assert_eq!(cmp_values(&nan, &Value::Str(String::new())), Less);
+        assert_eq!(cmp_values(&Value::Bool(true), &neg_nan), Less);
+        assert_eq!(cmp_values(&Value::Float(-0.0), &Value::Float(0.0)), Equal);
+        assert_eq!(cmp_values(&Value::Float(-0.0), &Value::Int(0)), Equal);
+        assert_eq!(
+            cmp_values(&Value::Int(TWO_53 + 1), &Value::Float(TWO_53 as f64)),
+            Greater
+        );
+        assert_eq!(
+            cmp_values(&Value::Int(i64::MAX), &Value::Float(TWO_63)),
+            Less
+        );
+        assert_eq!(
+            cmp_values(&Value::Int(i64::MIN), &Value::Float(-TWO_63)),
+            Equal
+        );
+    }
 }

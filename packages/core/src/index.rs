@@ -9,6 +9,20 @@
 //!   • end of value          → [0x00]
 //! Fixed-width types have known widths, so no terminator is needed.
 //!
+//! The escape and the terminator share the byte 0x00, and the 16-byte id that
+//! follows a value may begin with 0xFF. So a value `v ++ "\0" ++ s` encodes as
+//! `v`'s prefix ++ 0xFF ++ …, which sorts *among* the keys of `v` itself:
+//!   • `v`'s equality range `prefix ++ 00…00 ..= prefix ++ FF…FF` also holds
+//!     keys of every `v ++ "\0" ++ …` (with any id);
+//!   • a key of `v` whose id starts with 0xFF can sort after keys of
+//!     `v ++ "\0" ++ s` — `"a"` with id `FF 70 …` after `"a\0b"`.
+//! The value part of a key is still unambiguous: it is everything but the last
+//! 16 bytes, and those value parts sort in value order. Range bounds are built
+//! to contain every match (see [`index_range_cmp`]); readers that count keys
+//! or rely on key order must compare value parts, or rule the case out.
+//! Generated ids start with 0xFF only after the year 10889; caller-supplied
+//! ones can, and `derive_doc_id` hashes into all 16 bytes (about 1 in 256).
+//!
 //! Type prefixes ensure cross-type sort order:
 //!   0x00 = Null
 //!   0x10 = Bool(false)
@@ -50,6 +64,10 @@ pub type IndexBounds = Option<(Bound<Vec<u8>>, Bound<Vec<u8>>)>;
 pub(crate) const TAG_INT: u8 = 0x20;
 /// Type tag leading an encoded `Float` key. See [`TAG_INT`].
 pub(crate) const TAG_FLOAT: u8 = 0x30;
+/// Type tag leading an encoded `Str` key.
+pub(crate) const TAG_STR: u8 = 0x40;
+/// Type tag leading an encoded `Bytes` key. Nothing indexable sorts above it.
+pub(crate) const TAG_BYTES: u8 = 0x50;
 
 pub fn encode_index_key(value: &Value, id: Ulid) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
@@ -132,7 +150,7 @@ fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
             buf.extend_from_slice(&sortable.to_be_bytes());
         }
         Value::Str(s) => {
-            buf.push(0x40);
+            buf.push(TAG_STR);
             for &b in s.as_bytes() {
                 if b == 0x00 {
                     buf.extend_from_slice(&[0x00, 0xFF]);
@@ -143,7 +161,7 @@ fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
             buf.push(0x00); // terminator
         }
         Value::Bytes(b) => {
-            buf.push(0x50);
+            buf.push(TAG_BYTES);
             for &byte in b {
                 if byte == 0x00 {
                     buf.extend_from_slice(&[0x00, 0xFF]);
@@ -171,6 +189,20 @@ pub fn index_range_eq(value: &Value) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Build range bounds for gt/gte/lt/lte index scans.
+///
+/// The range holds every key whose value satisfies the bound, and may hold a
+/// few that do not: callers post-filter (by document or by decoded key value).
+/// For fixed-width types the range is exact. For Str and Bytes it is widened
+/// where an escaped NUL makes key order disagree with value order (see the
+/// module docs):
+///
+/// * `> v`: every `v ++ "\0" ++ …` sorts inside `v`'s own block, below
+///   `prefix ++ FF…FF`. The range starts after `prefix ++ FF` instead, which
+///   admits only the keys of `v` whose id starts with 0xFF.
+/// * `< v` and `<= v`, for a `v` containing NUL: a shorter value `w` with
+///   `v = w ++ "\0" ++ …` sorts after `v` when its id starts with 0xFF. The
+///   range ends at `w`'s last possible key instead, which admits the values
+///   between `v` and that key as well.
 pub fn index_range_cmp(
     lower: Option<(&Value, bool)>, // (value, inclusive)
     upper: Option<(&Value, bool)>,
@@ -183,6 +215,9 @@ pub fn index_range_cmp(
             if inclusive {
                 key.extend_from_slice(&[0x00u8; 16]);
                 Bound::Included(key)
+            } else if is_variable_length(&key) {
+                key.push(0xFF);
+                Bound::Excluded(key)
             } else {
                 key.extend_from_slice(&[0xFFu8; 16]);
                 Bound::Excluded(key)
@@ -195,17 +230,54 @@ pub fn index_range_cmp(
         Some((v, inclusive)) => {
             let mut key = Vec::new();
             encode_value_prefix(v, &mut key)?;
-            if inclusive {
+            let ceiling = nul_prefix_ceiling(&key);
+            let bound = if inclusive {
                 key.extend_from_slice(&[0xFFu8; 16]);
                 Bound::Included(key)
             } else {
                 key.extend_from_slice(&[0x00u8; 16]);
                 Bound::Excluded(key)
+            };
+            match (ceiling, bound) {
+                (Some(c), Bound::Included(k) | Bound::Excluded(k)) if c > k => Bound::Included(c),
+                (_, bound) => bound,
             }
         }
     };
 
     Some((start, end))
+}
+
+/// Whether an encoded value prefix is a Str or Bytes one.
+fn is_variable_length(prefix: &[u8]) -> bool {
+    matches!(prefix.first(), Some(&(TAG_STR | TAG_BYTES)))
+}
+
+/// Whether an encoded value prefix is a Str or Bytes value containing NUL: the
+/// only values whose keys can sort out of value order (see the module docs).
+#[inline]
+pub(crate) fn has_escaped_nul(prefix: &[u8]) -> bool {
+    is_variable_length(prefix) && prefix.len() > 2 && prefix[1..prefix.len() - 1].contains(&0)
+}
+
+/// For a Str/Bytes prefix whose value contains NUL, the largest key of any
+/// shorter value `w` with `value = w ++ "\0" ++ …`: `w`'s prefix ++ FF…FF.
+/// Inside the escaped body every 0x00 starts an escape, so `w`'s prefix is
+/// this prefix up to and including that 0x00.
+fn nul_prefix_ceiling(prefix: &[u8]) -> Option<Vec<u8>> {
+    if !is_variable_length(prefix) || prefix.len() < 2 {
+        return None;
+    }
+    let body = &prefix[1..prefix.len() - 1];
+    body.iter()
+        .enumerate()
+        .filter(|&(_, &b)| b == 0)
+        .map(|(i, _)| {
+            let mut key = prefix[..i + 2].to_vec();
+            key.extend_from_slice(&[0xFF; 16]);
+            key
+        })
+        .max()
 }
 
 /// Extract the ULID from an index key (last 16 bytes).
@@ -547,5 +619,278 @@ mod tests {
             exact >= start && exact <= end,
             "exact value must lie inside its own range"
         );
+    }
+
+    // -- Str/Bytes keys next to ids starting 0xFF -------------------------
+
+    /// Str and Bytes values over the bytes that matter — NUL (escaped as
+    /// `00 FF`), 0xFF (Bytes only) and two ordinary ones — at every length up to
+    /// `max_len`, plus 0xFF runs longer than a bound's 16 bytes of id padding.
+    fn varlen_pool(max_len: usize) -> Vec<Value> {
+        let mut words: Vec<Vec<u8>> = vec![vec![]];
+        let mut level = vec![vec![]];
+        for _ in 0..max_len {
+            level = level
+                .iter()
+                .flat_map(|w: &Vec<u8>| {
+                    [0x00u8, 0x01, b'a', 0xFF].map(|b| {
+                        let mut w = w.clone();
+                        w.push(b);
+                        w
+                    })
+                })
+                .collect();
+            words.extend(level.iter().cloned());
+        }
+        let mut long = vec![0x00];
+        long.extend([0xFF; 17]);
+        words.push(long);
+        let mut long = vec![b'a', 0x00];
+        long.extend([0xFF; 16]);
+        words.push(long.clone());
+        long.pop();
+        long.push(b'b');
+        words.push(long);
+        words.push(vec![0xFF; 20]);
+        let mut out = Vec::new();
+        for w in words {
+            if let Ok(s) = String::from_utf8(w.clone()) {
+                out.push(Value::Str(s));
+            }
+            out.push(Value::Bytes(w));
+        }
+        out
+    }
+
+    /// Edge ids — minimum, maximum, every interesting 0xFF lead — and seeded
+    /// random ones, half of them forced to start with 0xFF.
+    fn adversarial_ids(random: usize) -> Vec<Ulid> {
+        let mut ids: Vec<[u8; 16]> = vec![[0x00; 16], [0xFF; 16], [0x01; 16], [0x7F; 16]];
+        for lead in [
+            &[0xFF, 0x00][..],
+            &[0xFF, 0x01],
+            &[0xFF, 0x61],
+            &[0xFF, 0x62, 0x00],
+            &[0xFF, 0xFF, 0x00],
+            &[0xFF, 0x00, 0xFF],
+        ] {
+            let mut id = [0u8; 16];
+            id[..lead.len()].copy_from_slice(lead);
+            ids.push(id);
+        }
+        let mut state = 0xD1B5_4A32_D192_ED03u64;
+        for i in 0..random {
+            let mut id = [0u8; 16];
+            for chunk in id.chunks_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                chunk.copy_from_slice(&state.to_be_bytes());
+            }
+            if i % 2 == 0 {
+                id[0] = 0xFF;
+            }
+            ids.push(id);
+        }
+        ids.into_iter().map(Ulid::from_bytes).collect()
+    }
+
+    fn raw(v: &Value) -> (u8, &[u8]) {
+        match v {
+            Value::Str(s) => (0, s.as_bytes()),
+            Value::Bytes(b) => (1, b),
+            _ => unreachable!("variable-length values only"),
+        }
+    }
+
+    fn within(key: &[u8], (start, end): &(Bound<Vec<u8>>, Bound<Vec<u8>>)) -> bool {
+        let above = match start {
+            Bound::Included(s) => key >= s.as_slice(),
+            Bound::Excluded(s) => key > s.as_slice(),
+            Bound::Unbounded => true,
+        };
+        let below = match end {
+            Bound::Included(e) => key <= e.as_slice(),
+            Bound::Excluded(e) => key < e.as_slice(),
+            Bound::Unbounded => true,
+        };
+        above && below
+    }
+
+    /// Every key of every value satisfying a bound lies inside its range, for
+    /// all four comparisons, whatever the id.
+    #[test]
+    fn range_bounds_hold_every_matching_key() {
+        let pool = varlen_pool(4);
+        let ids = adversarial_ids(6);
+        let keys: Vec<(&Value, Vec<u8>)> = pool
+            .iter()
+            .flat_map(|w| {
+                ids.iter()
+                    .map(move |id| (w, encode_index_key(w, *id).unwrap()))
+            })
+            .collect();
+        for v in &pool {
+            let (tv, rv) = raw(v);
+            for (op, bounds) in [
+                ("gt", index_range_cmp(Some((v, false)), None)),
+                ("gte", index_range_cmp(Some((v, true)), None)),
+                ("lt", index_range_cmp(None, Some((v, false)))),
+                ("lte", index_range_cmp(None, Some((v, true)))),
+            ] {
+                let bounds = bounds.unwrap();
+                for (w, key) in &keys {
+                    let (tw, rw) = raw(w);
+                    let ord = rw.cmp(rv);
+                    let matches = match op {
+                        "gt" => ord.is_gt(),
+                        "gte" => ord.is_ge(),
+                        "lt" => ord.is_lt(),
+                        _ => ord.is_le(),
+                    };
+                    if tw == tv && matches {
+                        assert!(
+                            within(key, &bounds),
+                            "op {op} on {v:?} misses {w:?} key {key:02x?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The widening admits only the keys it has to. Besides matches, a range
+    /// may hold: for `> v`, keys of `v` whose id starts with 0xFF; for any
+    /// bound, keys of a shorter `w` with `v = w ++ "\0" ++ …` whose id starts
+    /// with 0xFF, and for an upper bound everything in the block of `v`'s
+    /// shortest such `w` (`w ++ "\0" ++ …`); and for `<= v`, every
+    /// `v ++ "\0" ++ …`, as before.
+    #[test]
+    fn range_bounds_admit_only_the_documented_extras() {
+        let pool = varlen_pool(4);
+        let ids = adversarial_ids(6);
+        let nul_prefixes = |v: &[u8]| -> Vec<Vec<u8>> {
+            (0..v.len())
+                .filter(|&i| v[i] == 0)
+                .map(|i| v[..i].to_vec())
+                .collect()
+        };
+        for v in &pool {
+            let (tv, rv) = raw(v);
+            let cuts = nul_prefixes(rv);
+            let shortest = cuts.first().map(|w| {
+                let mut w = w.clone();
+                w.push(0);
+                w
+            });
+            let mut extension = rv.to_vec();
+            extension.push(0);
+            for (op, bounds) in [
+                ("gt", index_range_cmp(Some((v, false)), None)),
+                ("gte", index_range_cmp(Some((v, true)), None)),
+                ("lt", index_range_cmp(None, Some((v, false)))),
+                ("lte", index_range_cmp(None, Some((v, true)))),
+            ] {
+                let bounds = bounds.unwrap();
+                for w in &pool {
+                    let (tw, rw) = raw(w);
+                    if tw != tv {
+                        continue;
+                    }
+                    let ord = rw.cmp(rv);
+                    let matches = match op {
+                        "gt" => ord.is_gt(),
+                        "gte" => ord.is_ge(),
+                        "lt" => ord.is_lt(),
+                        _ => ord.is_le(),
+                    };
+                    for id in &ids {
+                        let key = encode_index_key(w, *id).unwrap();
+                        if matches || !within(&key, &bounds) {
+                            continue;
+                        }
+                        let ff = id.to_bytes()[0] == 0xFF;
+                        let upper = op.starts_with('l');
+                        let allowed = (ff && cuts.iter().any(|c| c.as_slice() == rw))
+                            || (op == "gt" && ff && rw == rv)
+                            || (upper && shortest.as_ref().is_some_and(|p| rw.starts_with(p)))
+                            || (op == "lte" && rw.starts_with(&extension));
+                        assert!(allowed, "{op} {v:?} admits {w:?} with id {id}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// An equality range holds every key of the value, and its keys of the
+    /// range's own length are exactly those (what `count` relies on).
+    #[test]
+    fn equality_range_keys_of_its_length_are_exactly_the_value() {
+        let pool = varlen_pool(4);
+        let ids = adversarial_ids(6);
+        for v in &pool {
+            let (start, end) = index_range_eq(v).unwrap();
+            for w in &pool {
+                for id in &ids {
+                    let key = encode_index_key(w, *id).unwrap();
+                    let inside = key >= start && key <= end;
+                    if w == v {
+                        assert!(inside, "{v:?} range misses its own key {key:02x?}");
+                    }
+                    assert_eq!(inside && key.len() == start.len(), w == v, "{v:?} vs {w:?}");
+                }
+            }
+        }
+    }
+
+    /// Value parts (keys without the id) sort in value order. Whole keys sort
+    /// in `(value, id)` order except for one shape, which the sorted-page walk
+    /// guards against: the key first in key order holds a value containing NUL
+    /// and the other key's id starts with 0xFF.
+    #[test]
+    fn keys_disagree_with_value_order_only_after_an_escaped_nul_and_an_ff_id() {
+        let pool = varlen_pool(3);
+        let ids = adversarial_ids(4);
+        let keys: Vec<(&Value, Ulid, Vec<u8>)> = pool
+            .iter()
+            .flat_map(|w| {
+                ids.iter()
+                    .map(move |id| (w, *id, encode_index_key(w, *id).unwrap()))
+            })
+            .collect();
+        let mut disagreements = 0;
+        for (a, ida, ka) in &keys {
+            for (b, idb, kb) in &keys {
+                if raw(a).0 != raw(b).0 {
+                    continue;
+                }
+                let value_order = raw(a).1.cmp(raw(b).1);
+                let (va, vb) = (&ka[..ka.len() - 16], &kb[..kb.len() - 16]);
+                assert_eq!(va.cmp(vb), value_order, "value parts of {a:?} and {b:?}");
+                if ka < kb && value_order.then(ida.cmp(idb)).is_gt() {
+                    disagreements += 1;
+                    assert!(has_escaped_nul(va), "{a:?} before {b:?}");
+                    assert_eq!(idb.to_bytes()[0], 0xFF, "{a:?} before {b:?}");
+                }
+            }
+        }
+        assert!(disagreements > 0, "the pool must contain the reordering");
+    }
+
+    #[test]
+    fn escaped_nul_is_detected_only_in_variable_length_values() {
+        let prefix = |v: &Value| {
+            let mut p = Vec::new();
+            encode_value_prefix(v, &mut p).unwrap();
+            p
+        };
+        assert!(has_escaped_nul(&prefix(&Value::Str("a\0b".into()))));
+        assert!(has_escaped_nul(&prefix(&Value::Bytes(vec![0]))));
+        assert!(!has_escaped_nul(&prefix(&Value::Str("ab".into()))));
+        assert!(!has_escaped_nul(&prefix(&Value::Str(String::new()))));
+        assert!(!has_escaped_nul(&prefix(&Value::Bytes(vec![0xFF, 1]))));
+        // Fixed-width encodings hold zero bytes as data.
+        assert!(!has_escaped_nul(&prefix(&Value::Int(0))));
+        assert!(!has_escaped_nul(&prefix(&Value::Float(1.0))));
     }
 }

@@ -860,28 +860,66 @@ impl Collection {
                 execution.ef_search = Some(ef);
                 // Exact rescoring always reads the original f32 vector from the
                 // same snapshot as the graph, filter, and returned document.
+                // A retained block of this exact revision holds the same
+                // vectors, so it stands in for the point reads. The block holds
+                // only vectors of the index's dimensions, and a partial block
+                // only those up to its last ID; any other candidate is read
+                // from storage, as without a block.
+                let retained = self
+                    .node_cache()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .peek_vectors(&key, rev)
+                    .filter(|r| r.block.dimensions == query.len());
                 let mut ranked = Vec::new();
                 let mut grouped = options.group_by.as_ref().map(|_| {
                     vector_window::Ranker::new(wanted.saturating_add(1).min(count), options)
                 });
                 let query_norm = crate::vector::l2_norm(query);
                 for id in ids {
-                    if let Some(bytes) = txn.get(&table, &id)?
+                    let ulid = Ulid::from_bytes(id);
+                    let found = retained
+                        .as_ref()
+                        .and_then(|r| Some((r, r.block.ids.binary_search(&ulid).ok()?)));
+                    let score = if let Some((r, i)) = found {
+                        let start = i * r.block.dimensions;
+                        let v = &r.block.values[start..start + r.block.dimensions];
+                        // Cached norms give the same bits; see `RetainedVectors`.
+                        Some(match r.norm_sq(i) {
+                            Some(norm_sq) => crate::vector::score_with_norms(
+                                &def.metric,
+                                query,
+                                query_norm,
+                                v,
+                                norm_sq,
+                            ),
+                            None => crate::vector::score_with_query_norm(
+                                &def.metric,
+                                query,
+                                query_norm,
+                                v,
+                            ),
+                        })
+                    } else if let Some(bytes) = txn.get(&table, &id)?
                         && let Some(v) = decode_f32_vec(&bytes)
                         && v.len() == query.len()
                     {
-                        let score = crate::vector::score_with_query_norm(
+                        Some(crate::vector::score_with_query_norm(
                             &def.metric,
                             query,
                             query_norm,
                             &v,
-                        );
-                        if score.is_finite() {
-                            if let Some(window) = &mut grouped {
-                                window.offer(self, txn, Ulid::from_bytes(id), score)?;
-                            } else {
-                                ranked.push((Ulid::from_bytes(id), score));
-                            }
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(score) = score
+                        && score.is_finite()
+                    {
+                        if let Some(window) = &mut grouped {
+                            window.offer(self, txn, ulid, score)?;
+                        } else {
+                            ranked.push((ulid, score));
                         }
                     }
                 }

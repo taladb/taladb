@@ -139,6 +139,9 @@ test('CI uses medians, retains samples, rejects unstable results and gates regre
   assert.deepEqual(compare(legacyAggregate, legacyAggregate), [])
   const slower = structuredClone(result)
   slower.cases[0].p50Ms = 10
+  // The aggregate alone is not enough: the interleaved runs must agree.
+  assert.deepEqual(compare(result, slower), [])
+  slower.samples.forEach(sample => { sample.cases[0].p50Ms *= 10 })
   assert.ok(compare(result, slower).length)
   slower.cases[0].p50Ms = 2; slower.cases[0].recallAtK = 0
   assert.ok(compare(result, slower).length)

@@ -1,0 +1,87 @@
+{
+  "rule": "fail when an expected kernel has no packed f32 multiply and add; instruction counts are recorded",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "schema": 2,
+  "targets": {
+    "aarch64-apple-ios": {
+      "dot_similarity": {
+        "packed_add": 5,
+        "packed_mul": 2,
+        "vector_instructions": 10,
+        "vectorised": true
+      },
+      "euclidean_similarity": {
+        "packed_add": 5,
+        "packed_mul": 2,
+        "vector_instructions": 12,
+        "vectorised": true
+      },
+      "score_with_query_norm": {
+        "packed_add": 10,
+        "packed_mul": 4,
+        "vector_instructions": 20,
+        "vectorised": true
+      }
+    },
+    "aarch64-unknown-linux-gnu": {
+      "dot_similarity": {
+        "packed_add": 5,
+        "packed_mul": 2,
+        "vector_instructions": 10,
+        "vectorised": true
+      },
+      "euclidean_similarity": {
+        "packed_add": 5,
+        "packed_mul": 2,
+        "vector_instructions": 12,
+        "vectorised": true
+      },
+      "score_with_query_norm": {
+        "packed_add": 10,
+        "packed_mul": 4,
+        "vector_instructions": 20,
+        "vectorised": true
+      }
+    },
+    "wasm32-unknown-unknown": {
+      "dot_similarity": {
+        "packed_add": 6,
+        "packed_mul": 6,
+        "vector_instructions": 34,
+        "vectorised": true
+      },
+      "euclidean_similarity": {
+        "packed_add": 6,
+        "packed_mul": 6,
+        "vector_instructions": 40,
+        "vectorised": true
+      },
+      "score_with_query_norm": {
+        "packed_add": 16,
+        "packed_mul": 16,
+        "vector_instructions": 74,
+        "vectorised": true
+      }
+    },
+    "x86_64-unknown-linux-gnu": {
+      "dot_similarity": {
+        "packed_add": 6,
+        "packed_mul": 6,
+        "vector_instructions": 41,
+        "vectorised": true
+      },
+      "euclidean_similarity": {
+        "packed_add": 6,
+        "packed_mul": 6,
+        "vector_instructions": 48,
+        "vectorised": true
+      },
+      "score_with_query_norm": {
+        "packed_add": 26,
+        "packed_mul": 19,
+        "vector_instructions": 115,
+        "vectorised": true
+      }
+    }
+  }
+}

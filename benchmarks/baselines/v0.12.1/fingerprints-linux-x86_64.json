@@ -1,0 +1,392 @@
+{
+  "cases": {
+    "bulk/delete_one_by_id/10000": {
+      "hash": "af63bc4c8601b62c",
+      "kind": "bool",
+      "n": 1
+    },
+    "bulk/insert_many_indexed/10000": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "bulk/update_one_by_id/10000": {
+      "hash": "af63bc4c8601b62c",
+      "kind": "bool",
+      "n": 1
+    },
+    "doc/aggregate_group/1000": {
+      "hash": "677d55031b6e5bf5",
+      "kind": "row-set",
+      "n": 100
+    },
+    "doc/aggregate_group/10000": {
+      "hash": "29bc258a6d6aeff9",
+      "kind": "row-set",
+      "n": 100
+    },
+    "doc/compound_eq_range/1000": {
+      "hash": "7347d68f6df0e3a6",
+      "kind": "ids",
+      "n": 5
+    },
+    "doc/compound_eq_range/10000": {
+      "hash": "265c20e7e2c35f2f",
+      "kind": "ids",
+      "n": 50
+    },
+    "doc/count_indexed_eq/1000": {
+      "hash": "de93be8c95731f0f",
+      "kind": "count",
+      "n": 10
+    },
+    "doc/count_indexed_eq/10000": {
+      "hash": "0c35bd2f5a465561",
+      "kind": "count",
+      "n": 100
+    },
+    "doc/count_indexed_range/1000": {
+      "hash": "b3f336bb2f0c3516",
+      "kind": "count",
+      "n": 500
+    },
+    "doc/count_indexed_range/10000": {
+      "hash": "78e289bbe480f50c",
+      "kind": "count",
+      "n": 5000
+    },
+    "doc/count_unindexed/1000": {
+      "hash": "a8c7f832281a39c5",
+      "kind": "count",
+      "n": 0
+    },
+    "doc/count_unindexed/10000": {
+      "hash": "a8c7f832281a39c5",
+      "kind": "count",
+      "n": 0
+    },
+    "doc/find_by_id/1000": {
+      "hash": "ce145c8a25a26c4b",
+      "kind": "ids",
+      "n": 16
+    },
+    "doc/find_by_id/10000": {
+      "hash": "02fde017c909ae08",
+      "kind": "ids",
+      "n": 16
+    },
+    "doc/indexed_eq/1000": {
+      "hash": "010da89d59882610",
+      "kind": "id-set",
+      "n": 10
+    },
+    "doc/indexed_eq/10000": {
+      "hash": "3594b243a615dd9a",
+      "kind": "id-set",
+      "n": 100
+    },
+    "doc/page_full/1000": {
+      "hash": "76e87a0925e70a79",
+      "kind": "ids",
+      "n": 100
+    },
+    "doc/page_full/10000": {
+      "hash": "76e87a0925e70a79",
+      "kind": "ids",
+      "n": 100
+    },
+    "doc/page_projected/1000": {
+      "hash": "76e87a0925e70a79",
+      "kind": "ids",
+      "n": 100
+    },
+    "doc/page_projected/10000": {
+      "hash": "76e87a0925e70a79",
+      "kind": "ids",
+      "n": 100
+    },
+    "doc/range_window/1000": {
+      "hash": "449b2d57e415b1ad",
+      "kind": "id-sets",
+      "n": 800
+    },
+    "doc/range_window/10000": {
+      "hash": "a83f6b285b4ef1d5",
+      "kind": "id-sets",
+      "n": 800
+    },
+    "doc/sorted_page_asc/1000": {
+      "hash": "fa5aa5ac2a373664",
+      "kind": "ids",
+      "n": 10
+    },
+    "doc/sorted_page_asc/10000": {
+      "hash": "fa5aa5ac2a373664",
+      "kind": "ids",
+      "n": 10
+    },
+    "fts/bm25_zipf/10000": {
+      "hash": "5dd6ac6bc9751e5a",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "fts/insert_indexed/10000": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "hyb/hybrid_unfiltered/1000": {
+      "hash": "eb6fc6e7f29393c4",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "hyb/hybrid_unfiltered/10000": {
+      "hash": "314bac59cf41e48d",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "idx/insert_amplification/none": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "idx/insert_amplification/scalar1": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "idx/insert_amplification/scalar3": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "idx/insert_amplification/scalar3_fts": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "idx/insert_amplification/scalar3_fts_vector": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "query/equality": {
+      "hash": "07573a37f3630af5",
+      "kind": "field-set",
+      "n": 100
+    },
+    "query/range_scan_mixed_numeric": {
+      "hash": "4fb05360130d072a",
+      "kind": "field-set",
+      "n": 4999
+    },
+    "query/range_scan_unindexed": {
+      "hash": "3e03b56e36197dcd",
+      "kind": "field-set",
+      "n": 5000
+    },
+    "stabilization/bm25/1000": {
+      "hash": "255b5a5f0655ec04",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/bm25/10000": {
+      "hash": "76e7c8a3c7ee7270",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/bm25_selective/1000": {
+      "hash": "4bbd6f8be8d39dab",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/bm25_selective/10000": {
+      "hash": "55bd88454572f843",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/delete_many/1000": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "stabilization/delete_many/10000": {
+      "hash": "dd827944d4be7338",
+      "kind": "count",
+      "n": 10000
+    },
+    "stabilization/exact_vector/1000": {
+      "hash": "d930a843191d7df0",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/exact_vector/10000": {
+      "hash": "d930a843191d7df0",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/fts_index_cycle/1000": {
+      "hash": "cbf29ce484222325",
+      "kind": "unit",
+      "n": 0
+    },
+    "stabilization/fts_index_cycle/10000": {
+      "hash": "cbf29ce484222325",
+      "kind": "unit",
+      "n": 0
+    },
+    "stabilization/hnsw/1000": {
+      "hash": "d930a843191d7df0",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/hnsw/10000": {
+      "hash": "d930a843191d7df0",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/hybrid/1000": {
+      "hash": "36e0703a829ed462",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/hybrid/10000": {
+      "hash": "f0eba051647223d3",
+      "kind": "ids+scores",
+      "n": 10
+    },
+    "stabilization/index_cycle/1000": {
+      "hash": "cbf29ce484222325",
+      "kind": "unit",
+      "n": 0
+    },
+    "stabilization/index_cycle/10000": {
+      "hash": "cbf29ce484222325",
+      "kind": "unit",
+      "n": 0
+    },
+    "stabilization/indexed_page/1000": {
+      "hash": "48a6a5f3bdfe8d64",
+      "kind": "ids",
+      "n": 10
+    },
+    "stabilization/indexed_page/10000": {
+      "hash": "48a6a5f3bdfe8d64",
+      "kind": "ids",
+      "n": 10
+    },
+    "stabilization/sorted_page/1000": {
+      "hash": "8b8ed1b4fd8a57f0",
+      "kind": "ids",
+      "n": 10
+    },
+    "stabilization/sorted_page/10000": {
+      "hash": "c52b39d3d1452f90",
+      "kind": "ids",
+      "n": 10
+    },
+    "stabilization/unindexed_selective/1000": {
+      "hash": "cbf29ce484222325",
+      "kind": "ids",
+      "n": 0
+    },
+    "stabilization/unindexed_selective/10000": {
+      "hash": "cbf29ce484222325",
+      "kind": "ids",
+      "n": 0
+    },
+    "stabilization/update_many/1000": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    },
+    "stabilization/update_many/10000": {
+      "hash": "dd827944d4be7338",
+      "kind": "count",
+      "n": 10000
+    },
+    "vector/find_nearest/1000": {
+      "hash": "a09c41e89b01323c",
+      "kind": "scores",
+      "n": 10
+    },
+    "vector/find_nearest/10000": {
+      "hash": "4de5e2291ba93e7f",
+      "kind": "scores",
+      "n": 10
+    },
+    "vector/score_one/Cosine/128": {
+      "hash": "197af885d5a05883",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Cosine/1536": {
+      "hash": "3ca790f3b3147b76",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Cosine/384": {
+      "hash": "b7dc081d6dd26ea8",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Cosine/768": {
+      "hash": "ec01a341e7155f80",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Dot/128": {
+      "hash": "7177b76ecd4d5bbc",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Dot/1536": {
+      "hash": "fffc7ce41b86687e",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Dot/384": {
+      "hash": "9cedf632496c64c3",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Dot/768": {
+      "hash": "7a379da7938a1e88",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Euclidean/128": {
+      "hash": "3bb92f9d5b61fdfe",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Euclidean/1536": {
+      "hash": "a20265aa6e0f09fa",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Euclidean/384": {
+      "hash": "265d223ddd369b7b",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "vector/score_one/Euclidean/768": {
+      "hash": "8b2acbeb63ae3b9e",
+      "kind": "score-bits",
+      "n": 1
+    },
+    "write/export_snapshot_10k": {
+      "hash": "ecbb1a09f84822a1",
+      "kind": "bytes",
+      "n": 910859
+    },
+    "write/insert_many_1k": {
+      "hash": "ad6323825fa766dc",
+      "kind": "count",
+      "n": 1000
+    }
+  },
+  "platform": "linux-x86_64",
+  "schema": 1,
+  "sizes": "default"
+}

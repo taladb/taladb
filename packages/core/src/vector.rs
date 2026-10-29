@@ -24,6 +24,8 @@ use crate::document::{Document, Value};
 // The flat search path streams the `vec::` table and keeps only top-k scoring
 // state. When the table fits the byte budget, this cache retains one contiguous
 // decoded block so repeated queries are memory-bound rather than storage-bound.
+// For cosine indexes the block also carries each vector's squared norm, so a
+// cached scan computes one reduction per vector instead of two.
 //
 // Each entry is tagged with the persisted vector-table revision read in the
 // query's transaction. Embedding mutations bump it in the same write transaction;
@@ -46,6 +48,49 @@ pub struct VectorBlock {
 impl VectorBlock {
     pub fn bytes(&self) -> usize {
         self.ids.capacity() * std::mem::size_of::<ulid::Ulid>() + self.values.capacity() * 4
+    }
+}
+
+/// The block the search cache retains: a [`VectorBlock`] plus, for a cosine
+/// index, each stored vector's squared norm.
+///
+/// Cosine scoring needs the stored norm, which never changes for a stored
+/// vector. Computing it once here, with [`norm_sq`], is bit-equal to the norm
+/// [`score_with_query_norm`] recomputes on every comparison, so cached and
+/// streamed scans produce the same scores. The norms sit beside the block, not
+/// in it, so the public `VectorBlock` keeps its shape. They count against the
+/// cache budget through [`RetainedVectors::bytes`].
+///
+/// A block that does not fit the budget may be retained as a prefix instead
+/// (`partial`): every valid vector of the revision whose key is at most the
+/// last ID in `block`, and none after it. Readers score the prefix, then stream
+/// the table from [`RetainedVectors::resume_after`], so each vector is scored
+/// once and in the same key order as a full scan.
+#[derive(Default)]
+pub(crate) struct RetainedVectors {
+    pub block: VectorBlock,
+    /// `norm_sq` of each vector, in `block` order. Empty unless built for cosine.
+    pub norms: Vec<f32>,
+    /// The block is a non-empty prefix of the table's valid vectors.
+    pub partial: bool,
+}
+impl RetainedVectors {
+    pub fn bytes(&self) -> usize {
+        self.block.bytes() + self.norms.capacity() * 4
+    }
+    /// The key after which a partial block's vectors must be read from
+    /// storage; `None` when the block holds every valid vector.
+    pub fn resume_after(&self) -> Option<[u8; 16]> {
+        self.block
+            .ids
+            .last()
+            .filter(|_| self.partial)
+            .map(ulid::Ulid::to_bytes)
+    }
+    /// The cached squared norm of vector `i`, if this block carries norms.
+    #[inline]
+    pub fn norm_sq(&self, i: usize) -> Option<f32> {
+        self.norms.get(i).copied()
     }
 }
 /// Maximum retained decoded vector bytes per database. Oversized indexes stream.
@@ -719,6 +764,61 @@ mod tests {
             let (fd, fnm) = fused(&q, &s);
             assert_eq!(dot.to_bits(), fd.to_bits(), "dot at ql={ql} sl={sl}");
             assert_eq!(norm.to_bits(), fnm.to_bits(), "norm at ql={ql} sl={sl}");
+        }
+    }
+
+    /// Exact search scores a retained cosine block with `score_with_norms` and
+    /// a norm from `norm_sq`, and streamed vectors with `score_with_query_norm`.
+    /// Every score must be bit-identical between the two. Lengths are equal
+    /// here because they are in search: blocks hold only vectors of the index's
+    /// dimension, and the scan skips any vector whose length differs from the
+    /// query's before scoring.
+    #[test]
+    fn cached_norm_scores_match_recomputed_norm_scores_bit_for_bit() {
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / 16_777_216.0 - 0.5
+        };
+        // Squares that underflow, subnormal components, squares that overflow
+        // to an infinite norm, and ordinary magnitudes.
+        let scales = [1.0f32, 1e-3, 1e-20, 1e-41, 1e18, 1e30];
+        let lengths = (1..=40).chain([127, 128, 129, 383, 384, 385, 767, 768, 769, 1535, 1536]);
+        for len in lengths {
+            let mut pairs = Vec::new();
+            for &qs in &scales {
+                for &ss in &scales {
+                    let q: Vec<f32> = (0..len).map(|_| next() * qs).collect();
+                    let s: Vec<f32> = (0..len).map(|_| next() * ss).collect();
+                    pairs.push((q, s));
+                }
+            }
+            let random: Vec<f32> = (0..len).map(|_| next()).collect();
+            let negated: Vec<f32> = random.iter().map(|x| -x).collect();
+            for special in [vec![0.0; len], vec![-0.0; len], vec![1.0; len], negated] {
+                pairs.push((random.clone(), special.clone()));
+                pairs.push((special, random.clone()));
+            }
+            pairs.push((random.clone(), random));
+
+            for (q, s) in &pairs {
+                let query_norm = l2_norm(q);
+                for metric in [
+                    VectorMetric::Cosine,
+                    VectorMetric::Dot,
+                    VectorMetric::Euclidean,
+                ] {
+                    let cached = score_with_norms(&metric, q, query_norm, s, norm_sq(s));
+                    let streamed = score_with_query_norm(&metric, q, query_norm, s);
+                    assert_eq!(
+                        cached.to_bits(),
+                        streamed.to_bits(),
+                        "{metric:?} len={len}: {cached} vs {streamed}"
+                    );
+                }
+            }
         }
     }
 }

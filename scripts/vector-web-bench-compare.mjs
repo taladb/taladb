@@ -35,12 +35,22 @@ export function incorrectBaseline(before) {
   return [...new Set(before.cases.filter(row => row.incorrect).map(row => `${row.filter}: ${row.incorrect}`))]
 }
 
+// One bad run cannot fail a case: when both sides kept their interleaved runs,
+// at least two thirds of the pairs must also exceed half the tolerance.
+function consistent(before, after, value, tolerance) {
+  const a = before.samples, b = after.samples
+  if (!a || !b || a.length !== b.length || a.length < 2) return true
+  const over = a.filter((sample, i) => value(b[i]) > value(sample) * (1 + tolerance / 2)).length
+  return over >= Math.ceil(2 * a.length / 3)
+}
+
 export function compare(before, after) {
   const failures = []
   if (JSON.stringify(before.config) !== JSON.stringify(after.config)
       || before.capabilities.storage !== 'opfs' || after.capabilities.storage !== 'opfs'
       || before.ua !== after.ua) return ['browser, OPFS backend or workload configuration changed']
-  if (after.buildMs > Math.max(before.buildMs * 1.3, before.buildMs + 500)) failures.push('build time regressed by more than 30% and 500 ms')
+  if (after.buildMs > Math.max(before.buildMs * 1.3, before.buildMs + 500)
+      && consistent(before, after, report => report.buildMs, 0.3)) failures.push('build time regressed by more than 30% and 500 ms')
   if (before.cases.length !== after.cases.length) return [...failures, 'workload cases changed']
   for (let i = 0; i < before.cases.length; i++) {
     const old = before.cases[i], row = after.cases[i]
@@ -51,7 +61,8 @@ export function compare(before, after) {
     if (old.incorrect) continue
     if (row.cacheStats && (row.cacheStats.activeBytes !== 0 || row.cacheStats.peakBytes > row.cacheStats.memoryBudgetBytes || row.cacheStats.retainedBytes > row.cacheStats.budgetBytes)) failures.push(`${label}: search memory exceeded allowance or leaked`)
     if (row.recallAtK + 0.03 < old.recallAtK) failures.push(`${label}: recall fell by more than 3 percentage points`)
-    if (row.p50Ms > Math.max(old.p50Ms * 1.5, old.p50Ms + 0.5)) failures.push(`${label}: warm median latency regressed by more than 50% and 0.5 ms`)
+    if (row.p50Ms > Math.max(old.p50Ms * 1.5, old.p50Ms + 0.5)
+        && consistent(before, after, report => report.cases[i].p50Ms, 0.5)) failures.push(`${label}: warm median latency regressed by more than 50% and 0.5 ms`)
   }
   return failures
 }

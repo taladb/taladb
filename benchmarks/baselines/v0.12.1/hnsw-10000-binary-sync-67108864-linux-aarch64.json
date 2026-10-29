@@ -1,0 +1,151 @@
+{
+  "binary_sha256": "aa181e3b6fae3dcf1313325875efb84e3e1c76b2657699fab4db721faa2db43f",
+  "cases": {
+    "ann ef=100 p50_ms": {
+      "median": 1.5367,
+      "runs": [
+        1.4173,
+        1.5367,
+        1.607
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=100 storage_reads": {
+      "median": 114.0,
+      "runs": [
+        114.0,
+        114.0,
+        114.0
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=200 p50_ms": {
+      "median": 2.5669,
+      "runs": [
+        2.3688,
+        2.5669,
+        2.6561
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=200 storage_reads": {
+      "median": 214.0,
+      "runs": [
+        214.0,
+        214.0,
+        214.0
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=400 p50_ms": {
+      "median": 4.1571,
+      "runs": [
+        3.6759,
+        4.1571,
+        4.4465
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=400 storage_reads": {
+      "median": 414.0,
+      "runs": [
+        414.0,
+        414.0,
+        414.0
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=50 p50_ms": {
+      "median": 0.9393,
+      "runs": [
+        0.8442,
+        0.9521,
+        0.9393
+      ],
+      "unit": "ms, or as named"
+    },
+    "ann ef=50 storage_reads": {
+      "median": 64.0,
+      "runs": [
+        64.0,
+        64.0,
+        64.0
+      ],
+      "unit": "ms, or as named"
+    },
+    "build_ms": {
+      "median": 10338.6318,
+      "runs": [
+        9882.4225,
+        10430.8034,
+        10338.6318
+      ],
+      "unit": "ms, or as named"
+    },
+    "exact_mean_ms": {
+      "median": 1.0226,
+      "runs": [
+        1.0066,
+        1.0226,
+        1.027
+      ],
+      "unit": "ms, or as named"
+    }
+  },
+  "commit": "a2ef46602127919c60a0fe6333d676b1b1ab391e",
+  "environment": {
+    "cpu_model": null,
+    "cpus": 4,
+    "governor": null,
+    "measured_runs_pinned_to": null,
+    "platform": "Linux-6.17.0-1022-azure-aarch64-with-glibc2.39",
+    "runner": {
+      "GITHUB_JOB": "compare",
+      "GITHUB_RUN_ATTEMPT": "1",
+      "GITHUB_RUN_ID": "40104289158",
+      "ImageOS": "ubuntu24-arm64",
+      "ImageVersion": "20261023.149.3",
+      "RUNNER_ARCH": "ARM64",
+      "RUNNER_OS": "Linux"
+    },
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: aarch64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "started_at": "2026-10-24T14:54:35Z"
+  },
+  "harness_sha256": "41f06cfc189e02c28939607ea3b80ecf22f36303281a89a11571efe7e8f92982",
+  "pairs": 3,
+  "protocol": {
+    "cold_gate_min_runs": 5,
+    "recall_allowance": 0.03,
+    "vector_rules": {
+      "ann_p50_ms": [
+        0.5,
+        0.25
+      ],
+      "build_ms": [
+        0.3,
+        500.0
+      ],
+      "exact_mean_ms": [
+        0.3,
+        0.25
+      ],
+      "filtered_p50_ms": [
+        0.5,
+        0.25
+      ]
+    }
+  },
+  "provenance": "built from the baseline commit",
+  "schema": 1,
+  "side": "baseline",
+  "source_result": "run 40104289158 attempt 1, artifact vector-benchmark-Linux-ARM64-binary-cumulative-32e51edb8b1d188b2d1924f0f5e9b0fa1856c29e-1, vector-benchmark-64mib.json",
+  "workload": "hnsw"
+}

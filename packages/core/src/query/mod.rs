@@ -10,3 +10,4 @@ pub use planner::{QueryPlan, plan};
 pub(crate) mod filter_document;
 mod index_filter;
 pub(crate) mod key_batch;
+pub(crate) mod sorted_index;
