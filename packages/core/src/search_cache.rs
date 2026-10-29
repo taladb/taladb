@@ -237,6 +237,79 @@ impl SearchCache {
         }
         Some((self.reserve(vectors * vector_bytes)?, vectors))
     }
+    /// Admission for an unfiltered exact search that found no block of
+    /// `generation` for `key`, under one lock: a full block of `count`
+    /// vectors with cosine norms, then without them, then a prefix
+    /// ([`Self::reserve_partial`], at least `minimum_partial` vectors).
+    ///
+    /// An older generation's block for `key` is dropped first, as
+    /// [`Self::vectors`] would have dropped it. If no reader still holds it,
+    /// its buffers are emptied and fitted to the reservation instead of
+    /// freed, so the rebuild writes into memory that is already mapped. A
+    /// buffer too small for the new block is freed, and the build allocates
+    /// it as it would without a stale block.
+    pub fn reserve_block(
+        &mut self,
+        key: &str,
+        generation: u64,
+        count: usize,
+        dimensions: usize,
+        cosine: bool,
+        minimum_partial: usize,
+    ) -> Option<BlockLease> {
+        // Unwrapped before admission: a stale block still held here would
+        // count as pinned memory and refuse the very reservation it could
+        // serve. `try_unwrap` succeeds only for the last reference, and loans
+        // are weak and upgraded only under this lock, so no reader can appear
+        // later; a block a reader still holds is released to that reader.
+        let stale = self
+            .take_stale(key, generation)
+            .and_then(|block| Arc::try_unwrap(block).ok());
+        let estimate = count.checked_mul(dimensions.saturating_mul(4).saturating_add(16));
+        let mut lease = None;
+        if cosine {
+            lease = self
+                .reserve_full(estimate.and_then(|n| n.checked_add(count.checked_mul(4)?)))
+                .map(|r| (r, count, true));
+        }
+        if lease.is_none() {
+            lease = self.reserve_full(estimate).map(|r| (r, count, false));
+        }
+        if lease.is_none() {
+            let norm_bytes = if cosine { 4 } else { 0 };
+            let vector_bytes = dimensions.saturating_mul(4).saturating_add(16 + norm_bytes);
+            lease = self
+                .reserve_partial(vector_bytes, count, minimum_partial)
+                .map(|(r, vectors)| (r, vectors, cosine));
+        }
+        let (reservation, capacity, norms) = lease?;
+        let block = stale
+            .filter(|old| old.block.dimensions == dimensions)
+            .map(|old| RetainedVectors {
+                block: crate::vector::VectorBlock {
+                    ids: refit(old.block.ids, capacity),
+                    values: refit(old.block.values, capacity.saturating_mul(dimensions)),
+                    dimensions,
+                },
+                norms: refit(old.norms, if norms { capacity } else { 0 }),
+                partial: false,
+            })
+            .filter(|block| block.bytes() <= reservation.bytes)
+            .unwrap_or_default();
+        Some(BlockLease {
+            reservation,
+            capacity,
+            norms,
+            block,
+        })
+    }
+    /// A full-block reservation, if it fits the retention budget.
+    fn reserve_full(&mut self, bytes: Option<usize>) -> Option<MemoryReservation> {
+        let budget = self.budget;
+        bytes
+            .filter(|&n| n <= budget && budget > 0)
+            .and_then(|n| self.reserve(n))
+    }
     pub fn stats(&self) -> VectorCacheStats {
         VectorCacheStats {
             budget_bytes: self.budget,
@@ -356,9 +429,15 @@ impl SearchCache {
         self.entries.remove(&key);
         if entry.partial() {
             // Admitted only into idle memory: a partial block never evicts.
+            // A graph cached while the prefix was built makes it give way, as
+            // `reserve_partial` would have refused it.
             let retained = self.stats().retained_bytes.saturating_add(entry.bytes());
             if retained > self.budget
                 || retained.saturating_add(self.active_bytes()) > self.memory_budget()
+                || self
+                    .entries
+                    .values()
+                    .any(|entry| matches!(entry.value, Value::Graph(_)))
             {
                 return;
             }
@@ -380,15 +459,29 @@ impl SearchCache {
         self.record_peak();
     }
     pub fn vectors(&mut self, key: &str, generation: u64) -> Option<Arc<RetainedVectors>> {
+        drop(self.take_stale(key, generation));
+        self.current_vectors(key, generation)
+    }
+    /// Remove and return `key`'s block if it is older than `generation`.
+    fn take_stale(&mut self, key: &str, generation: u64) -> Option<Arc<RetainedVectors>> {
         let key = format!("v:{key}");
-        if self
+        if !self
             .entries
             .get(&key)
             .is_some_and(|e| matches!(&e.value, Value::Vectors(v) if v.generation < generation))
         {
-            self.entries.remove(&key);
             return None;
         }
+        match self.entries.remove(&key)?.value {
+            Value::Vectors(v) => Some(v.vectors),
+            Value::Graph(_) => None,
+        }
+    }
+    /// [`Self::vectors`] for a search that rebuilds the block on a miss: an
+    /// older generation's block stays resident, and charged, until
+    /// [`Self::reserve_block`] drops it or reuses its buffers.
+    pub fn current_vectors(&mut self, key: &str, generation: u64) -> Option<Arc<RetainedVectors>> {
+        let key = format!("v:{key}");
         let entry = self.entries.get_mut(&key)?;
         match &entry.value {
             Value::Vectors(v) if v.generation == generation => {
@@ -483,6 +576,29 @@ impl SearchCache {
         self.epoch = self.epoch.wrapping_add(1);
         self.entries.remove(&format!("g:{table}"));
     }
+}
+
+/// What [`SearchCache::reserve_block`] admitted for one block build.
+pub(crate) struct BlockLease {
+    pub reservation: MemoryReservation,
+    /// Vectors the block may hold; fewer than the table holds is a prefix.
+    pub capacity: usize,
+    /// Whether the block carries cosine norms.
+    pub norms: bool,
+    /// Empty buffers to build into: a stale block's, fitted to the
+    /// reservation, or new ones with no capacity.
+    pub block: RetainedVectors,
+}
+
+/// `buffer` emptied and shrunk to `len` elements, or a new empty one if it
+/// is too small (growing it could copy it, which saves nothing).
+fn refit<T>(mut buffer: Vec<T>, len: usize) -> Vec<T> {
+    if buffer.capacity() < len {
+        return Vec::new();
+    }
+    buffer.clear();
+    buffer.shrink_to(len);
+    buffer
 }
 
 /// Releases on success, error or unwind without re-entering the cache mutex.
@@ -808,5 +924,283 @@ mod tests {
         assert!(cache.vectors("a", 2).is_some());
         assert!(cache.vectors("a", 3).is_none());
         assert_eq!(cache.stats().retained_bytes, 0);
+    }
+
+    fn buffers(b: &RetainedVectors) -> [(usize, usize); 3] {
+        [
+            (b.block.ids.as_ptr() as usize, b.block.ids.capacity()),
+            (b.block.values.as_ptr() as usize, b.block.values.capacity()),
+            (b.norms.as_ptr() as usize, b.norms.capacity()),
+        ]
+    }
+    /// Build what a scan would into the lease's buffers: `capacity` vectors
+    /// of two dimensions, all `value`, with norms if the lease has them.
+    fn build(lease: BlockLease, value: f32, partial: bool) -> (MemoryReservation, RetainedVectors) {
+        let BlockLease {
+            reservation,
+            capacity,
+            norms,
+            block: mut b,
+        } = lease;
+        b.block.dimensions = 2;
+        b.block.ids.reserve_exact(capacity);
+        b.block.values.reserve_exact(capacity * 2);
+        if norms {
+            b.norms.reserve_exact(capacity);
+        }
+        for i in 0..capacity {
+            b.block.ids.push(ulid::Ulid::from(i as u128 + 1));
+            b.block.values.extend([value, value]);
+            if norms {
+                b.norms.push(2.0 * value * value);
+            }
+        }
+        b.partial = partial;
+        assert!(b.bytes() <= reservation.bytes);
+        (reservation, b)
+    }
+    fn within_budget(cache: &SearchCache) {
+        let s = cache.stats();
+        assert!(s.retained_bytes + s.active_bytes <= s.memory_budget_bytes);
+        assert!(s.peak_bytes <= s.memory_budget_bytes);
+    }
+    #[test]
+    fn a_stale_block_lends_its_buffers_to_the_next_generation() {
+        let n = 1000;
+        let mut cache = SearchCache::default();
+        cache.set_budget(block(n).bytes());
+        let old = block(n);
+        let before = buffers(&old);
+        cache.insert_vectors("a", 1, old, cache.epoch);
+        // A finished query leaves a loan behind, as every hit does.
+        drop(cache.vectors("a", 1).unwrap());
+        // The lookup leaves the older block resident and charged.
+        assert!(cache.current_vectors("a", 2).is_none());
+        assert_eq!(cache.stats().retained_bytes, n * 28);
+        let lease = cache.reserve_block("a", 2, n, 2, true, 1).unwrap();
+        assert_eq!((lease.capacity, lease.norms), (n, true));
+        // The same allocations, emptied, now charged as the reservation.
+        assert_eq!(buffers(&lease.block), before);
+        assert!(lease.block.block.ids.is_empty() && lease.block.block.values.is_empty());
+        assert!(lease.block.norms.is_empty() && !lease.block.partial);
+        assert_eq!(lease.reservation.bytes, n * 28);
+        let s = cache.stats();
+        assert_eq!(
+            (s.retained_bytes, s.active_bytes, s.vector_indexes),
+            (0, n * 28, 0)
+        );
+        within_budget(&cache);
+        let epoch = cache.epoch;
+        let (reservation, b) = build(lease, 3.0, false);
+        drop(reservation);
+        cache.insert_vectors("a", 2, b, epoch);
+        let hit = cache.vectors("a", 2).unwrap();
+        assert_eq!(buffers(&hit), before);
+        assert!(hit.block.values.iter().all(|&v| v == 3.0));
+        assert!(hit.norms.iter().all(|&v| v == 18.0));
+        assert_eq!(cache.stats().retained_bytes, n * 28);
+        within_budget(&cache);
+    }
+    #[test]
+    fn a_borrowed_stale_block_is_never_reused() {
+        // Larger than the 64 KiB walk workspace, so two blocks never fit a
+        // budget of one.
+        let n = 3000;
+        let mut cache = SearchCache::default();
+        cache.set_budget(block(n).bytes() * 2);
+        cache.insert_vectors("a", 1, block(n), cache.epoch);
+        // An old-snapshot reader still scores the block.
+        let reader = cache.vectors("a", 1).unwrap();
+        let held = buffers(&reader);
+        let lease = cache.reserve_block("a", 2, n, 2, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0, "new buffers, not the borrowed ones");
+        // The borrowed block left the cache but is still charged, beside the
+        // new reservation.
+        let s = cache.stats();
+        assert_eq!((s.retained_bytes, s.active_bytes), (0, 2 * n * 28));
+        within_budget(&cache);
+        let epoch = cache.epoch;
+        let (reservation, b) = build(lease, 5.0, false);
+        drop(reservation);
+        cache.insert_vectors("a", 2, b, epoch);
+        // The reader's block is untouched.
+        assert_eq!(buffers(&reader), held);
+        assert_eq!(reader.block.ids.len(), n);
+        assert!(reader.block.values.iter().all(|&v| v == 1.0));
+        assert!(reader.norms.iter().all(|&v| v == 2.0));
+        assert!(
+            cache
+                .vectors("a", 2)
+                .unwrap()
+                .block
+                .values
+                .iter()
+                .all(|&v| v == 5.0)
+        );
+        drop(reader);
+        assert_eq!(cache.stats().active_bytes, 0);
+        // A block borrowed while the cache cannot fit another one is
+        // dropped from the cache and nothing is reserved: the query streams.
+        let reader = cache.vectors("a", 2).unwrap();
+        cache.set_budget(block(n).bytes());
+        cache.insert_vectors("a", 2, block(n), cache.epoch);
+        assert!(cache.reserve_block("a", 3, n, 2, true, 1).is_none());
+        assert_eq!(cache.stats().vector_indexes, 0);
+        assert!(reader.block.values.iter().all(|&v| v == 5.0));
+    }
+    #[test]
+    fn reused_buffers_are_fitted_to_the_new_block_or_replaced() {
+        let n = 1000;
+        let per = block(1).bytes();
+        let mut cache = SearchCache::default();
+        cache.set_budget(per * 2 * n);
+        // Fewer vectors: the same allocations, shrunk to the reservation.
+        cache.insert_vectors("a", 1, block(n), cache.epoch);
+        drop(cache.vectors("a", 1).unwrap());
+        let lease = cache.reserve_block("a", 2, n - 10, 2, true, 1).unwrap();
+        let fitted = buffers(&lease.block);
+        assert_eq!(
+            [fitted[0].1, fitted[1].1, fitted[2].1],
+            [n - 10, 2 * (n - 10), n - 10]
+        );
+        assert_eq!(lease.block.bytes(), lease.reservation.bytes);
+        drop(lease);
+        // More vectors: every buffer is too small and is replaced.
+        cache.insert_vectors("a", 2, block(n), cache.epoch);
+        let lease = cache.reserve_block("a", 3, n + 1, 2, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0);
+        drop(lease);
+        // Another metric: the norms are freed, the vectors reused.
+        cache.insert_vectors("a", 3, block(n), cache.epoch);
+        let lease = cache.reserve_block("a", 4, n, 2, false, 1).unwrap();
+        assert!(!lease.norms);
+        assert_eq!(lease.block.norms.capacity(), 0);
+        assert_eq!(lease.block.block.ids.capacity(), n);
+        assert_eq!(lease.reservation.bytes, n * 24);
+        drop(lease);
+        // A block without norms reused for one with them: only the norms
+        // are new.
+        let plain = RetainedVectors {
+            norms: Vec::new(),
+            ..block(n)
+        };
+        cache.insert_vectors("a", 4, plain, cache.epoch);
+        let lease = cache.reserve_block("a", 5, n, 2, true, 1).unwrap();
+        assert!(lease.norms);
+        assert_eq!(lease.block.block.ids.capacity(), n);
+        assert_eq!(lease.block.norms.capacity(), 0);
+        drop(lease);
+        // Other dimensions are never reused.
+        cache.insert_vectors("a", 5, block(n), cache.epoch);
+        let lease = cache.reserve_block("a", 6, n / 2, 4, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0);
+        drop(lease);
+        assert_eq!(cache.stats().active_bytes, 0);
+        within_budget(&cache);
+    }
+    #[test]
+    fn a_stale_prefix_lends_its_buffers_only_under_partial_admission() {
+        let (per, walk) = (block(1).bytes(), 64 * 1024);
+        let budget = walk + per * 100;
+        let mut cache = SearchCache::default();
+        cache.set_budget(budget);
+        // The table holds 10,000 vectors: only a 100-vector prefix fits.
+        let refused = cache.reserve_block("p", 1, 10_000, 2, true, 125).is_none();
+        assert!(refused, "below the minimum share");
+        let lease = cache.reserve_block("p", 1, 10_000, 2, true, 10).unwrap();
+        assert_eq!(lease.capacity, 100);
+        let epoch = cache.epoch;
+        let (reservation, b) = build(lease, 1.0, true);
+        let before = buffers(&b);
+        drop(reservation);
+        cache.insert_vectors("p", 1, b, epoch);
+        drop(cache.vectors("p", 1).unwrap());
+        assert_eq!(cache.stats().retained_bytes, per * 100);
+        let lease = cache.reserve_block("p", 2, 10_000, 2, true, 10).unwrap();
+        assert_eq!(lease.capacity, 100);
+        assert_eq!(buffers(&lease.block), before);
+        drop(lease);
+        // A resident graph refuses the prefix; the stale block is dropped,
+        // not kept for later.
+        let (reservation, b) = build(
+            cache.reserve_block("p", 2, 10_000, 2, true, 10).unwrap(),
+            1.0,
+            true,
+        );
+        drop(reservation);
+        cache.insert_vectors("p", 2, b, cache.epoch);
+        cache.insert_graph("g", graph(), cache.epoch);
+        assert!(cache.reserve_block("p", 3, 10_000, 2, true, 10).is_none());
+        let s = cache.stats();
+        assert_eq!(
+            (s.vector_indexes, s.graph_indexes, s.active_bytes),
+            (0, 1, 0)
+        );
+        cache.take_graph("g");
+        // A budget change during the build: the lease's block is refused.
+        let lease = cache.reserve_block("p", 3, 10_000, 2, true, 10).unwrap();
+        let epoch = cache.epoch;
+        cache.set_budget(budget);
+        let (reservation, b) = build(lease, 1.0, true);
+        drop(reservation);
+        cache.insert_vectors("p", 3, b, epoch);
+        assert_eq!(cache.stats().retained_bytes, 0);
+        // A budget of zero reserves nothing and drops the stale block.
+        cache.insert_vectors("p", 3, partial(100), cache.epoch);
+        cache.set_budget(budget);
+        cache.insert_vectors("full", 1, block(10), cache.epoch);
+        cache.set_budget(0);
+        assert!(cache.reserve_block("full", 2, 10, 2, true, 1).is_none());
+        assert_eq!(cache.stats().active_bytes, 0);
+    }
+    #[test]
+    fn only_older_generations_are_taken_from_the_cache() {
+        let n = 100;
+        let mut cache = SearchCache::default();
+        cache.set_budget(block(n).bytes() * 3);
+        cache.insert_vectors("a", 2, block(n), cache.epoch);
+        // An old snapshot rebuilding its own revision leaves the newer one.
+        let lease = cache.reserve_block("a", 1, n, 2, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0);
+        assert_eq!(cache.stats().vector_indexes, 1);
+        let epoch = cache.epoch;
+        let (reservation, b) = build(lease, 9.0, false);
+        drop(reservation);
+        cache.insert_vectors("a", 1, b, epoch);
+        assert!(
+            cache
+                .vectors("a", 2)
+                .unwrap()
+                .block
+                .values
+                .iter()
+                .all(|&v| v == 1.0)
+        );
+        // A concurrent rebuild of the same revision leaves it too.
+        let lease = cache.reserve_block("a", 2, n, 2, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0);
+        assert_eq!(cache.stats().vector_indexes, 1);
+        drop(lease);
+        // So does another key.
+        let lease = cache.reserve_block("b", 7, n, 2, true, 1).unwrap();
+        assert_eq!(lease.block.bytes(), 0);
+        assert!(cache.current_vectors("a", 2).is_some());
+    }
+    #[test]
+    fn a_graph_cached_while_a_prefix_is_built_keeps_the_prefix_out() {
+        let per = block(1).bytes();
+        let mut cache = SearchCache::default();
+        cache.set_budget(per * 10_000);
+        let (reservation, held) = cache.reserve_partial(per, 20_000, 1).unwrap();
+        let epoch = cache.epoch;
+        // A walk finishes and caches its graph meanwhile.
+        cache.insert_graph("g", graph(), epoch);
+        drop(reservation);
+        cache.insert_vectors("p", 1, partial(held), epoch);
+        let s = cache.stats();
+        assert_eq!((s.vector_indexes, s.graph_indexes), (0, 1));
+        // A full block still fits beside the graph.
+        cache.insert_vectors("f", 1, block(10), cache.epoch);
+        assert_eq!(cache.stats().vector_indexes, 1);
     }
 }

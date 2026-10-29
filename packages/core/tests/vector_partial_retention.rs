@@ -87,15 +87,28 @@ impl Parked {
     }
 }
 
+/// Storage errors to inject: each flag fails the next vector-table scan or
+/// entry count, once.
+#[derive(Default)]
+struct Faults {
+    scan: AtomicBool,
+    count: AtomicBool,
+}
+fn injected() -> TalaDbError {
+    TalaDbError::InvalidOperation("injected storage error".into())
+}
+
 struct Probe {
     inner: RedbBackend,
     gate: Arc<Gate>,
+    faults: Arc<Faults>,
 }
 impl StorageBackend for Probe {
     fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError> {
         Ok(Box::new(ProbeRead {
             inner: self.inner.begin_read()?,
             gate: &self.gate,
+            faults: &self.faults,
         }))
     }
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
@@ -105,6 +118,7 @@ impl StorageBackend for Probe {
 struct ProbeRead<'a> {
     inner: Box<dyn ReadTxn + 'a>,
     gate: &'a Gate,
+    faults: &'a Faults,
 }
 fn is_vector_table(table: &str) -> bool {
     table.starts_with("vec::")
@@ -148,6 +162,9 @@ impl ReadTxn for ProbeRead<'_> {
         if !is_vector_table(table) {
             return self.inner.scan(table, start, end, f);
         }
+        if self.faults.scan.swap(false, Ordering::SeqCst) {
+            return Err(injected());
+        }
         self.inner.scan(table, start, end, &mut |k, v| {
             STREAMED.with(|n| n.set(n.get() + 1));
             f(k, v)
@@ -161,6 +178,9 @@ impl ReadTxn for ProbeRead<'_> {
         self.inner.list_tables()
     }
     fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        if is_vector_table(table) && self.faults.count.swap(false, Ordering::SeqCst) {
+            return Err(injected());
+        }
         self.inner.count_entries(table)
     }
 }
@@ -168,16 +188,19 @@ impl ReadTxn for ProbeRead<'_> {
 struct Harness {
     db: Database,
     gate: Arc<Gate>,
+    faults: Arc<Faults>,
 }
 impl Harness {
     fn new() -> Self {
         let gate = Arc::new(Gate::default());
+        let faults = Arc::new(Faults::default());
         let db = Database::open_with_backend(Box::new(Probe {
             inner: RedbBackend::open_in_memory().unwrap(),
             gate: gate.clone(),
+            faults: faults.clone(),
         }))
         .unwrap();
-        Self { db, gate }
+        Self { db, gate, faults }
     }
     /// Park the next reader whose read hits a table starting with `prefix`.
     fn arm(&self, prefix: &'static str) -> Parked {
@@ -1389,4 +1412,397 @@ fn concurrent_reads_writes_and_evictions_score_from_one_snapshot() {
     assert_eq!(stats.active_bytes, 0);
     assert_eq!(stats.vector_indexes, 1);
     assert!(stats.peak_bytes <= stats.memory_budget_bytes);
+}
+
+// Write-then-search: the search after a vector write finds the previous
+// revision's block. Unless a reader still borrows it, the rebuild reuses its
+// buffers (`SearchCache::reserve_block`); either way it must retain what a
+// fresh build would, and every result must equal the oracle.
+
+fn set_vector(col: &Collection, i: usize, v: &[f32]) {
+    assert!(
+        col.update_one(
+            Filter::Eq("_id".into(), Value::Str(id(i).to_string())),
+            Update::Set(vec![("v".into(), embedding(v))]),
+        )
+        .unwrap()
+    );
+}
+
+fn scaled(v: &[f32], s: f32) -> Vec<f32> {
+    v.iter().map(|x| x * s).collect()
+}
+
+/// After a write: one search, then a warm one. Both equal the oracle, the
+/// first streams the whole table, and the cache then holds exactly what a
+/// cold build at this budget holds, with nothing left reserved.
+fn search_after_write(
+    h: &Harness,
+    col: &Collection,
+    query: &[f32],
+    dims: usize,
+    metric: VectorMetric,
+    what: &str,
+) {
+    let rows = table(&h.db, "docs", "v", dims);
+    let expected = oracle(metric, query, &rows, |_| true, 10);
+    let budget = h.db.vector_cache_stats().budget_bytes;
+    let (bytes, held) = expected_block(rows.len(), budget, dims, metric);
+    let (cold, cold_streamed, _) = counted(|| search(col, query, 10, None));
+    let (warm, warm_streamed, warm_reads) = counted(|| search(col, query, 10, None));
+    assert_eq!(signature(&cold), expected, "{what}: first search");
+    assert_eq!(signature(&warm), expected, "{what}: warm search");
+    assert_eq!(cold_streamed, rows.len() as u64, "{what}: rebuilt");
+    assert_eq!(warm_streamed, (rows.len() - held) as u64, "{what}");
+    assert_eq!(warm_reads, 0, "{what}");
+    let s = h.db.vector_cache_stats();
+    assert_eq!(
+        (s.vector_indexes, s.retained_bytes),
+        (usize::from(held > 0), bytes),
+        "{what}: what a fresh build retains"
+    );
+    assert_eq!(s.active_bytes, 0, "{what}");
+    assert!(s.peak_bytes <= s.memory_budget_bytes, "{what}");
+}
+
+/// A named write.
+type Step<'a> = (&'a str, Box<dyn Fn() + 'a>);
+
+#[test]
+fn write_then_search_rebuilds_each_revision_exactly_at_every_budget() {
+    // As `budgets_from_zero_to_64_mib_keep_results_and_accounting`: 4, 8 and
+    // 16 MiB hold a prefix, 0 and 1 MiB nothing, 64 MiB the whole table.
+    let (dims, count) = (1536, 3000);
+    let metric = VectorMetric::Cosine;
+    let data = corpus(dims, count, 0x510E_527F_ADE6_82D1);
+    let query = queries(dims, &data)[0].clone();
+    for budget in [0, MIB, 4 * MIB, 8 * MIB, 16 * MIB, 64 * MIB] {
+        let h = Harness::new();
+        let col = populate(&h.db, "docs", dims, metric, &data);
+        h.db.set_vector_cache_budget(budget);
+        search_after_write(
+            &h,
+            &col,
+            &query,
+            dims,
+            metric,
+            &format!("{budget} first build"),
+        );
+        let held = expected_block(count, budget, dims, metric).1;
+        // The query itself at new magnitudes, so a stale norm would change
+        // its score (cosine ignores the magnitude only with the right norm).
+        let inserted = Rng(budget as u64 | 1).vector(dims);
+        let edge = held.saturating_sub(1);
+        let steps: Vec<Step> = vec![
+            (
+                "update inside",
+                Box::new(|| set_vector(&col, 10, &scaled(&query, 3.0))),
+            ),
+            (
+                "update again",
+                Box::new(|| set_vector(&col, 10, &scaled(&query, 0.25))),
+            ),
+            (
+                "update last held",
+                Box::new(|| set_vector(&col, edge, &scaled(&query, 2.0))),
+            ),
+            (
+                "update after",
+                Box::new(|| set_vector(&col, 2900, &scaled(&query, 0.5))),
+            ),
+            (
+                "insert inside",
+                Box::new(|| {
+                    let mut d = doc(0, "v", &inserted);
+                    d[0].1 = Value::Str(Ulid::from(u128::from(id(20)) + 1).to_string());
+                    col.insert(d).unwrap();
+                }),
+            ),
+            (
+                "insert after",
+                Box::new(|| {
+                    col.insert(doc(9000, "v", &scaled(&query, 7.0))).unwrap();
+                }),
+            ),
+            (
+                "delete inside",
+                Box::new(|| {
+                    col.delete_one(Filter::Eq("_id".into(), Value::Str(id(10).to_string())))
+                        .unwrap();
+                }),
+            ),
+            (
+                "delete across the boundary",
+                Box::new(|| {
+                    col.delete_many(Filter::And(vec![
+                        Filter::Gte("bucket".into(), Value::Int(90)),
+                        Filter::Lt("bucket".into(), Value::Int(95)),
+                    ]))
+                    .unwrap();
+                }),
+            ),
+        ];
+        for (what, write) in &steps {
+            write();
+            search_after_write(&h, &col, &query, dims, metric, &format!("{budget} {what}"));
+        }
+    }
+}
+
+#[test]
+fn collections_and_fields_rebuild_only_their_own_blocks() {
+    let h = Harness::new();
+    let a = populate(&h.db, "a", 256, VectorMetric::Cosine, &corpus(256, 400, 11));
+    let b = populate(
+        &h.db,
+        "b",
+        64,
+        VectorMetric::Euclidean,
+        &corpus(64, 300, 12),
+    );
+    let b_full = 300 * per_vector(64, VectorMetric::Euclidean);
+    let a_per = per_vector(256, VectorMetric::Cosine);
+    // `b` completely, then a 200-vector prefix of `a` beside it.
+    h.db.set_vector_cache_budget(b_full + 200 * a_per + WALK);
+    let qa = queries(256, &corpus(256, 16, 13))[0].clone();
+    let qb = qa[..64].to_vec();
+    let check = |what: &str| {
+        for (name, col, query, dims, metric) in [
+            ("b", &b, &qb, 64, VectorMetric::Euclidean),
+            ("a", &a, &qa, 256, VectorMetric::Cosine),
+        ] {
+            let rows = table(&h.db, name, "v", dims);
+            let r = search(col, query, 10, None);
+            assert_eq!(
+                signature(&r),
+                oracle(metric, query, &rows, |_| true, 10),
+                "{what} {name}"
+            );
+        }
+        let held = h.db.vector_cache_stats();
+        assert_eq!((held.vector_indexes, held.active_bytes), (2, 0), "{what}");
+        assert_eq!(held.retained_bytes, b_full + 200 * a_per, "{what}");
+    };
+    check("initial");
+    for round in 0..4 {
+        let mut rng = Rng(round + 1);
+        if round % 2 == 0 {
+            set_vector(&a, 5 + round as usize, &scaled(&qa, 4.0));
+        } else {
+            set_vector(&b, 7 + round as usize, &rng.vector(64));
+        }
+        check(&format!("round {round}"));
+        // The other collection's block was not rebuilt.
+        let (_, streamed, _) = counted(|| search(&b, &qb, 10, None));
+        assert_eq!(streamed, 0, "round {round}: b still complete");
+        let (_, streamed, _) = counted(|| search(&a, &qa, 10, None));
+        assert_eq!(streamed, 200, "round {round}: a still a prefix");
+    }
+}
+
+#[test]
+fn a_reader_still_scoring_the_old_block_keeps_it_while_the_rebuild_gets_new_memory() {
+    let (dims, count) = (64, 600);
+    let metric = VectorMetric::Cosine;
+    let data = corpus(dims, count, 0x1F83_D9AB_5BE0_CD19);
+    let h = Harness::new();
+    let col = populate(&h.db, "docs", dims, metric, &data);
+    let full = count * per_vector(dims, metric);
+    // Room for two complete blocks.
+    h.db.set_vector_cache_budget(2 * full);
+    let query = queries(dims, &data)[0].clone();
+    let dense = || Filter::Lt("bucket".into(), Value::Int(50));
+    let half = |rows: &[(Ulid, Vec<f32>)]| {
+        let ids: HashSet<Ulid> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 100 < 50)
+            .map(|(_, (id, _))| *id)
+            .collect();
+        oracle(metric, &query, rows, |id| ids.contains(id), 10)
+    };
+    search(&col, &query, 10, None);
+    assert_eq!(resident(&h.db), (1, 0, full));
+    let old_rows = table(&h.db, "docs", "v", dims);
+    // A dense filtered search scores from the complete block while it walks
+    // the documents: it parks there, on its second documents read.
+    let first = h.arm("docs::docs");
+    let second = h.arm("docs::docs");
+    std::thread::scope(|s| {
+        let reader = s.spawn(|| search(&col, &query, 10, Some(dense())));
+        first.wait();
+        first.release();
+        second.wait();
+        set_vector(&col, 10, &scaled(&query, 3.0));
+        let new_rows = table(&h.db, "docs", "v", dims);
+        let (r, streamed, _) = counted(|| search(&col, &query, 10, None));
+        assert_eq!(
+            signature(&r),
+            oracle(metric, &query, &new_rows, |_| true, 10)
+        );
+        assert_eq!(streamed, count as u64);
+        // The borrowed block left the cache but stays charged until the
+        // reader is done; the new one was built in new memory beside it.
+        let s = h.db.vector_cache_stats();
+        assert_eq!(
+            (s.vector_indexes, s.retained_bytes, s.active_bytes),
+            (1, full, full)
+        );
+        second.release();
+        assert_eq!(signature(&reader.join().unwrap()), half(&old_rows));
+        assert_eq!(h.db.vector_cache_stats().active_bytes, 0);
+        let (r, streamed, _) = counted(|| search(&col, &query, 10, Some(dense())));
+        assert_eq!(signature(&r), half(&new_rows));
+        assert_eq!(streamed, 0);
+    });
+}
+
+#[test]
+fn a_graph_cached_during_a_rebuild_keeps_the_new_prefix_out() {
+    let (dims, count) = (64, 600);
+    let metric = VectorMetric::Cosine;
+    let data = graph_corpus(dims, count, 0x6A09_E667_BB67_AE85);
+    let h = Harness::new();
+    let col = populate(&h.db, "docs", dims, metric, &data);
+    let budget = budget_for(count / 2, dims, metric);
+    h.db.set_vector_cache_budget(budget);
+    build_graph(&h.db, &col);
+    let query = queries(dims, &data)[0].clone();
+    search(&col, &query, 10, None);
+    assert_eq!(resident(&h.db), (1, 0, budget - WALK));
+    set_vector(&col, 5, &scaled(&query, 3.0));
+    let expected = oracle(
+        metric,
+        &query,
+        &table(&h.db, "docs", "v", dims),
+        |_| true,
+        10,
+    );
+    let parked = h.arm("vec::");
+    std::thread::scope(|s| {
+        // Parked at its build scan: the old prefix was taken for the build
+        // and the reservation is live.
+        let rebuild = s.spawn(|| search(&col, &query, 10, None));
+        parked.wait();
+        let st = h.db.vector_cache_stats();
+        assert_eq!((st.vector_indexes, st.retained_bytes), (0, 0));
+        assert_eq!(st.active_bytes, budget - WALK);
+        // A walk in the workspace the prefix left idle caches its graph.
+        let walked = col.search_vectors("v", &query, 10, None, &ann()).unwrap();
+        assert_eq!(walked.execution.path, "hnsw");
+        assert_eq!(resident(&h.db).1, 1);
+        parked.release();
+        assert_eq!(signature(&rebuild.join().unwrap()), expected);
+    });
+    // The prefix was not admitted beside the graph.
+    assert_eq!(resident(&h.db).0, 0);
+    assert_eq!(resident(&h.db).1, 1);
+    assert_eq!(h.db.vector_cache_stats().active_bytes, 0);
+    let (r, streamed, _) = counted(|| search(&col, &query, 10, None));
+    assert_eq!(signature(&r), expected);
+    assert_eq!(streamed, count as u64);
+}
+
+#[test]
+fn pressure_and_budget_changes_during_a_rebuild_publish_nothing() {
+    let (dims, count) = (128, 600);
+    let metric = VectorMetric::Cosine;
+    let data = corpus(dims, count, 0x3C6E_F372_A54F_F53A);
+    let h = Harness::new();
+    let col = populate(&h.db, "docs", dims, metric, &data);
+    let budget = budget_for(300, dims, metric);
+    h.db.set_vector_cache_budget(budget);
+    let query = queries(dims, &data)[0].clone();
+    search(&col, &query, 10, None);
+    type Change<'a> = (&'a str, Box<dyn Fn() + 'a>, Box<dyn Fn() + 'a>);
+    let changes: [Change; 3] = [
+        (
+            "critical pressure",
+            Box::new(|| h.db.notify_memory_pressure(MemoryPressure::Critical)),
+            Box::new(|| h.db.notify_memory_pressure(MemoryPressure::Normal)),
+        ),
+        (
+            "moderate pressure",
+            Box::new(|| h.db.notify_memory_pressure(MemoryPressure::Moderate)),
+            Box::new(|| h.db.notify_memory_pressure(MemoryPressure::Normal)),
+        ),
+        (
+            "smaller budget",
+            Box::new(|| h.db.set_vector_cache_budget(budget / 2)),
+            Box::new(|| h.db.set_vector_cache_budget(budget)),
+        ),
+    ];
+    for (round, (what, change, restore)) in changes.iter().enumerate() {
+        search(&col, &query, 10, None);
+        assert_eq!(resident(&h.db), (1, 0, budget - WALK), "{what}");
+        set_vector(&col, 20 + round, &scaled(&query, 2.0 + round as f32));
+        let expected = oracle(
+            metric,
+            &query,
+            &table(&h.db, "docs", "v", dims),
+            |_| true,
+            10,
+        );
+        let parked = h.arm("vec::");
+        std::thread::scope(|s| {
+            let rebuild = s.spawn(|| search(&col, &query, 10, None));
+            parked.wait();
+            change();
+            // The lowered budget cannot revoke the live reservation.
+            assert_eq!(
+                h.db.vector_cache_stats().active_bytes,
+                budget - WALK,
+                "{what}"
+            );
+            parked.release();
+            assert_eq!(signature(&rebuild.join().unwrap()), expected, "{what}");
+        });
+        assert_eq!(
+            resident(&h.db),
+            (0, 0, 0),
+            "{what}: published after the change"
+        );
+        assert_eq!(h.db.vector_cache_stats().active_bytes, 0, "{what}");
+        restore();
+        // A first build again, from nothing.
+        let (r, streamed, _) = counted(|| search(&col, &query, 10, None));
+        assert_eq!(signature(&r), expected, "{what}");
+        assert_eq!(streamed, count as u64, "{what}");
+        let (r, streamed, _) = counted(|| search(&col, &query, 10, None));
+        assert_eq!(signature(&r), expected, "{what}");
+        assert_eq!(
+            streamed,
+            (count - (budget - WALK) / per_vector(dims, metric)) as u64
+        );
+    }
+}
+
+#[test]
+fn storage_errors_around_a_rebuild_leave_no_stale_block_or_reservation() {
+    let (dims, count) = (128, 400);
+    let metric = VectorMetric::Cosine;
+    let data = corpus(dims, count, 0x9B05_688C_1F83_D9AB);
+    let h = Harness::new();
+    let col = populate(&h.db, "docs", dims, metric, &data);
+    let budget = budget_for(200, dims, metric);
+    h.db.set_vector_cache_budget(budget);
+    let query = queries(dims, &data)[0].clone();
+    search(&col, &query, 10, None);
+    let prefix = (1, 0, budget - WALK);
+    assert_eq!(resident(&h.db), prefix);
+    // Counting fails before admission: the old block stays, still charged.
+    set_vector(&col, 3, &scaled(&query, 5.0));
+    h.faults.count.store(true, Ordering::SeqCst);
+    assert!(col.search_vectors("v", &query, 10, None, &exact()).is_err());
+    assert_eq!(resident(&h.db), prefix);
+    assert_eq!(h.db.vector_cache_stats().active_bytes, 0);
+    search_after_write(&h, &col, &query, dims, metric, "after a failed count");
+    // The build scan fails after admission: the old block and the
+    // reservation are both released, and nothing is published.
+    set_vector(&col, 4, &scaled(&query, 0.5));
+    h.faults.scan.store(true, Ordering::SeqCst);
+    assert!(col.search_vectors("v", &query, 10, None, &exact()).is_err());
+    assert_eq!(resident(&h.db), (0, 0, 0));
+    assert_eq!(h.db.vector_cache_stats().active_bytes, 0);
+    search_after_write(&h, &col, &query, dims, metric, "after a failed build");
 }
