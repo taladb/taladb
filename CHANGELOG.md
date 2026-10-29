@@ -34,6 +34,10 @@
 - **Where NaN sorts.** Every NaN, of either sign, now sorts after every number (`Infinity` included) and before strings, equal to every other NaN and ordered by `_id`. Before, its position depended on the input order, or the sort panicked. `$max` of a group holding NaN is now NaN, and `$min` passes over it; before, the result depended on which document came first.
 - **Integers beyond 2^53 against floats.** Numbers compare by exact value: `2^53 + 1` now sorts after the float `2^53` instead of tying with it, and `i64::MAX` before the float `2^63`. Orders among other numbers, and the tie of `-0`, `0` and integer `0`, are unchanged.
 
+### Known regressions
+
+- **Indexed equality `count` at 100,000 documents is up to 6% slower on arm64 Linux** than in 0.12.1, about 2.5 µs per call (`doc/count_indexed_eq/100000`). The code on this path is not slower: the difference follows how the compiler lays out the binary. 0.13.0's engine source measured 2% slower, and the version-number change alone added 3%. x86_64 is unchanged. The release performance gate accepts this case on arm64 up to 8% slower than 0.12.1 (a benchmark exception in `benchmarks/gates/exceptions.json`). Every other case still has to pass the gate as before.
+
 Existing public operations, document/index/snapshot/vector formats, cache defaults, and Rust MSRV 1.90 are preserved. 0.12.1 opens databases, indexes, graphs and snapshots written by 0.13.0, so going back to 0.12.1 needs no migration or index rebuild; it brings back 0.12.1's results for the fixes above.
 
 ## 0.12.1 — 2026-10-22
