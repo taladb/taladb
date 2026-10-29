@@ -1,4 +1,14 @@
 {
   "schema": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "case": "doc/count_indexed_eq/100000",
+      "gate": "cumulative",
+      "platform": "ci-linux-aarch64",
+      "max_ratio": 1.08,
+      "reason": "Code placement, not a code change. The engine source of 0.13.0 is identical to bd18a99, which measured 1.023 against v0.12.1 on arm64 (run 40821091558). The version-only release commit 4c8478f alone moved this case by 1.029-1.035 against bd18a99 (runs 40860370392, 40860385122), because the crate version changes symbol hashes and code layout. Together that is 1.056-1.064 against v0.12.1 in all 9 attempts (runs 40853230108, 40860370392, 40860385122). x86_64 is neutral (0.97-1.01). Stage 2B already found this case placement-sensitive on Zen 3. About 2.5 us per call at 100k. Named in the 0.13.0 CHANGELOG.",
+      "approved_by": "akosidencio",
+      "approved_in": "https://github.com/taladb/taladb/pull/125"
+    }
+  ]
 }
