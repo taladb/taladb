@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "taladb"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "aes-gcm",
  "getrandom 0.4.3",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-ffi"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "serde_json",
  "taladb",
