@@ -1592,16 +1592,14 @@ impl Collection {
                 }
             }
         } else {
-            let (cached, budget, epoch) = {
+            // An older block stays resident until `reserve_block` below,
+            // which may reuse its buffers for this revision's block.
+            let (cached, epoch) = {
                 let mut cache = self
                     .search_cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (
-                    cache.vectors(&cache_key, generation),
-                    cache.budget(),
-                    cache.epoch,
-                )
+                (cache.current_vectors(&cache_key, generation), cache.epoch)
             };
             if let Some(retained) = cached {
                 let block = &retained.block;
@@ -1632,59 +1630,37 @@ impl Collection {
                 }
             } else {
                 let count = usize::try_from(txn.count_entries(&table)?).unwrap_or(usize::MAX);
-                let estimate =
-                    count.checked_mul(def.dimensions.saturating_mul(4).saturating_add(16));
-                // Reserve before decoding a full block. Concurrent exact
-                // queries that cannot claim space simply stream the table.
-                let reserve = |estimate: Option<usize>| {
-                    estimate
-                        .filter(|&n| n <= budget && budget > 0)
-                        .and_then(|n| {
-                            self.search_cache
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .reserve(n)
-                        })
+                // Reserve before decoding a block: a full one, with norms for
+                // cosine if they fit, else the prefix that fits in idle memory
+                // (`SearchCache::reserve_block`). Only cosine reads the stored
+                // norm; other metrics retain none. Concurrent exact queries
+                // that cannot claim space simply stream the table.
+                let lease = self
+                    .search_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .reserve_block(
+                        &cache_key,
+                        generation,
+                        count,
+                        def.dimensions,
+                        def.metric == VectorMetric::Cosine,
+                        count.div_ceil(PARTIAL_BLOCK_MIN_SHARE),
+                    );
+                let retain = lease.is_some();
+                let (mut reservation, capacity, norms, block) = match lease {
+                    Some(lease) => (
+                        Some(lease.reservation),
+                        lease.capacity,
+                        lease.norms,
+                        lease.block,
+                    ),
+                    None => (None, count, false, RetainedVectors::default()),
                 };
-                // Only cosine reads the stored norm; other metrics retain none.
-                // A cosine block whose norms do not fit keeps its vectors alone,
-                // as before norms were cached, rather than streaming.
-                let mut norms = def.metric == VectorMetric::Cosine;
-                let mut reservation = norms
-                    .then(|| reserve(estimate.and_then(|n| n.checked_add(count.checked_mul(4)?))))
-                    .flatten();
-                if reservation.is_none() {
-                    norms = false;
-                    reservation = reserve(estimate);
-                }
-                // When no full block fits, keep the prefix that fits in idle
-                // memory, with norms for cosine (`SearchCache::reserve_partial`).
-                let mut capacity = count;
-                if reservation.is_none() {
-                    let cosine = def.metric == VectorMetric::Cosine;
-                    let norm_bytes = if cosine { 4 } else { 0 };
-                    let vector_bytes = def
-                        .dimensions
-                        .saturating_mul(4)
-                        .saturating_add(16 + norm_bytes);
-                    if let Some((partial, vectors)) = self
-                        .search_cache
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .reserve_partial(
-                            vector_bytes,
-                            count,
-                            count.div_ceil(PARTIAL_BLOCK_MIN_SHARE),
-                        )
-                    {
-                        norms = cosine;
-                        reservation = Some(partial);
-                        capacity = vectors;
-                    }
-                }
-                let retain = reservation.is_some();
-                let mut retained = RetainedVectors::default();
+                // Declared after the reservation, so it is freed first.
+                let mut retained = block;
                 retained.block.dimensions = def.dimensions;
+                // No-ops for buffers reused from a stale block.
                 if retain {
                     retained.block.ids.reserve_exact(capacity);
                     retained
