@@ -27,3 +27,6 @@ docs/reports
 PLAN-*.md
 reviews/
 ROADMAP-INTERNAL.md
+
+# Internal reports, not for commit
+internal_usage_only/

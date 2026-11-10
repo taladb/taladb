@@ -308,4 +308,111 @@ export async function run(browser, r) {
     await P.close();
     await Q.close();
   });
+
+  // `page.close()` without `db.close()` destroys the owner's worker mid-session:
+  // no flush, no lock release by TalaDB. Only what was acknowledged may count.
+  await r.test('an owner tab destroyed without close() hands over with acknowledged data intact', async (r) => {
+    const P = await newTab(browser, { label: 'kA' });
+    const Q = await newTab(browser, { label: 'kB' });
+    await open(P, 'killed.db');
+    await P.evaluate(async () => {
+      await window.c.createIndex('n');
+      await window.c.createFtsIndex('body');
+      for (let i = 0; i < 10; i++) await window.c.insert({ n: i, body: `owner note ${i}` });
+    });
+    await open(Q, 'killed.db');
+    await Q.evaluate(() => window.c.insert({ n: 100, body: 'forwarded note' }));
+    await P.close();
+    const t0 = Date.now();
+    const promoted = await until(Q, () => window.db.isPrimary(), null, Boolean, 10000);
+    r.eq(promoted, true, 'the surviving tab takes ownership');
+    r.ok(Date.now() - t0 < 10000, 'takeover does not wait out the RPC timeout');
+    r.note(`takeover after ${Date.now() - t0} ms`);
+    const seen = await Q.evaluate(async () => ({
+      total: await window.c.count(),
+      indexed: await window.c.count({ n: { $gte: 5 } }),
+      fts: (await window.c.searchText('body', 'forwarded', 5)).length,
+      indexes: await window.c.listIndexes(),
+    }));
+    r.eq(seen.total, 11, 'every acknowledged write survives the owner being destroyed');
+    r.eq(seen.indexed, 6, 'the scalar index answers without a rebuild');
+    r.eq(seen.fts, 1, 'the FTS index answers without a rebuild');
+    r.ok(seen.indexes.btree?.includes('n') && seen.indexes.fts?.includes('body'), 'index definitions survive');
+    await Q.evaluate(() => window.c.insert({ n: 200, body: 'after takeover' }));
+    await Q.close();
+    const R = await newTab(browser, { label: 'kC' });
+    await open(R, 'killed.db');
+    const reopened = await R.evaluate(async () => ({
+      total: await window.c.count(),
+      after: await window.c.count({ n: 200 }),
+      fts: (await window.c.searchText('body', 'takeover', 5)).length,
+    }));
+    r.eq(reopened, { total: 12, after: 1, fts: 1 }, 'a fresh tab reads every acknowledged write, before and after takeover');
+    await R.close();
+  });
+
+  await r.test('eventual durability: flushed writes survive an abrupt owner termination', async (r) => {
+    const opts = { durability: { flush_every_write: false } };
+    const P = await newTab(browser, { label: 'eA' });
+    await open(P, 'eventual.db', opts);
+    await P.evaluate(async () => {
+      await window.c.createIndex('k');
+      await window.c.insertMany(Array.from({ length: 50 }, (_, i) => ({ k: 'flushed', i })));
+      await window.db.flush();
+      // Acknowledged under eventual durability, never flushed.
+      for (let i = 0; i < 20; i++) await window.c.insert({ k: 'unflushed', i });
+    });
+    await P.close();
+    const R = await newTab(browser, { label: 'eB' });
+    await open(R, 'eventual.db', opts);
+    const got = await R.evaluate(async () => ({
+      flushed: await window.c.count({ k: 'flushed' }),
+      unflushed: await window.c.count({ k: 'unflushed' }),
+      scanned: (await window.c.find()).length,
+      total: await window.c.count(),
+    }));
+    r.eq(got.flushed, 50, 'every write acknowledged before flush() resolved survives');
+    r.ok(got.unflushed >= 0 && got.unflushed <= 20, 'unflushed writes are allowed, not required, to survive');
+    r.eq(got.scanned, got.total, 'the reopened file is internally consistent');
+    r.note(`unflushed survivors: ${got.unflushed}/20 (not a guarantee)`);
+    await R.close();
+  });
+
+  await r.test('an OPFS file that cannot be opened is an error, not an IndexedDB fallback', async (r) => {
+    const P = await newTab(browser, { label: 'hA' });
+    const out = await P.evaluate(async () => {
+      // A foreign worker holds the file's only sync access handle.
+      const src = `onmessage = async () => {
+        const root = await navigator.storage.getDirectory();
+        const f = await root.getFileHandle('taladb_held.db.redb', { create: true });
+        self.h = await f.createSyncAccessHandle();
+        postMessage('held');
+      };`;
+      const holder = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      await new Promise((resolve) => { holder.onmessage = resolve; holder.postMessage(0); });
+      let opened;
+      try {
+        await window.taladb.openDB('held.db');
+        opened = 'OPENED';
+      } catch (e) {
+        opened = String(e.message ?? e).slice(0, 120);
+      }
+      holder.terminate();
+      const snapshot = await new Promise((resolve) => {
+        const req = indexedDB.open('taladb', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('snapshots');
+        req.onsuccess = () => {
+          const get = req.result.transaction('snapshots').objectStore('snapshots').get('held.db');
+          get.onsuccess = () => { resolve(get.result ?? null); req.result.close(); };
+          get.onerror = () => resolve('read-failed');
+        };
+        req.onerror = () => resolve('open-failed');
+      });
+      return { opened, snapshot };
+    });
+    r.ok(out.opened !== 'OPENED', 'opening rejects while the OPFS file is unavailable');
+    r.eq(out.snapshot, null, 'no IndexedDB snapshot database was created instead');
+    r.note(`error: ${out.opened}`);
+    await P.close();
+  });
 }
