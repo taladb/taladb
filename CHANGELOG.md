@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Browser ownership handover no longer stalls behind queued requests.** When a tab took over storage from an owner that had closed or been terminated, each request already queued in that tab waited out the 30-second reply timeout before the takeover could open storage — about a minute with two queued requests. Those requests now reject at once with `request was not executed`, which is safe to retry, and the takeover completes immediately. A request that was already in flight still rejects with an unknown outcome and is never replayed.
+- **A default-durability IndexedDB write whose snapshot fails now says its outcome is unknown.** The write is already applied in memory, so a later successful `flush()` persists it and reopening discards it. The error was the bare storage error (for example `QuotaExceededError`), which read as a definite failure and invited a duplicate retry. The original error text is kept in the message.
+
 ## 0.13.0 — 2026-10-29
 
 ### Performance
