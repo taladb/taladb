@@ -742,7 +742,11 @@ impl Collection {
 
         let tokens = {
             let (freqs, _) = token_frequencies(query);
-            let tokens = freqs.into_keys().collect::<Vec<_>>();
+            let mut tokens = freqs.into_keys().collect::<Vec<_>>();
+            // Each score is summed term by term below, and float addition is
+            // not associative: hash order would make identical queries round,
+            // and so rank near-ties, differently from one call to the next.
+            tokens.sort_unstable();
             if params.stopwords {
                 crate::fts::without_stopwords(tokens)
             } else {
