@@ -521,11 +521,18 @@ jobs:
           # CMake against the NDK. What is being checked here is that they agree
           # with jsi.h and with the generated taladb.h, which is where the
           # hand-written code actually goes wrong.
-          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra \
+          #
+          # `-include cstdint`: jsi.h uses uint32_t and friends without
+          # including <cstdint>, relying on the standard library to pull it in.
+          # The libstdc++ on ubuntu-26.04 (now ubuntu-latest) no longer does, so
+          # jsi.h itself fails to parse here. App builds use the NDK's or Xcode's
+          # libc++, which every React Native app compiles jsi.h against, so they
+          # are unaffected; only this libstdc++ syntax check needs the include.
+          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra -include cstdint \
             -I "$JSI" -I "$RN/cpp" \
             "$RN/cpp/TalaDBHostObject.cpp"
 
-          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra -DANDROID \
+          clang++ -std=c++17 -fsyntax-only -fexceptions -frtti -Wall -Wextra -DANDROID -include cstdint \
             -I "$JSI" -I "$RN/cpp" \
             -I "$JAVA_HOME/include" -I "$JAVA_HOME/include/linux" \
             "$RN/cpp/TalaDBJni.cpp"

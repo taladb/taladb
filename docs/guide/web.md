@@ -34,8 +34,9 @@ of which predate their OPFS support.
 
 On browsers without OPFS, TalaDB automatically falls back to an
 IndexedDB-backed in-memory database. Data still persists across page reloads.
-Snapshots are written to IndexedDB with a short debounce so bulk inserts stay
-fast.
+By default each write is acknowledged only after its snapshot is written to
+IndexedDB. With `flush_every_write: false`, snapshots are written on a short
+timer (`flush_ms`, default 500 ms) so bulk inserts stay fast.
 
 ## Installation
 
@@ -454,6 +455,21 @@ IDB transaction completes. With `flush_every_write: false`, writes are eventual;
 `await db.flush()` is the durability barrier. Quota, read, and flush errors are
 reported. An OPFS permission or file-open failure rejects opening the database
 rather than selecting a different store.
+
+Failure outcomes are reported as one of three kinds:
+
+- **Not executed** — `request was not executed` (for example, a request issued
+  while this tab is taking over ownership). Safe to retry.
+- **Unknown** — `outcome is unknown`: the owner disappeared before replying, or
+  a default-durability IndexedDB write was applied in memory but its snapshot
+  failed. A later successful `flush()` persists such a write and reopening
+  discards it; until then further operations are rejected. Reconcile by
+  document ID before retrying.
+- **Eventual** — with `flush_every_write: false` a write is acknowledged before
+  it is durable. A failed background snapshot appears in
+  `storageInfo().storageError` and is thrown by `flush()`. On OPFS, batched
+  writes are made durable only by `flush()` or `close()`; writes not yet
+  flushed can be lost if the tab or worker ends first.
 
 Web Locks are required for persistent browser access. Additional tabs require
 BroadcastChannel and identical database configurations. Encrypted databases

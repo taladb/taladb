@@ -742,7 +742,11 @@ impl Collection {
 
         let tokens = {
             let (freqs, _) = token_frequencies(query);
-            let tokens = freqs.into_keys().collect::<Vec<_>>();
+            let mut tokens = freqs.into_keys().collect::<Vec<_>>();
+            // Each score is summed term by term below, and float addition is
+            // not associative: hash order would make identical queries round,
+            // and so rank near-ties, differently from one call to the next.
+            tokens.sort_unstable();
             if params.stopwords {
                 crate::fts::without_stopwords(tokens)
             } else {
@@ -1179,6 +1183,9 @@ impl Collection {
             if let Some(options) = hnsw {
                 self.build_graph_in(wtxn.as_mut(), &existing, options)?;
                 wtxn.commit()?;
+                // As in `rebuild_vector_index`: the new graph has a new table
+                // name, so the old one's cache entry can never be served.
+                self.evict_node_cache(field);
             }
             return Ok(());
         }

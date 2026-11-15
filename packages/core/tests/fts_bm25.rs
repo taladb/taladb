@@ -243,3 +243,58 @@ fn contains_filter_still_requires_every_token() {
     let ranked = col.search_text("body", "alpha beta", 10).unwrap();
     assert_eq!(ranked.len(), 2, "search_text is OR across tokens");
 }
+
+/// The same query over the same documents must rank them the same way, with
+/// the same scores, every time.
+///
+/// A document's score is a sum of per-term contributions, and float addition
+/// is not associative. Query terms used to be summed in `HashMap` iteration
+/// order, which is seeded per map, so identical queries rounded differently:
+/// in random corpora like this one, score bits varied between runs in 36 of
+/// 40 and documents within an ULP of each other swapped places — the order,
+/// and with it the `top_k` cut-off and hybrid text ranks, depended on hash
+/// seeds rather than on the data.
+#[test]
+fn identical_queries_return_identical_scores_and_order() {
+    let words = [
+        "late", "rust", "arrival", "storage", "search", "fox", "quick", "brown", "engine", "cafe",
+        "x1", "x2", "x3",
+    ];
+    let mut state = 0x1234_5678u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for corpus in 0..10 {
+        let db = Database::open_in_memory().unwrap();
+        let col = db.collection("docs").unwrap();
+        col.create_fts_index("body").unwrap();
+        let docs = (0..120)
+            .map(|_| {
+                let n = 1 + next() % 12;
+                let body: Vec<&str> = (0..n)
+                    .map(|_| words[(next() % words.len() as u64) as usize])
+                    .collect();
+                vec![("body".to_string(), Value::Str(body.join(" ")))]
+            })
+            .collect();
+        col.insert_many(docs).unwrap();
+        let run = || {
+            col.search_text("body", "late arrival rust storage search fox", 120)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.document.id, h.score.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        let first = run();
+        for _ in 0..30 {
+            assert_eq!(
+                run(),
+                first,
+                "corpus {corpus}: ranking depends on hash order"
+            );
+        }
+    }
+}

@@ -25,6 +25,7 @@ let releaseLock = null;
 let syncHandle = null;
 let lockAbort = null;
 let closed = false;
+let takingOver = false;
 let backend = null;
 let immediate = true;
 let flushMs = 500;
@@ -59,6 +60,9 @@ function announce() {
 }
 function remote(op, args) {
   if (!channel || closed) return Promise.reject(new Error('TalaDB storage owner is unavailable'));
+  // This worker holds the lock but has not opened storage yet. No one else can
+  // answer, so waiting would only stall the queued takeover behind the timeout.
+  if (takingOver) return Promise.reject(new Error('TalaDB storage owner changed; request was not executed'));
   if (pending.size >= MAX_PENDING) return Promise.reject(new Error('TalaDB remote request queue is full'));
   const id = ++sequence;
   return new Promise((resolve, reject) => {
@@ -175,7 +179,10 @@ async function executeOwned(op, args) {
   if (mutations.has(op) || (op === 'vectorCommand' && ['create', 'beginBuild', 'stepBuild', 'cancelBuild'].includes(JSON.parse(args.requestJson).op))) {
     if (backend === 'indexeddb') {
       dirty = true;
-      if (immediate) await flushSnapshot(); else scheduleFlush();
+      // The write is already applied in memory, so a later successful flush
+      // persists it and a reopen discards it: report that, not a plain failure.
+      if (immediate) await flushSnapshot().catch(e => { throw new Error(`TalaDB write was applied but not persisted; its outcome is unknown until flush() succeeds or the database is reopened: ${e.message ?? e}`); });
+      else scheduleFlush();
     }
     channel?.postMessage('taladb:changed');
   }
@@ -249,9 +256,10 @@ async function init(args) {
   lockAbort = new AbortController();
   // Keep the ownership request pending. No speculative writes are replayed.
   navigator.locks.request(`taladb:taladb_${activeDbName}.redb`, { signal: lockAbort.signal }, async () => {
+    takingOver = true;
     rejectPending('TalaDB owner changed; outstanding mutation outcomes are unknown');
     if (closed) return;
-    await enqueue(() => openOwner(null));
+    try { await enqueue(() => openOwner(null)); } finally { takingOver = false; }
     const held = new Promise(r => { releaseLock = r; });
     if (closed) releaseLock();
     await held; disposeOwner();
