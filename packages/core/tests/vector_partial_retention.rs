@@ -22,8 +22,8 @@ use taladb::vector::{
     decode_f32_vec, encode_f32_vec, l2_norm, score_with_query_norm, vec_table_name,
 };
 use taladb::{
-    Collection, Database, Document, Filter, GraphOptions, MemoryPressure, Quantization,
-    RedbBackend, StorageBackend, TalaDbError, Ulid, Update, Value, VectorMetric,
+    Collection, Database, Document, Filter, GraphOptions, HnswOptions, MemoryPressure,
+    Quantization, RedbBackend, StorageBackend, TalaDbError, Ulid, Update, Value, VectorMetric,
     VectorQueryOptions, VectorQueryResult, VectorSearchMode,
 };
 
@@ -1805,4 +1805,53 @@ fn storage_errors_around_a_rebuild_leave_no_stale_block_or_reservation() {
     assert_eq!(resident(&h.db), (0, 0, 0));
     assert_eq!(h.db.vector_cache_stats().active_bytes, 0);
     search_after_write(&h, &col, &query, dims, metric, "after a failed build");
+}
+
+#[test]
+fn rerunning_create_vector_index_with_hnsw_evicts_the_replaced_graph() {
+    // `create_vector_index` with HNSW options on an existing index rebuilds the
+    // graph under a new table name, as `rebuild_vector_index` does. The old
+    // graph's cache entry can never be served again. Left resident, it holds
+    // budget and, as any resident graph does, refuses partial blocks to every
+    // field until something else happens to evict it.
+    let (dims, count) = (64, 600);
+    let metric = VectorMetric::Cosine;
+    let data = graph_corpus(dims, count, 0x3C6E_F372_FE94_F82B);
+    let h = Harness::new();
+    let col = populate(&h.db, "docs", dims, metric, &data);
+    let budget = budget_for(count / 2, dims, metric);
+    h.db.set_vector_cache_budget(budget);
+    let hnsw = || {
+        Some(HnswOptions {
+            m: 8,
+            ef_construction: 32,
+        })
+    };
+    col.create_vector_index("v", dims, Some(metric), hnsw())
+        .unwrap();
+    let query = queries(dims, &data)[0].clone();
+    let expected = oracle(
+        metric,
+        &query,
+        &table(&h.db, "docs", "v", dims),
+        |_| true,
+        10,
+    );
+    let walked = col.search_vectors("v", &query, 10, None, &ann()).unwrap();
+    assert_eq!(walked.execution.path, "hnsw");
+    assert_eq!(resident(&h.db).1, 1, "the walk cached its graph");
+    // The re-run replaces the graph; nothing of the old one stays resident.
+    col.create_vector_index("v", dims, Some(metric), hnsw())
+        .unwrap();
+    assert_eq!(resident(&h.db), (0, 0, 0), "replaced graph evicted");
+    // So exact search retains a prefix again, as after any rebuild.
+    assert_eq!(signature(&search(&col, &query, 10, None)), expected);
+    let (r, streamed, _) = counted(|| search(&col, &query, 10, None));
+    assert_eq!(signature(&r), expected);
+    let held = expected_block(count, budget, dims, metric).1;
+    assert!(held > 0 && held < count);
+    assert_eq!(streamed, (count - held) as u64);
+    // And ANN still serves the new graph.
+    let again = col.search_vectors("v", &query, 10, None, &ann()).unwrap();
+    assert_eq!(again.execution.path, "hnsw");
 }
