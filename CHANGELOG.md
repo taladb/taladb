@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 — 2026-11-15
 
 ### Fixes
 
@@ -8,6 +8,16 @@
 - **A default-durability IndexedDB write whose snapshot fails now says its outcome is unknown.** The write is already applied in memory, so a later successful `flush()` persists it and reopening discards it. The error was the bare storage error (for example `QuotaExceededError`), which read as a definite failure and invited a duplicate retry. The original error text is kept in the message.
 - **Text search returns the same scores and order for the same query on the same data.** A document's BM25 score is the sum of its matching terms' contributions. The terms were added up in hash-map order, which changes from call to call, and floating-point addition depends on order. For a document matching three or more query terms, identical `searchText` calls could return scores that differed in the last bit. Documents scoring within that margin of each other could swap places, which also moved the `topK` cut-off and the text ranks used by hybrid search. Terms are now added in a fixed order. Scores are the same BM25 values as before, possibly differing in the last bit from a given earlier result. Queries with one or two terms are unaffected. Indexes are unchanged and no rebuild is needed.
 - **Calling `create_vector_index` again with HNSW options no longer leaves the old graph in the vector cache.** The call rebuilds the graph of an existing index, as `rebuild_vector_index` does, but did not evict the graph it replaced. That entry could never be served again. Until something else pushed it out, it held cache budget, and, because the cache keeps no partial exact-search blocks while a graph is resident, exact searches on indexes larger than the cache went back to decoding every vector on every query. The call now evicts the field's cached graph and vectors, as `rebuild_vector_index` does. Results were never affected.
+
+### Dependencies
+
+- `Cargo.lock` now records `quinn-proto` 0.11.19, `quinn-udp` 0.5.16 and `rustix` 1.1.6, for RUSTSEC-2026-0523, -0524, -0538 and -0486. None of them is built into a published crate, package or binary: `quinn` is an optional `reqwest` dependency that no build here enables, and `rustix` is reached only through a test dependency. No dependency was added or removed.
+
+### Known regressions
+
+- **Indexed equality `count` at 100,000 documents on arm64 Linux** (`doc/count_indexed_eq/100000`) is still about 5% slower than in 0.12.1, as in 0.13.0. The 0.13.1 release benchmark run measured 1.053× against 0.12.1 and 0.993× against 0.13.0. It stays within the existing benchmark exception (up to 8%, `benchmarks/gates/exceptions.json`), which is unchanged. x86_64 is unchanged.
+
+No public API, configuration option, storage, index, snapshot or vector format, or C ABI (`TALADB_FFI_ABI_VERSION` 2) changed. Cache budgets, durability defaults and Rust MSRV 1.90 are unchanged, and no index rebuild is needed. 0.13.0 opens databases, indexes, graphs and snapshots written by 0.13.1, so going back to 0.13.0 needs no migration or rebuild; it brings back 0.13.0's behavior for the fixes above.
 
 ## 0.13.0 — 2026-10-29
 
