@@ -1183,6 +1183,9 @@ impl Collection {
             if let Some(options) = hnsw {
                 self.build_graph_in(wtxn.as_mut(), &existing, options)?;
                 wtxn.commit()?;
+                // As in `rebuild_vector_index`: the new graph has a new table
+                // name, so the old one's cache entry can never be served.
+                self.evict_node_cache(field);
             }
             return Ok(());
         }
