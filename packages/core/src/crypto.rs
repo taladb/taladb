@@ -673,8 +673,7 @@ pub fn encrypt_fields(
     for (name, val) in &mut doc.fields {
         if config.fields.iter().any(|f| f == name) {
             let aad_key = field_aad(doc_id, name);
-            let plain = postcard::to_allocvec(val)
-                .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
+            let plain = crate::document::value_depth::encode(val)?;
             let ciphertext = encrypt(&config.key, "field", &aad_key, &plain)?;
             *val = crate::document::Value::Bytes(ciphertext);
         }

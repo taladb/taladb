@@ -52,8 +52,39 @@ fn new_ulid() -> Ulid {
     Ulid::from_parts(ms, random)
 }
 
+/// Deepest nesting of arrays and objects a [`Value`] may have when it is
+/// encoded or decoded: a scalar is depth 0, `[1]` is 1, `[[1]]` is 2.
+///
+/// Decoding is recursive, and a stack overflow aborts the process (in wasm, an
+/// unrecoverable trap) — it cannot be caught. Without a limit, a few kilobytes
+/// of crafted or corrupted bytes in a snapshot or a document body crashed the
+/// first read (S2). With it, decoding never goes deeper than this, so deeper
+/// input is an ordinary error, and the partial value dropped on that error is
+/// itself at most this deep.
+///
+/// Why 128:
+/// - Twice the 64-level ceiling ([`crate::json_depth::MAX_JSON_DEPTH`]) every
+///   binding already applies to incoming JSON, so nothing a binding has ever
+///   accepted comes near it; the headroom is for Rust callers that build
+///   [`Value`]s directly.
+/// - Every other recursive walk over a decoded value (filters, index keys,
+///   JSON conversion, drop) is bounded by it too. Measured for a 128-deep
+///   value through write, index, equality filter, projected scan, snapshot
+///   round trip and JSON conversion: ≤ 96 KiB of stack in release builds and
+///   ≤ 384 KiB unoptimised — both inside a 512 KiB thread stack, the smallest
+///   the engine runs on (iOS secondary threads). The `value_depth_limit` tests
+///   re-check this on a 512 KiB thread.
+///
+/// Writes are held to the same limit — a value the reader would refuse is
+/// never stored.
+pub const MAX_VALUE_DEPTH: usize = 128;
+
 /// A dynamically-typed value that maps to JSON conceptually but serializes via postcard.
 /// Uses Vec<(String, Value)> for objects (not HashMap) to guarantee deterministic serialization.
+///
+/// The serde impls are derived; only the two container variants route through
+/// [`value_depth`] to enforce [`MAX_VALUE_DEPTH`], so the encoding is unchanged
+/// and scalars decode exactly as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -62,8 +93,122 @@ pub enum Value {
     Float(f64),
     Str(String),
     Bytes(Vec<u8>),
+    #[serde(
+        serialize_with = "value_depth::ser_items",
+        deserialize_with = "value_depth::de_items"
+    )]
     Array(Vec<Self>),
+    #[serde(
+        serialize_with = "value_depth::ser_fields",
+        deserialize_with = "value_depth::de_fields"
+    )]
     Object(Vec<(String, Self)>),
+}
+
+/// Enforces [`MAX_VALUE_DEPTH`] on encode and decode.
+///
+/// Each array/object payload holds a [`DepthGuard`] while its elements are
+/// processed. The count lives in a thread-local because serde gives a field's
+/// `deserialize_with` no way to receive context from its parent; a value's
+/// containers are always (de)serialized by nested calls on one thread, so the
+/// count is exactly the current nesting. It costs one increment and one
+/// decrement per container and nothing per scalar.
+pub(crate) mod value_depth {
+    use std::cell::Cell;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
+
+    use super::{MAX_VALUE_DEPTH, Value};
+
+    thread_local! {
+        // `const`, no destructor: never lazily initialised, never torn down.
+        static DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// One container level. Restores the count when dropped, including on an
+    /// error return or an unwind, so a refused value leaves nothing behind.
+    pub(crate) struct DepthGuard(());
+
+    impl DepthGuard {
+        /// `None` when entering one more container would exceed the limit.
+        #[inline]
+        pub(crate) fn enter() -> Option<Self> {
+            DEPTH.with(|depth| {
+                let now = depth.get();
+                (now < MAX_VALUE_DEPTH).then(|| {
+                    depth.set(now + 1);
+                    Self(())
+                })
+            })
+        }
+    }
+
+    impl Drop for DepthGuard {
+        #[inline]
+        fn drop(&mut self) {
+            DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn too_deep_de<E: de::Error>() -> E {
+        E::custom(format_args!(
+            "value nests arrays/objects deeper than {MAX_VALUE_DEPTH} levels"
+        ))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn too_deep_ser<E: ser::Error>() -> E {
+        E::custom(format_args!(
+            "value nests arrays/objects deeper than {MAX_VALUE_DEPTH} levels"
+        ))
+    }
+
+    pub(super) fn de_items<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Value>, D::Error> {
+        let _level = DepthGuard::enter().ok_or_else(too_deep_de::<D::Error>)?;
+        Vec::deserialize(d)
+    }
+
+    pub(super) fn de_fields<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Vec<(String, Value)>, D::Error> {
+        let _level = DepthGuard::enter().ok_or_else(too_deep_de::<D::Error>)?;
+        Vec::deserialize(d)
+    }
+
+    // `&Vec` is the shape serde's `serialize_with` hands a newtype variant.
+    #[allow(clippy::ptr_arg)]
+    pub(super) fn ser_items<S: Serializer>(items: &Vec<Value>, s: S) -> Result<S::Ok, S::Error> {
+        let _level = DepthGuard::enter().ok_or_else(too_deep_ser::<S::Error>)?;
+        items.serialize(s)
+    }
+
+    #[allow(clippy::ptr_arg)]
+    pub(super) fn ser_fields<S: Serializer>(
+        fields: &Vec<(String, Value)>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let _level = DepthGuard::enter().ok_or_else(too_deep_ser::<S::Error>)?;
+        fields.serialize(s)
+    }
+
+    /// Encode a value-carrying type for storage.
+    ///
+    /// postcard replaces a serializer's custom message with a bare "Serde
+    /// Serialization Error". In the types stored here the only custom error
+    /// is the depth check above, so the message is put back.
+    pub(crate) fn encode<T: Serialize + ?Sized>(
+        value: &T,
+    ) -> Result<Vec<u8>, crate::error::TalaDbError> {
+        postcard::to_allocvec(value).map_err(|e| match e {
+            postcard::Error::SerdeSerCustom => crate::error::TalaDbError::Serialization(format!(
+                "value nests arrays/objects deeper than {MAX_VALUE_DEPTH} levels"
+            )),
+            other => other.into(),
+        })
+    }
 }
 
 impl Value {

@@ -1862,7 +1862,7 @@ impl Collection {
         let mut doc_bodies: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
         for (doc, _) in docs {
             doc_keys.push(doc.id.to_bytes());
-            doc_bodies.push(postcard::to_allocvec(doc)?);
+            doc_bodies.push(crate::document::value_depth::encode(doc)?);
         }
         let body_ops: Vec<KvOp<'_>> = doc_keys
             .iter()

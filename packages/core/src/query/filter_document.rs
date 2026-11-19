@@ -1,6 +1,7 @@
 //! Decode only the top-level fields used by a filter. Postcard is not
 //! self-describing, so skipping a Value must still consume its variant and
 //! recursively validate its payload rather than using IgnoredAny.
+use crate::document::value_depth::{DepthGuard, too_deep_de};
 use crate::document::{Document, Value};
 use crate::query::Filter;
 use serde::de::{DeserializeSeed, EnumAccess, SeqAccess, VariantAccess, Visitor};
@@ -216,6 +217,9 @@ impl<'de> Visitor<'de> for SkipValue {
 struct SkipArray;
 impl<'de> Deserialize<'de> for SkipArray {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        // Same depth limit as decoding the value (MAX_VALUE_DEPTH), so a field
+        // the filter does not read cannot overflow the stack either.
+        let _level = DepthGuard::enter().ok_or_else(too_deep_de::<D::Error>)?;
         de.deserialize_seq(Self)
     }
 }
@@ -232,6 +236,9 @@ impl<'de> Visitor<'de> for SkipArray {
 struct SkipObject;
 impl<'de> Deserialize<'de> for SkipObject {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        // Same depth limit as decoding the value (MAX_VALUE_DEPTH), so a field
+        // the filter does not read cannot overflow the stack either.
+        let _level = DepthGuard::enter().ok_or_else(too_deep_de::<D::Error>)?;
         de.deserialize_seq(Self)
     }
 }
