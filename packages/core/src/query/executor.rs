@@ -215,7 +215,32 @@ pub fn execute_limited(
         collection,
         deadline,
         limit,
-        false,
+        None,
+        &mut |doc| docs.push(doc),
+    )?;
+    Ok(docs)
+}
+
+/// [`execute`] that decodes only `fields` of each document (and its id), for a
+/// caller that reads nothing else. `fields` must include every field `filter`
+/// names, so the post-filter sees what it tests. The projected decoder checks
+/// skipped values as fully as a whole decode, so damaged bodies fail the same.
+pub(crate) fn execute_projected(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+    fields: super::filter_document::Fields<'_>,
+) -> Result<Vec<Document>, TalaDbError> {
+    let mut docs = Vec::new();
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        None,
+        None,
+        Some(fields),
         &mut |doc| docs.push(doc),
     )?;
     Ok(docs)
@@ -237,7 +262,7 @@ pub(crate) fn candidate_ids(
         collection,
         None,
         None,
-        true,
+        Some(super::filter_document::fields(filter)),
         &mut |doc| ids.push(doc.id),
     )?;
     Ok(ids)
@@ -273,7 +298,8 @@ fn execute_into(
     collection: &str,
     deadline: Option<Instant>,
     limit: Option<usize>,
-    ids_only: bool,
+    // `Some`: decode only these fields of each document (see `DocumentSink`).
+    fields: Option<super::filter_document::Fields<'_>>,
     emit: &mut dyn FnMut(Document),
 ) -> Result<(), TalaDbError> {
     // Check deadline up-front so callers that pass an already-expired deadline
@@ -289,7 +315,7 @@ fn execute_into(
     let mut results = DocumentSink {
         emit,
         count: 0,
-        fields: ids_only.then(|| super::filter_document::fields(filter)),
+        fields,
     };
 
     // `true` while more documents are still wanted.
@@ -892,9 +918,16 @@ pub fn count_matching(
         return count_plan_entries(plan, txn, collection);
     }
     let mut count = 0;
-    execute_into(plan, filter, txn, collection, None, None, true, &mut |_| {
-        count += 1
-    })?;
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        None,
+        None,
+        Some(super::filter_document::fields(filter)),
+        &mut |_| count += 1,
+    )?;
     Ok(count)
 }
 
