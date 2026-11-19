@@ -2802,9 +2802,10 @@ impl Collection {
             return rtxn.count_entries(&docs_table_name(&self.name));
         }
         // Run the query without the field-decryption pass that `find` does —
-        // only the match count matters, not field contents. When the plan's
-        // index range exactly reproduces the filter, the index entries answer
-        // the question and no document is decoded at all.
+        // only the match count matters, not field contents. When the index
+        // keys alone decide the filter (equality, or a range/`$in`/compound
+        // equality the index covers), they answer the question and no
+        // document is fetched or decoded at all.
 
         let rtxn = self.backend.begin_read()?;
         let cache = self.load_indexes_in(rtxn.as_ref())?;
@@ -2814,7 +2815,14 @@ impl Collection {
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
-        crate::query::executor::count_matching(&qplan, &filter, rtxn.as_ref(), &self.name)
+        crate::query::executor::count_matching_with_indexes(
+            &qplan,
+            &filter,
+            rtxn.as_ref(),
+            &self.name,
+            &cache.indexes,
+            &cache.compound_indexes,
+        )
     }
 
     fn delete_doc_and_indexes_with_compound(
