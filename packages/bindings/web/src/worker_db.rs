@@ -1111,6 +1111,49 @@ mod tests {
         assert_eq!(docs[0]["_id"].as_str().unwrap(), id);
     }
 
+    /// v0.13.2 M3 / R1: an IndexedDB snapshot written by an older release must
+    /// be migrated on restore, exactly as an OPFS/native file is on open.
+    /// Before the fix the restored database kept schema v1 and its stale index,
+    /// so an index-served count missed every restored document.
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_migrates_a_v1_indexeddb_snapshot() {
+        let legacy = Database::open_in_memory().unwrap();
+        let col = legacy.collection("items").unwrap();
+        col.create_index("k").unwrap();
+        for k in [7, 7, 8] {
+            col.insert(vec![("k".into(), taladb_core::Value::Int(k))])
+                .unwrap();
+        }
+        {
+            // Rewind to what a v1-era release left behind: version 1, a
+            // retired `tomb::` table, and index keys the migration re-derives.
+            let mut w = legacy.backend().begin_write().unwrap();
+            w.put("meta::db_version", b"version", &[1]).unwrap();
+            w.put("tomb::items", b"x", b"y").unwrap();
+            let unbounded = std::ops::Bound::Unbounded;
+            for (k, _) in w.range("idx::items::k", unbounded, unbounded).unwrap() {
+                w.delete("idx::items::k", &k).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let snapshot = legacy.export_snapshot().unwrap();
+
+        let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
+        assert_eq!(restored.count("items", r#"{"k":7}"#).unwrap(), 2);
+        assert_eq!(restored.count("items", r#"{"k":8}"#).unwrap(), 1);
+        let r = restored.db.backend().begin_read().unwrap();
+        assert_eq!(
+            r.get("meta::db_version", b"version").unwrap(),
+            Some(vec![2])
+        );
+        assert!(
+            !r.list_tables()
+                .unwrap()
+                .iter()
+                .any(|t| t.starts_with("tomb::"))
+        );
+    }
+
     // ------------------------------------------------------------------
     // WorkerDB::export_snapshot
     // ------------------------------------------------------------------
