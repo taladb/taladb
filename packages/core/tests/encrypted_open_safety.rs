@@ -730,3 +730,166 @@ fn s1_damage_from_older_releases_is_reported_and_repairable() {
     }
     assert_encrypted_opens(&path);
 }
+
+/// The same damaged file, opened *without* a passphrase. Its version record
+/// reads as plaintext, so until the document check this open succeeded and
+/// later writes mixed plaintext documents into the encrypted file, which then
+/// broke the passphrase open even after the repair. Refused now, before any
+/// built-in or user migration and without writing, in both fixture shapes;
+/// the repair still works afterwards.
+#[test]
+fn plain_open_of_s1_damaged_db_is_refused_and_writes_nothing() {
+    for shape in shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("damaged.redb");
+        new_encrypted(&path, shape);
+        put_raw_version(
+            &path,
+            &postcard::to_allocvec(&CURRENT_SCHEMA_VERSION).unwrap(),
+        );
+        let before = fingerprint(&path);
+
+        let err = Database::open(&path)
+            .err()
+            .unwrap_or_else(|| panic!("{shape:?}: a damaged file must not open plainly"));
+        assert!(
+            matches!(err, TalaDbError::Encryption(_)),
+            "{shape:?}: {err}"
+        );
+        assert!(err.to_string().contains("0.13.1"), "{shape:?}: {err}");
+        assert_eq!(fingerprint(&path), before, "{shape:?}");
+
+        let user = [Migration {
+            from_version: CURRENT_SCHEMA_VERSION,
+            to_version: CURRENT_SCHEMA_VERSION + 1,
+            description: "must never run on a damaged file",
+            up: |_| panic!("user migration ran on a damaged file"),
+        }];
+        assert!(
+            Database::open_with_migrations(&path, &user).is_err(),
+            "{shape:?}"
+        );
+        assert_eq!(fingerprint(&path), before, "{shape:?}");
+
+        repair_version_record(&path);
+        assert_encrypted_opens(&path);
+    }
+}
+
+/// A damaged file that a 0.13.1 plain open has already written to holds both
+/// plaintext and ciphertext collections. One encrypted collection is enough to
+/// refuse, whatever order the collections sort in.
+#[test]
+fn plain_open_of_s1_damaged_db_with_plaintext_collections_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed.redb");
+    new_encrypted(&path, Shape::NoIndex);
+    put_raw_version(
+        &path,
+        &postcard::to_allocvec(&CURRENT_SCHEMA_VERSION).unwrap(),
+    );
+    // What the 0.13.1 plain open would have written: plaintext documents in
+    // collections sorting before and after the encrypted one.
+    {
+        let raw = RedbBackend::open(&path).unwrap();
+        let mut w = raw.begin_write().unwrap();
+        for table in ["docs::aaa", "docs::zzz"] {
+            let doc = taladb::document::Document::new(vec![("x".into(), Value::Int(1))]);
+            w.put(
+                table,
+                &doc.id.to_bytes(),
+                &postcard::to_allocvec(&doc).unwrap(),
+            )
+            .unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let before = fingerprint(&path);
+    let err = Database::open(&path)
+        .err()
+        .expect("one encrypted collection is enough to refuse");
+    assert!(err.to_string().contains("docs::secrets"), "{err}");
+    assert_eq!(fingerprint(&path), before);
+}
+
+/// Positive controls: ordinary databases open exactly as before, through every
+/// path that runs the check, and opening them writes nothing.
+#[test]
+fn document_check_keeps_ordinary_databases_opening() {
+    for shape in shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.redb");
+        new_plain(&plain, shape);
+        let before = fingerprint(&plain);
+        let db = Database::open(&plain).expect("plaintext database opens");
+        assert_contents(&db);
+        db.close().unwrap();
+        assert_eq!(fingerprint(&plain), before, "{shape:?}");
+
+        let enc = dir.path().join("enc.redb");
+        new_encrypted(&enc, shape);
+        let before = fingerprint(&enc);
+        assert_encrypted_opens(&enc);
+        assert_eq!(fingerprint(&enc), before, "{shape:?}");
+
+        // A custom backend: the encrypted file through `open_with_backend`.
+        let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(&enc).unwrap());
+        let db = Database::open_with_backend(Box::new(EncryptedBackend::new(raw, key_for(&enc))))
+            .expect("encrypted database opens through a custom backend");
+        assert_contents(&db);
+        db.close().unwrap();
+    }
+}
+
+/// Inside an encrypted database, a first document that fails to decrypt is
+/// tampering for the reader to report, not plain-open damage: the open still
+/// succeeds (as before the check) and only that document's reads fail.
+#[test]
+fn tampered_first_document_in_encrypted_db_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tampered.redb");
+    new_encrypted(&path, Shape::NoIndex);
+    {
+        let raw = RedbBackend::open(&path).unwrap();
+        let (key, mut value) = raw
+            .begin_read()
+            .unwrap()
+            .scan_all("docs::secrets")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let last = value.len() - 1;
+        value[last] ^= 0xff; // break the GCM tag
+        let mut w = raw.begin_write().unwrap();
+        w.put("docs::secrets", &key, &value).unwrap();
+        w.commit().unwrap();
+    }
+    let db = Database::open_encrypted(&path, PASS).expect("open is unaffected by one bad document");
+    assert!(db.collection("secrets").unwrap().find(Filter::All).is_err());
+    db.close().unwrap();
+}
+
+/// The release-notes repair: rewrite the version record through
+/// `EncryptedBackend`, after proving the key on the first document.
+fn repair_version_record(path: &Path) {
+    let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path).unwrap());
+    let enc = EncryptedBackend::new(raw, key_for(path));
+    assert!(
+        enc.begin_read()
+            .unwrap()
+            .scan_all("docs::secrets")
+            .unwrap()
+            .into_iter()
+            .next()
+            .is_some()
+    );
+    let mut w = enc.begin_write().unwrap();
+    w.put(
+        META_VERSION_TABLE,
+        META_VERSION_KEY,
+        &postcard::to_allocvec(&CURRENT_SCHEMA_VERSION).unwrap(),
+    )
+    .unwrap();
+    w.commit().unwrap();
+}
