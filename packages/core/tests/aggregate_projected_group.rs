@@ -440,10 +440,9 @@ fn projected_group_keeps_field_encryption_behaviour() {
     check_collection(&c, "field-encrypted");
 }
 
-/// M2-F2 (pre-existing, not fixed in M2): the same pipeline twice can return
-/// `$push` in a different order when `$match` plans to an ID-set union.
+/// M2-F2 (fixed in v0.13.2 M3): the same pipeline twice used to return
+/// `$push` in a different order when `$match` planned to an ID-set union.
 #[test]
-#[ignore = "M2-F2: aggregate order over IndexOr/IndexAnd plans is not repeatable; M3"]
 fn order_dependent_accumulators_are_repeatable() {
     let db = Database::open_in_memory().unwrap();
     let c = seeded(&db, "c", 300, true);

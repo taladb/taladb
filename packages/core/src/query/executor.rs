@@ -454,7 +454,7 @@ fn execute_into(
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
                 .unwrap_or_default();
-            let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(intersection);
             fetch_filtered(
                 txn,
                 collection,
@@ -493,7 +493,7 @@ fn execute_into(
                     seen.insert(id_bytes);
                 }
             }
-            let ulids: Vec<Ulid> = seen.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(seen);
             fetch_filtered(
                 txn,
                 collection,
@@ -553,7 +553,7 @@ fn execute_into(
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
                 .unwrap_or_default();
-            let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(intersection);
             fetch_filtered(
                 txn,
                 collection,
@@ -567,6 +567,21 @@ fn execute_into(
     }
 
     Ok(())
+}
+
+/// The ids of an id-set plan (`IndexOr`, `IndexAnd`, `FtsSearch`) in id order.
+///
+/// Those plans gather ids in a `HashSet`, whose iteration order is seeded per
+/// set, so fetching in that order made the document order — and with it
+/// `aggregate`'s `$push`, `$addToSet`, `$first`, `$last`, tie-breaking
+/// `$min`/`$max` and the bits of a float `$sum` — change between identical
+/// calls. Id order is the order a full scan visits the docs table, so the
+/// result no longer depends on which plan was chosen, and the fetch walks the
+/// docs B-tree in key order.
+fn id_order(ids: HashSet<[u8; 16]>) -> Vec<Ulid> {
+    let mut ulids: Vec<Ulid> = ids.into_iter().map(Ulid::from_bytes).collect();
+    ulids.sort_unstable();
+    ulids
 }
 
 /// A filter with its per-query work (regex compilation, query tokenization)
