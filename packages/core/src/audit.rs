@@ -93,7 +93,7 @@ pub(crate) fn write_audit_entry(
             ("caller".into(), Value::Str(caller.into())),
         ],
     };
-    let doc_bytes = postcard::to_allocvec(&doc)?;
+    let doc_bytes = crate::document::value_depth::encode(&doc)?;
     wtxn.put(AUDIT_TABLE, &entry_id.to_bytes(), &doc_bytes)?;
     Ok(())
 }
