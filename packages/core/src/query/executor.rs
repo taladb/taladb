@@ -886,10 +886,36 @@ pub fn count_matching(
     txn: &dyn ReadTxn,
     collection: &str,
 ) -> Result<u64, TalaDbError> {
+    count_matching_with_indexes(plan, filter, txn, collection, &[], &[])
+}
+
+/// [`count_matching`], also answering from index keys alone when
+/// [`visit_unique`](super::index_filter::visit_unique) can prove the filter
+/// from them — each matching document's key visited exactly once — so ranges,
+/// `$in` and compound equality count without fetching or decoding a body.
+///
+/// Like the equality count, a covered count reads no bodies: a damaged body
+/// under a matching key is counted rather than reported, and an undecodable
+/// index key is an error.
+pub(crate) fn count_matching_with_indexes(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+    indexes: &[IndexDef],
+    compounds: &[CompoundIndexDef],
+) -> Result<u64, TalaDbError> {
     // An index scan whose plan exactly reproduces the filter needs no documents:
     // every entry in the range is a match by construction.
     if plan_is_exact_for(plan, filter) {
         return count_plan_entries(plan, txn, collection);
+    }
+    let mut covered = 0u64;
+    if super::index_filter::visit_unique(filter, indexes, compounds, txn, collection, &mut |_| {
+        covered += 1;
+        Ok(())
+    })? {
+        return Ok(covered);
     }
     let mut count = 0;
     execute_into(plan, filter, txn, collection, None, None, true, &mut |_| {
