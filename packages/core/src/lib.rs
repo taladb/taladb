@@ -162,6 +162,9 @@ pub struct Database {
         Arc<std::sync::Mutex<std::collections::HashMap<String, watch::SharedRegistry>>>,
     /// Shared retained-memory budget for exact vectors and graph nodes.
     search_cache: search_cache::SharedSearchCache,
+    /// Set by [`close`](Self::close), shared by every clone, so a watch
+    /// registry first created after close starts closed.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Database {
@@ -239,6 +242,7 @@ impl Database {
             index_cache: collection::new_shared_index_cache(),
             watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             search_cache: search_cache::new_shared_search_cache(),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -349,10 +353,13 @@ impl Database {
                 .watch_registries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(
-                map.entry(name.to_string())
-                    .or_insert_with(watch::new_registry),
-            )
+            Arc::clone(map.entry(name.to_string()).or_insert_with(|| {
+                let registry = watch::new_registry();
+                if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                    watch::close(&registry);
+                }
+                registry
+            }))
         };
         let col = Collection::new(name, Arc::clone(&self.backend))
             .with_index_cache(Arc::clone(&self.index_cache))
@@ -385,6 +392,47 @@ impl Database {
             };
             self.collection(&col_name)?.upgrade_vector_index(&field)?;
         }
+        Ok(())
+    }
+
+    /// Close the database: release its storage — file handle and lock — now,
+    /// even while `Collection` or [`WatchHandle`](watch::WatchHandle) objects
+    /// obtained from it (or clones of this `Database`) are still alive.
+    ///
+    /// Afterwards:
+    /// - every operation through this database, its clones or any retained
+    ///   handle fails with [`TalaDbError::InvalidOperation`] ("database is
+    ///   closed") without touching storage — a reopened database at the same
+    ///   path is never reached through an old handle;
+    /// - every watch from it returns [`TalaDbError::WatchClosed`], including a
+    ///   `next()` already blocked waiting, and a new watch is closed from the
+    ///   start;
+    /// - retained vector-search memory is released.
+    ///
+    /// Transactions already running on other threads finish normally; the
+    /// file lock is released when the last of them ends. Idempotent.
+    ///
+    /// Dropping a `Database` without calling `close` keeps its old meaning:
+    /// the storage stays open until every handle sharing it is dropped.
+    pub fn close(&self) -> Result<(), TalaDbError> {
+        self.backend.close()?;
+        // Set before the registries are read, under the same lock
+        // `collection` takes, so no registry is created unclosed after it.
+        let registries: Vec<watch::SharedRegistry> = {
+            let map = self
+                .watch_registries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            map.values().cloned().collect()
+        };
+        for registry in &registries {
+            watch::close(registry);
+        }
+        self.search_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .evict_all();
         Ok(())
     }
 

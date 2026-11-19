@@ -570,6 +570,12 @@ impl SearchCache {
         self.entries
             .retain(|k, _| *k != vector && !k.starts_with(&graph));
     }
+    /// Drop every retained entry (database closed). Bumping the epoch also
+    /// discards loans returned by queries still running.
+    pub fn evict_all(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.entries.clear();
+    }
     pub fn evict_graph(&mut self, table: &str) {
         // Also reject a build loan returned after cancellation released its
         // write lock. Active-index entries remain available for subsequent reads.
