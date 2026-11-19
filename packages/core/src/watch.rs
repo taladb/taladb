@@ -49,6 +49,10 @@ pub struct WatchRegistry {
     /// value as stale — so `notify` being the single post-commit chokepoint
     /// makes it the single cache-invalidation point too.
     generation: u64,
+    /// Set by [`close`]: the database is gone, so no write will ever wake a
+    /// subscriber again. Dropping the senders disconnects every receiver,
+    /// which is how a waiting `next()` learns of it (`WatchClosed`).
+    closed: bool,
 }
 
 impl WatchRegistry {
@@ -73,10 +77,14 @@ impl WatchRegistry {
         self.generation
     }
 
-    /// Register a new subscriber and return the receiving end.
+    /// Register a new subscriber and return the receiving end. On a closed
+    /// registry the sender is dropped at once, so the handle reports
+    /// `WatchClosed` instead of waiting for a write that cannot come.
     fn subscribe(&mut self) -> std::sync::mpsc::Receiver<WriteEvent> {
         let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_CAPACITY);
-        self.senders.push(tx);
+        if !self.closed {
+            self.senders.push(tx);
+        }
         rx
     }
 }
@@ -96,24 +104,37 @@ pub struct WatchHandle {
     filter: Filter,
     /// Callback to re-execute the query against the current DB state.
     query_fn: QueryFn,
+    /// The registry this handle subscribed to, to tell a wake-up queued before
+    /// the database closed from one that can still be served.
+    registry: SharedRegistry,
 }
 
 impl WatchHandle {
+    /// Drain coalesced wake-ups, then re-run the query — unless the database
+    /// closed after the wake-up was queued.
+    fn snapshot(&self) -> Result<Vec<Document>, TalaDbError> {
+        while self.rx.try_recv().is_ok() {}
+        if self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed
+        {
+            return Err(TalaDbError::WatchClosed);
+        }
+        (self.query_fn)(&self.filter)
+    }
+
     /// Block until the next write event, then return the fresh snapshot.
     pub fn next(&self) -> Result<Vec<Document>, TalaDbError> {
         self.rx.recv().map_err(|_| TalaDbError::WatchClosed)?;
-        // Drain any additional coalesced events
-        while self.rx.try_recv().is_ok() {}
-        (self.query_fn)(&self.filter)
+        self.snapshot()
     }
 
     /// Non-blocking: return `None` if no write has occurred since last call.
     pub fn try_next(&self) -> Result<Option<Vec<Document>>, TalaDbError> {
         match self.rx.try_recv() {
-            Ok(_) => {
-                while self.rx.try_recv().is_ok() {}
-                Ok(Some((self.query_fn)(&self.filter)?))
-            }
+            Ok(_) => Ok(Some(self.snapshot()?)),
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TalaDbError::WatchClosed),
         }
@@ -130,10 +151,7 @@ impl WatchHandle {
         timeout: std::time::Duration,
     ) -> Result<Option<Vec<Document>>, TalaDbError> {
         match self.rx.recv_timeout(timeout) {
-            Ok(_) => {
-                while self.rx.try_recv().is_ok() {}
-                Ok(Some((self.query_fn)(&self.filter)?))
-            }
+            Ok(_) => Ok(Some(self.snapshot()?)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TalaDbError::WatchClosed),
         }
@@ -182,6 +200,7 @@ where
         rx,
         filter,
         query_fn: Box::new(query_fn),
+        registry: Arc::clone(registry),
     }
 }
 
@@ -195,6 +214,17 @@ pub fn notify(registry: &SharedRegistry) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.notify();
+}
+
+/// Disconnect every subscriber of a registry whose database has closed, and
+/// every later one. Their handles return `WatchClosed`, including a `next()`
+/// already blocked waiting.
+pub fn close(registry: &SharedRegistry) {
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.closed = true;
+    guard.senders.clear();
 }
 
 /// The current write generation for a collection's registry. Used by read

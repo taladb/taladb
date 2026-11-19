@@ -55,6 +55,19 @@ pub trait StorageBackend: Send + Sync {
     fn flush(&self) -> Result<(), TalaDbError> {
         Ok(())
     }
+    /// Release the underlying storage — its file handle and lock — now, even
+    /// while other handles to this backend are still alive. Afterwards every
+    /// `begin_read`/`begin_write`/`flush`/`compact` fails with
+    /// [`TalaDbError::InvalidOperation`]. Transactions already started finish
+    /// normally. Idempotent. No-op on backends that hold no such resource.
+    fn close(&self) -> Result<(), TalaDbError> {
+        Ok(())
+    }
+}
+
+/// The error every operation on a closed backend returns.
+pub(crate) fn closed_error() -> TalaDbError {
+    TalaDbError::InvalidOperation("database is closed".into())
 }
 
 pub trait WriteTxn {
@@ -254,7 +267,12 @@ pub struct RedbBackend {
     // own code never starts a transaction while holding another one; a caller
     // that does (through `Database::backend`) can deadlock against a waiting
     // `compact`, as it already deadlocked against a queued writer before.
-    db: Arc<RwLock<Database>>,
+    //
+    // `None` once [`close`](StorageBackend::close) has dropped the database:
+    // `Collection`s and watches share this backend through an `Arc`, so the
+    // only way to release the file while they live is to drop the handle
+    // they all reach through.
+    db: Arc<RwLock<Option<Database>>>,
     /// When true, write transactions commit with `Durability::Eventual`
     /// (batched fsync) instead of the default `Immediate`. Toggled by
     /// [`set_durability`](StorageBackend::set_durability).
@@ -282,7 +300,7 @@ impl RedbBackend {
             }
         })?;
         Ok(Self {
-            db: Arc::new(RwLock::new(db)),
+            db: Arc::new(RwLock::new(Some(db))),
             eventual: AtomicBool::new(false),
         })
     }
@@ -290,7 +308,7 @@ impl RedbBackend {
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
         Ok(Self {
-            db: Arc::new(RwLock::new(db)),
+            db: Arc::new(RwLock::new(Some(db))),
             eventual: AtomicBool::new(false),
         })
     }
@@ -314,7 +332,7 @@ impl RedbBackend {
                 }
             })?;
         Ok(Self {
-            db: Arc::new(RwLock::new(db)),
+            db: Arc::new(RwLock::new(Some(db))),
             eventual: AtomicBool::new(false),
         })
     }
@@ -326,6 +344,8 @@ impl StorageBackend for RedbBackend {
             .db
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(closed_error)?
             .begin_write()?;
         // redb 4 removed `Durability::Eventual`, leaving `None` and `Immediate`.
         // `None` is the closest match and is consistent with what this API already
@@ -358,6 +378,8 @@ impl StorageBackend for RedbBackend {
             .db
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(closed_error)?
             .begin_read()?;
         Ok(Box::new(RedbReadTxn {
             txn,
@@ -369,6 +391,8 @@ impl StorageBackend for RedbBackend {
         self.db
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .ok_or_else(closed_error)?
             .compact()
             .map_err(|e| TalaDbError::Storage(e.to_string()))?;
         Ok(())
@@ -391,10 +415,27 @@ impl StorageBackend for RedbBackend {
             .db
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(closed_error)?
             .begin_write()?;
         txn.set_durability(Durability::Immediate)
             .map_err(|e| TalaDbError::Storage(format!("could not force durable flush: {e}")))?;
         txn.commit()?;
+        Ok(())
+    }
+
+    fn close(&self) -> Result<(), TalaDbError> {
+        // Take the database out under the exclusive guard, which waits only
+        // for in-flight `begin_*` calls, then drop it after releasing the
+        // guard. redb's own close (final allocator-state write and fsync) runs
+        // in that drop — or, if a write transaction is still live on another
+        // thread, when that transaction ends — and releases the file lock.
+        let db = self
+            .db
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(db);
         Ok(())
     }
 }
