@@ -2454,10 +2454,15 @@ pub unsafe extern "C" fn taladb_find_nearest_start(
         } else {
             unsafe { slice::from_raw_parts(query_ptr, query_len) }.to_vec()
         };
+        // NULL is "no filter"; present but not UTF-8 is an error, not an
+        // unfiltered search (as `taladb_find_nearest` already treats it).
         let filter_owned: Option<String> = if filter_json.is_null() {
             None
         } else {
-            unsafe { cstr_to_string(filter_json) }
+            match unsafe { cstr_to_string(filter_json) } {
+                Some(s) => Some(s),
+                None => return std::ptr::null_mut(),
+            }
         };
 
         spawn_job(handle, move |h| {
@@ -2492,8 +2497,17 @@ pub unsafe extern "C" fn taladb_find_start(
             Some(s) => s,
             None => return std::ptr::null_mut(),
         };
-        let filter_owned =
-            unsafe { cstr_to_string(filter_json) }.unwrap_or_else(|| "{}".to_string());
+        // NULL is "no filter". A filter that is present but not UTF-8 is an
+        // error (`cstr_to_string` sets it) — it used to become `{}` and match
+        // every document, where the synchronous `taladb_find` refuses it.
+        let filter_owned = if filter_json.is_null() {
+            "{}".to_string()
+        } else {
+            match unsafe { cstr_to_string(filter_json) } {
+                Some(s) => s,
+                None => return std::ptr::null_mut(),
+            }
+        };
 
         spawn_job(handle, move |h| {
             let collection = h.db.collection(&col).map_err(engine_error)?;
@@ -3661,6 +3675,142 @@ mod tests {
             assert_eq!(last_error_code().as_deref(), Some("InvalidFilter"));
         }
         unsafe { taladb_close(handle) };
+    }
+
+    /// Wait for `job` and take its result (None when it failed).
+    fn finish(job: *mut TalaDbJob) -> Option<String> {
+        while unsafe { taladb_job_poll(job) } == 0 {
+            std::thread::yield_now();
+        }
+        take_string(unsafe { taladb_job_take_result(job) })
+    }
+
+    /// S5: the background `find` and `find_nearest` starts turned a filter
+    /// that is present but not UTF-8 into "no filter" — `find_start` matched
+    /// every document and `find_nearest_start` searched unfiltered — where the
+    /// synchronous calls refuse it. A scoped query must never silently widen.
+    #[test]
+    fn background_starts_refuse_a_non_utf8_filter_instead_of_widening_it() {
+        let _slots = exclusive_jobs();
+        let (h, _dir) = open_temp_db();
+        let col = cstr("docs");
+        let field = cstr("v");
+        assert_eq!(
+            unsafe {
+                taladb_create_vector_index(
+                    h,
+                    col.as_ptr(),
+                    field.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            1
+        );
+        for doc in [r#"{"k":1,"v":[1.0,0.0]}"#, r#"{"k":2,"v":[0.0,1.0]}"#] {
+            let doc = cstr(doc);
+            assert!(take_string(unsafe { taladb_insert(h, col.as_ptr(), doc.as_ptr()) }).is_some());
+        }
+        // `{"k":` then 0xFF: present, and not UTF-8.
+        let bad: [c_char; 7] = [0x7b, 0x22, 0x6b, 0x22, 0x3a, -1_i8 as c_char, 0];
+        let q = [1.0f32, 0.0];
+
+        let job = unsafe { taladb_find_start(h, col.as_ptr(), bad.as_ptr()) };
+        let widened = (!job.is_null()).then(|| finish(job)).flatten();
+        assert!(
+            job.is_null(),
+            "find_start accepted a non-UTF-8 filter and returned {widened:?}"
+        );
+        assert!(
+            last_error().unwrap().contains("UTF-8"),
+            "{:?}",
+            last_error()
+        );
+
+        let job = unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                bad.as_ptr(),
+            )
+        };
+        let widened = (!job.is_null()).then(|| finish(job)).flatten();
+        assert!(
+            job.is_null(),
+            "find_nearest_start searched unfiltered and returned {widened:?}"
+        );
+        assert!(
+            last_error().unwrap().contains("UTF-8"),
+            "{:?}",
+            last_error()
+        );
+
+        // Unchanged: NULL is "no filter", and a real filter still filters.
+        let all = finish(unsafe { taladb_find_start(h, col.as_ptr(), std::ptr::null()) }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&all)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let k1 = cstr(r#"{"k":1}"#);
+        let one = finish(unsafe { taladb_find_start(h, col.as_ptr(), k1.as_ptr()) }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&one)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let near = finish(unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                std::ptr::null(),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&near)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let near = finish(unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                k1.as_ptr(),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&near)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        unsafe { taladb_close(h) };
     }
 
     fn call_json(handle: *mut TalaDbHandle, op: &str, args: &str) -> serde_json::Value {
