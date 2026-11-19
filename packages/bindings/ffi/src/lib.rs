@@ -3829,6 +3829,39 @@ mod tests {
         );
     }
 
+    /// S1: `taladb_open` without a config on an encrypted file (an app that
+    /// opens before it has read the keychain) used to succeed, migrate the
+    /// ciphertext and leave the file unopenable with the right passphrase.
+    #[test]
+    fn opening_an_encrypted_file_without_its_passphrase_is_refused_and_harmless() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = cstr(dir.path().join("e.db").to_str().unwrap());
+        let right = cstr(r#"{"passphrase":"right"}"#);
+        let col = cstr("c");
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), right.as_ptr()) };
+        assert!(!handle.is_null());
+        let doc = cstr(r#"{"x":1}"#);
+        let id = unsafe { taladb_insert(handle, col.as_ptr(), doc.as_ptr()) };
+        unsafe {
+            taladb_free_string(id);
+            taladb_close(handle);
+        }
+
+        for _ in 0..2 {
+            assert!(unsafe { taladb_open(path.as_ptr()) }.is_null());
+            assert_eq!(last_error_code().as_deref(), Some("Encryption"));
+        }
+
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), right.as_ptr()) };
+        assert!(!handle.is_null(), "{:?}", last_error());
+        let all = cstr("{}");
+        assert_eq!(
+            unsafe { taladb_count(handle, col.as_ptr(), all.as_ptr()) },
+            1
+        );
+        unsafe { taladb_close(handle) };
+    }
+
     /// Reading the error must not itself clear it — JS calls it once and may
     /// read the pointer twice.
     #[test]

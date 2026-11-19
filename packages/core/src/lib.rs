@@ -183,14 +183,71 @@ impl Database {
                 .map(|v| format!("{v}."))
                 .unwrap_or_default()
         ));
-        let salt = match std::fs::read(&salt_path) {
-            Ok(salt) if salt.len() == 16 => salt,
+        // Read the salt, but create a missing one only once the file is known to
+        // be new: a sidecar invented for a plaintext file is left behind when the
+        // open fails, and one invented for existing ciphertext derives a key that
+        // can never decrypt it.
+        let existing_salt = match std::fs::read(&salt_path) {
+            Ok(salt) if salt.len() == 16 => Some(salt),
             Ok(_) => {
                 return Err(TalaDbError::Encryption(
                     "invalid encryption salt file".into(),
                 ));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(TalaDbError::Storage(format!(
+                    "cannot read encryption salt: {e}"
+                )));
+            }
+        };
+        let raw = RedbBackend::open(path)?;
+        // Classify the raw bytes before the salt is created or anything is
+        // written (S1). `true` = a new database.
+        let fresh = {
+            use migration::StoredState;
+            let txn = raw.begin_read()?;
+            match migration::stored_state(txn.as_ref())? {
+                StoredState::Empty => true,
+                // Ciphertext where plaintext metadata would be: encrypted.
+                StoredState::Unreadable(TalaDbError::Encryption(_)) => false,
+                // Malformed, but not ciphertext: no passphrase can help.
+                StoredState::Unreadable(e) => return Err(e),
+                StoredState::Readable(_) => {
+                    return Err(TalaDbError::Encryption(
+                        match migration::probe_documents(txn.as_ref())? {
+                            // A plaintext version record over encrypted documents
+                            // is what an open without the passphrase in 0.13.1
+                            // and earlier leaves behind.
+                            StoredState::Unreadable(_) => {
+                                "this database's schema version record is not encrypted but \
+                                 its documents are: the damage an open without the passphrase \
+                                 causes in TalaDB 0.13.1 and earlier. The documents are intact; \
+                                 see the 0.13.2 release notes to repair it. Nothing was changed"
+                            }
+                            _ => {
+                                "this database is not encrypted; open it without a passphrase. \
+                                 Nothing was changed"
+                            }
+                        }
+                        .into(),
+                    ));
+                }
+            }
+        };
+        let salt = match existing_salt {
+            Some(salt) => salt,
+            None if !fresh => {
+                return Err(TalaDbError::Encryption(format!(
+                    "this database is encrypted but its salt file `{}` is missing; the key \
+                     cannot be derived without it. Restore the file. Nothing was changed",
+                    salt_path.file_name().map_or_else(
+                        || salt_path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned()
+                    )
+                )));
+            }
+            None => {
                 let mut salt = vec![0u8; 16];
                 getrandom::fill(&mut salt).map_err(|e| TalaDbError::Encryption(e.to_string()))?;
                 let mut options = std::fs::OpenOptions::new();
@@ -209,13 +266,8 @@ impl Database {
                     })?;
                 salt
             }
-            Err(e) => {
-                return Err(TalaDbError::Storage(format!(
-                    "cannot read encryption salt: {e}"
-                )));
-            }
         };
-        let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+        let raw: Arc<dyn StorageBackend> = Arc::new(raw);
         let key = crypto::derive_key(passphrase, &salt, crypto::MIN_PBKDF2_ITERATIONS)?;
         // The first read decrypts the schema metadata, so a wrong passphrase
         // fails here as an AEAD tag mismatch — reported by the cipher as just
