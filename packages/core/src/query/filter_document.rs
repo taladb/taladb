@@ -31,6 +31,15 @@ fn by_length(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 pub(crate) fn fields(filter: &Filter) -> Fields<'_> {
+    fields_with(filter, [])
+}
+
+/// The filter's fields plus `extra` top-level names, for a caller that reads
+/// more of each matching document than the filter does.
+pub(crate) fn fields_with<'a>(
+    filter: &'a Filter,
+    extra: impl IntoIterator<Item = &'a str>,
+) -> Fields<'a> {
     fn visit<'a>(filter: &'a Filter, out: &mut Vec<&'a str>) {
         match filter {
             Filter::All => {}
@@ -57,6 +66,7 @@ pub(crate) fn fields(filter: &Filter) -> Fields<'_> {
     }
     let mut out = Vec::new();
     visit(filter, &mut out);
+    out.extend(extra);
     Fields::of(out)
 }
 

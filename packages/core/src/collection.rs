@@ -2470,7 +2470,25 @@ impl Collection {
                 &cache.compound_indexes,
             );
 
-            let docs = execute(&plan, filter, rtxn.as_ref(), &self.name, None)?;
+            let docs = match pipeline.get(1) {
+                // `$group` reads only its key's and accumulators' fields, so
+                // decode just those and the filter's. Any other next stage
+                // sees whole documents.
+                Some(Stage::Group { key, accumulators }) => {
+                    let fields = crate::query::filter_document::fields_with(
+                        filter,
+                        crate::aggregate::group_input_fields(key, accumulators),
+                    );
+                    crate::query::executor::execute_projected(
+                        &plan,
+                        filter,
+                        rtxn.as_ref(),
+                        &self.name,
+                        fields,
+                    )?
+                }
+                _ => execute(&plan, filter, rtxn.as_ref(), &self.name, None)?,
+            };
             (docs, 1usize)
         } else {
             let rtxn = self.backend.begin_read()?;

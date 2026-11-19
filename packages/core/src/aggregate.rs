@@ -493,6 +493,41 @@ fn apply_stage(
 // $group implementation
 // ---------------------------------------------------------------------------
 
+/// The top-level fields a `$group` stage reads: its key's and every
+/// accumulator's, each cut at its first `.` the way [`Document::get`] resolves
+/// a path. A document decoded with just these fields groups exactly like the
+/// whole document.
+///
+/// Both matches are exhaustive on purpose: a new key or accumulator kind must
+/// say which fields it reads before it compiles.
+pub(crate) fn group_input_fields<'a>(
+    key: &'a GroupKey,
+    accumulators: &'a [(String, Accumulator)],
+) -> Vec<&'a str> {
+    fn top_level(path: &str) -> &str {
+        path.split('.').next().unwrap_or(path)
+    }
+    let mut fields = Vec::with_capacity(accumulators.len() + 1);
+    match key {
+        GroupKey::Field(f) => fields.push(top_level(f)),
+        GroupKey::Null => {}
+    }
+    for (_, acc) in accumulators {
+        match acc {
+            Accumulator::Sum(f)
+            | Accumulator::Avg(f)
+            | Accumulator::Min(f)
+            | Accumulator::Max(f)
+            | Accumulator::Push(f)
+            | Accumulator::AddToSet(f)
+            | Accumulator::First(f)
+            | Accumulator::Last(f) => fields.push(top_level(f)),
+            Accumulator::Count => {}
+        }
+    }
+    fields
+}
+
 /// Mutable per-group accumulator state.
 enum AccState {
     Sum { int: i128, float: Option<f64> },
