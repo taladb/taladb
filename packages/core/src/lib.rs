@@ -579,9 +579,15 @@ impl Database {
 
     /// Restore a database from a snapshot produced by [`Database::export_snapshot`].
     ///
-    /// Returns an in-memory database pre-loaded with all data from the snapshot.
+    /// Returns an in-memory database pre-loaded with all data from the snapshot
+    /// and brought to the current storage schema exactly as [`Database::open`]
+    /// would bring a file: the built-in migrations run from the version stored
+    /// in the snapshot (0 when it has none). A version past the built-in chain
+    /// is kept as stored, as file open keeps it.
+    ///
     /// Returns [`TalaDbError::InvalidSnapshot`] if the data is corrupt or from an
-    /// incompatible snapshot version.
+    /// incompatible snapshot version, and the migration's error if the restored
+    /// data cannot be migrated; no partially migrated database is returned.
     pub fn restore_from_snapshot(data: &[u8]) -> Result<Self, TalaDbError> {
         /// Hard cap — prevents OOM from corrupted or crafted snapshots.
         /// 2 GiB on 32-bit targets (WASM), 10 GiB on 64-bit targets.
@@ -604,7 +610,11 @@ impl Database {
             return Err(TalaDbError::InvalidSnapshot);
         }
 
-        let db = Self::open_in_memory()?;
+        // Load into a bare backend and migrate afterwards. Migrating an empty
+        // database first (as `open_in_memory` does) and then copying the
+        // snapshot over it overwrote the version key with the snapshot's own,
+        // so no built-in migration ever ran against restored data.
+        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open_in_memory()?);
         let mut cursor: usize = 8;
 
         let table_count = read_u32(data, &mut cursor)? as usize;
@@ -642,7 +652,7 @@ impl Database {
             }
 
             // Write all entries for this table in a single transaction.
-            let mut wtxn = db.backend.begin_write()?;
+            let mut wtxn = backend.begin_write()?;
             for _ in 0..entry_count {
                 let key_len = read_u32(data, &mut cursor)? as usize;
                 if key_len > MAX_SNAPSHOT_ENTRY_BYTES {
@@ -662,7 +672,8 @@ impl Database {
         if cursor != data.len() {
             return Err(TalaDbError::InvalidSnapshot);
         }
-        Ok(db)
+        // Same chain, same version handling as every file open.
+        Self::from_backend(backend)
     }
 }
 
