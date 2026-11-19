@@ -2558,28 +2558,38 @@ impl Collection {
         self.delete_one(Filter::Eq("_id".into(), Value::Str(id.to_string())))
     }
 
-    pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
-        let cache = self.load_indexes_in(rtxn.as_ref())?;
+    /// Plan `filter` and collect its candidate ids inside the write
+    /// transaction that will mutate them.
+    ///
+    /// Selection used to run in a separate read transaction that was dropped
+    /// before `begin_write`, so a match committed by another writer in between
+    /// was skipped (a phantom). redb admits one writer at a time, so reading
+    /// through the writer's own view makes selection and mutation observe one
+    /// state. Callers still decode each candidate and re-check the full filter:
+    /// candidate selection may return a superset (index keys, projected
+    /// decode), and the mutation needs the stored bytes for old-index cleanup.
+    fn write_candidates(
+        &self,
+        filter: &Filter,
+        wtxn: &dyn crate::engine::WriteTxn,
+    ) -> Result<(CachedIndexes, Vec<Ulid>), TalaDbError> {
+        let view = WriteView(wtxn);
+        let cache = self.load_indexes_in(&view)?;
         let qplan = plan_full(
-            &filter,
+            filter,
             &cache.indexes,
             &cache.fts_indexes,
             &cache.compound_indexes,
         );
+        let candidates = crate::query::executor::candidate_ids(&qplan, filter, &view, &self.name)?;
+        Ok((cache, candidates))
+    }
 
-        let candidates =
-            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
-        drop(rtxn);
-
-        // Candidates were collected in a read snapshot that is now released;
-        // a concurrent writer may have changed or deleted them. Re-fetch and
-        // re-check each one inside the (exclusive) write transaction so the
-        // mutation and its old-index cleanup are computed from current bytes.
+    pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
+        let (cache, candidates) = self.write_candidates(&filter, wtxn.as_ref())?;
         for candidate in candidates {
             let stored_old: Document = match wtxn.get(&docs_table, &candidate.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
@@ -2641,27 +2651,11 @@ impl Collection {
         update: Update,
         convert_count: impl FnOnce(u64) -> Result<T, TalaDbError>,
     ) -> Result<T, TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
-        let cache = self.load_indexes_in(rtxn.as_ref())?;
-        let qplan = plan_full(
-            &filter,
-            &cache.indexes,
-            &cache.fts_indexes,
-            &cache.compound_indexes,
-        );
-
-        let candidates =
-            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
-        drop(rtxn);
-
         let mut count = 0u64;
-        // Re-fetch and re-check every candidate inside the write transaction:
-        // the read snapshot used to gather them is already released, and a
-        // concurrent writer may have changed or deleted them in between.
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
+        let (cache, candidates) = self.write_candidates(&filter, wtxn.as_ref())?;
         for chunk in candidates.chunks(WRITE_BATCH_DOCS) {
             let cand_keys: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
             let cand_refs: Vec<&[u8]> = cand_keys.iter().map(<[u8; 16]>::as_slice).collect();
@@ -2701,24 +2695,10 @@ impl Collection {
     }
 
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
-        let cache = self.load_indexes_in(rtxn.as_ref())?;
-        let qplan = plan_full(
-            &filter,
-            &cache.indexes,
-            &cache.fts_indexes,
-            &cache.compound_indexes,
-        );
-
-        let candidates =
-            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
-        drop(rtxn);
-
-        // Re-fetch and re-check inside the write transaction (see update_one).
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
+        let (cache, candidates) = self.write_candidates(&filter, wtxn.as_ref())?;
         for candidate in candidates {
             let current: Document = match wtxn.get(&docs_table, &candidate.to_bytes())? {
                 Some(bytes) => postcard::from_bytes(&bytes)?,
@@ -2761,27 +2741,11 @@ impl Collection {
         filter: Filter,
         convert_count: impl FnOnce(u64) -> Result<T, TalaDbError>,
     ) -> Result<T, TalaDbError> {
-        let rtxn = self.backend.begin_read()?;
-        let cache = self.load_indexes_in(rtxn.as_ref())?;
-        let qplan = plan_full(
-            &filter,
-            &cache.indexes,
-            &cache.fts_indexes,
-            &cache.compound_indexes,
-        );
-
-        let candidates =
-            crate::query::executor::candidate_ids(&qplan, &filter, rtxn.as_ref(), &self.name)?;
-        drop(rtxn);
-
         let mut count = 0u64;
-        // Re-fetch and re-check every candidate inside the write transaction
-        // (see update_many); only documents that still match are deleted, and
-        // hooks/audit fire only for those.
         let regex_cache = filter.compile_regex_cache()?;
         let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        let cache = self.load_indexes_in(&WriteView(wtxn.as_ref()))?;
+        let (cache, candidates) = self.write_candidates(&filter, wtxn.as_ref())?;
         for chunk in candidates.chunks(WRITE_BATCH_DOCS) {
             let keys: Vec<[u8; 16]> = chunk.iter().map(Ulid::to_bytes).collect();
             let refs: Vec<&[u8]> = keys.iter().map(<[u8; 16]>::as_slice).collect();

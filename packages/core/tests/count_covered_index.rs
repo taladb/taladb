@@ -450,10 +450,9 @@ fn equality_count_does_not_read_bodies() {
     assert_eq!(c.count(n(Filter::Eq, &Value::Int(4))).unwrap(), 1);
 }
 
-/// M2-F1 (pre-existing, not fixed in M2): the indexed equality `find` emits an
+/// M2-F1 (fixed in v0.13.2 M3): the indexed equality `find` used to emit an
 /// array document once per element whose key falls in the value's range.
 #[test]
-#[ignore = "M2-F1: pre-existing duplicate in indexed equality find; fix in M3"]
 fn indexed_equality_find_returns_each_document_once() {
     let pair = pair(&[Some(Value::Array(vec![
         Value::Str("a".into()),

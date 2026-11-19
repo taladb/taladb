@@ -264,6 +264,10 @@ impl StorageBackend for EncryptedBackend {
     fn flush(&self) -> Result<(), TalaDbError> {
         self.inner.flush()
     }
+
+    fn close(&self) -> Result<(), TalaDbError> {
+        self.inner.close()
+    }
 }
 
 // ---------------------------------------------------------------------------
