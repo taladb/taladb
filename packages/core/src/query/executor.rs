@@ -379,6 +379,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 None,
+                Some(start.len()),
             )?;
         }
         QueryPlan::IndexRange { field, start, end } => {
@@ -394,6 +395,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 Some(&mut seen),
+                None,
             )?;
         }
         QueryPlan::IndexIn { field, ranges } => {
@@ -411,6 +413,7 @@ fn execute_into(
                     limit,
                     &mut results,
                     Some(&mut seen),
+                    None,
                 )?;
                 if !wants_more(&results) {
                     break;
@@ -479,6 +482,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 None,
+                Some(start.len()),
             )?;
         }
 
@@ -531,6 +535,7 @@ fn execute_into(
                         deadline,
                         limit,
                         &mut results,
+                        None,
                         None,
                     )?;
                 }
@@ -763,6 +768,15 @@ fn fetch_filtered(
 /// Keep only a bounded page of index IDs ahead of the document fetch. Resume
 /// after the last raw key, preserving range order and deduplicating array and
 /// overlapping `$in` entries before decoding their bodies.
+///
+/// `exact_key_len` is for equality ranges (`value-prefix ++ 00…` to
+/// `value-prefix ++ FF…`): only keys of exactly that length hold the value
+/// itself. A Str/Bytes value with an escaped NUL extends a shorter value's
+/// prefix (`"a\0b"` is `"a"`'s prefix ++ 0xFF ++ …), so its keys also fall in
+/// the range — and an array holding both values used to be emitted twice.
+/// Skipping them returns each matching document once and never fetches a
+/// document whose only key in the range is another value. This is the same
+/// rule the key-only `count` applies.
 #[allow(clippy::too_many_arguments)]
 fn fetch_index_range(
     txn: &dyn ReadTxn,
@@ -775,6 +789,7 @@ fn fetch_index_range(
     limit: Option<usize>,
     out: &mut DocumentSink<'_>,
     mut seen: Option<&mut HashSet<Ulid>>,
+    exact_key_len: Option<usize>,
 ) -> Result<(), TalaDbError> {
     let mut last: Option<Vec<u8>> = None;
     loop {
@@ -795,7 +810,8 @@ fn fetch_index_range(
             let cursor = next.get_or_insert_with(Vec::new);
             cursor.clear();
             cursor.extend_from_slice(key);
-            if let Some(id) = ulid_from_index_key(key)
+            if exact_key_len.is_none_or(|n| key.len() == n)
+                && let Some(id) = ulid_from_index_key(key)
                 && seen.as_mut().is_none_or(|set| set.insert(id))
             {
                 ids.push(id);
