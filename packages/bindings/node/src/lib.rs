@@ -302,12 +302,16 @@ impl TalaDBNode {
 
     /// Close the database, releasing the file handle and its lock.
     ///
-    /// Subsequent calls on this object return an error. Collections obtained
-    /// before `close()` keep the underlying storage alive until they are
-    /// garbage-collected — drop them too to fully release the file.
+    /// The lock is released at once, even while collections obtained before
+    /// `close()` are still reachable from JavaScript (they used to keep the
+    /// file open until garbage-collected). Subsequent calls on this object, and
+    /// on those collections, return a "database is closed" error. Calling
+    /// `close()` again is a no-op.
     #[napi]
     pub fn close(&mut self) -> napi::Result<()> {
-        self.inner = None;
+        if let Some(db) = self.inner.take() {
+            db.close().map_err(err_to_napi)?;
+        }
         Ok(())
     }
 
@@ -1125,5 +1129,43 @@ mod mutation_task_tests {
         };
         assert_eq!(delete.compute().unwrap(), 1u32);
         assert_eq!(delete.compute().unwrap(), 0u32);
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+
+    /// v0.13.2 M3 / R4: `close()` releases the file lock even while a
+    /// collection object from the database is still alive (it used to keep
+    /// the file open until garbage-collected), and that collection then
+    /// reports "database is closed" instead of touching storage.
+    #[test]
+    fn close_releases_the_lock_while_a_collection_is_retained() {
+        // No tempfile dev-dependency in this crate: a unique path, removed below.
+        let file = std::env::temp_dir().join(format!(
+            "taladb-node-close-{}-{}.db",
+            std::process::id(),
+            taladb_core::Ulid::new()
+        ));
+        let path = file.to_string_lossy().into_owned();
+        let mut db = TalaDBNode::open(path.clone(), None, None).unwrap();
+        let col = db.collection("c".into()).unwrap();
+        col.insert(serde_json::json!({"x": 1})).unwrap();
+
+        db.close().unwrap();
+        db.close().unwrap(); // idempotent
+
+        let err = col.count(serde_json::json!({})).unwrap_err();
+        assert!(err.reason.contains("closed"), "{}", err.reason);
+        let reopened = TalaDBNode::open(path, None, None).expect("lock released");
+        let n = reopened
+            .collection("c".into())
+            .unwrap()
+            .count(serde_json::json!({}))
+            .unwrap();
+        assert_eq!(n, 1);
+        drop(reopened);
+        let _ = std::fs::remove_file(&file);
     }
 }
