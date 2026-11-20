@@ -1,6 +1,0 @@
-OBSERVE second open of the same file after GC -> threw: storage error: Database already open. Cannot acquire lock.
-NOTE host object kept alive by the retained method
-PASS retained method keeps the HostObject (and its database) alive
-PASS retained find() still works after the HostObject is unreachable
-PASS retained find() after close errors cleanly -> taladb_find failed
-HARNESS EXIT failures=0
