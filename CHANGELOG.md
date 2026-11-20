@@ -19,8 +19,8 @@ A stabilization release: two query speed-ups, eight correctness and reliability 
 
 ### Performance
 
-- **`count` on a filter an index fully answers** (a scalar range, `$in`, a multi-bound `$and` on one indexed field that never held an array, or compound equality) now counts index keys and never reads a document. `doc/count_indexed_range` takes 4–8% of its 0.13.1 time on Linux CI runners (x86_64 and arm64), about 15× faster at 100,000 documents. Allocations at 100,000 documents fall from 78 MB to 1.9 KB.
-- **An aggregation that starts with `$match` followed by `$group`** now decodes only the fields the filter, the group key and the accumulators read. `doc/aggregate_group` takes 45–70% of its 0.13.1 time on Linux CI runners. Peak memory at 100,000 documents falls from 90.8 MB to 15.7 MB (local x86_64). Every other pipeline shape is unchanged.
+- **`count` on a filter an index fully answers** (a scalar range, `$in`, a multi-bound `$and` on one indexed field that never held an array, or compound equality) now counts index keys and never reads a document. `doc/count_indexed_range` takes 5–9% of its 0.13.1 time on Linux CI runners (x86_64 and arm64), 17–20× faster at 100,000 documents. Allocations at 100,000 documents fall from 78 MB to 1.9 KB.
+- **An aggregation that starts with `$match` followed by `$group`** now decodes only the fields the filter, the group key and the accumulators read. `doc/aggregate_group` takes 45–72% of its 0.13.1 time on Linux CI runners. Peak memory at 100,000 documents falls from 90.8 MB to 15.7 MB (local x86_64). Every other pipeline shape is unchanged.
 
 ### Fixes
 
@@ -113,6 +113,10 @@ fn repair(db: &Path, salt_file: &Path, passphrase: &str) -> Result<(), TalaDbErr
 - `compact()` on an encrypted database does nothing and reports success.
 - `aggregate` does not decrypt field-encrypted values (Rust API).
 - In the browser, a wrong passphrase reports a bare `aead::Error` rather than the "wrong passphrase" message other bindings give.
+
+### Known regressions
+
+- **Indexed equality `count` at 100,000 documents on arm64 Linux** (`doc/count_indexed_eq/100000`) is still about 5% slower than in 0.12.1, as in 0.13.0 and 0.13.1. The 0.13.2 release benchmark run measured 1.055× against 0.12.1 and 0.999× against 0.13.1. It stays within the existing benchmark exception (up to 8%, `benchmarks/gates/exceptions.json`), which is unchanged. x86_64 is unchanged.
 
 No storage, index, snapshot or vector format changed, and the C ABI stays at version 2 (`TALADB_FFI_ABI_VERSION`). Rust MSRV stays 1.90, and cache budgets and durability defaults are unchanged. No index rebuild is needed, except that restoring a version 1 snapshot rebuilds its indexes. Because no format changed, 0.13.1 opens files written by 0.13.2. Going back to 0.13.1 brings back the behavior fixed above, including the damage from opening an encrypted database without its passphrase.
 
