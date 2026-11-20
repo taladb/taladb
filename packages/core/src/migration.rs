@@ -215,6 +215,66 @@ pub(crate) fn probe_documents(txn: &dyn ReadTxn) -> Result<StoredState, TalaDbEr
     })
 }
 
+/// Length of the header every plaintext [`Document`] starts with: postcard's
+/// one-byte length prefix (26) and the 26-character ULID of its `id`.
+const DOCUMENT_HEADER_LEN: usize = 27;
+
+/// Whether `bytes` starts the way every plaintext [`Document`] this crate has
+/// ever written starts: its ULID as a 26-character Crockford base32 string.
+/// Stored ciphertext starts with the `0x01` format byte (or, before 0.7.3, a
+/// random nonce), so it never matches. Only the header is read, so a document
+/// that is otherwise unreadable — nested past `MAX_VALUE_DEPTH`, or from a newer
+/// build — still counts as plaintext here and stays the reader's problem.
+fn has_document_header(bytes: &[u8]) -> bool {
+    match bytes.get(..DOCUMENT_HEADER_LEN) {
+        Some([26, ulid @ ..]) => ulid
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'A'..=b'H' | b'J' | b'K' | b'M' | b'N' | b'P'..=b'T' | b'V'..=b'Z')),
+        _ => false,
+    }
+}
+
+/// Refuse a database whose version record is readable but whose documents are
+/// stored ciphertext — what an open without the passphrase in 0.13.1 and
+/// earlier leaves behind (S1). Such a file decodes its version record as
+/// plaintext, so [`stored_state`] alone lets the plain open through, and
+/// writes would then mix plaintext into the encrypted file. Only the first
+/// value of each collection is read, before anything is written.
+///
+/// Through an `EncryptedBackend` the reads decrypt to plaintext and pass. A
+/// value that fails to decrypt there is not this damage (the version record
+/// already decrypted with the same key), so it is left to the reader, as before.
+fn refuse_ciphertext_documents(txn: &dyn ReadTxn) -> Result<(), TalaDbError> {
+    for table in txn.list_tables()? {
+        if !table.starts_with(crate::index::DOCS_TABLE_PREFIX) {
+            continue;
+        }
+        let mut ciphertext = false;
+        let scanned = txn.scan(
+            &table,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            &mut |_, value| {
+                ciphertext = value.len() >= MIN_STORED_CIPHERTEXT && !has_document_header(value);
+                Ok(ScanFlow::Stop)
+            },
+        );
+        match scanned {
+            Ok(()) | Err(TalaDbError::Encryption(_)) => {}
+            Err(e) => return Err(e),
+        }
+        if ciphertext {
+            return Err(TalaDbError::Encryption(format!(
+                "this database's schema version record is not encrypted but the documents in \
+                 `{table}` are: the damage an open without the passphrase causes in TalaDB \
+                 0.13.1 and earlier. The documents are intact; see the 0.13.2 release notes to \
+                 repair it. Nothing was changed"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Write the current database version.
 fn write_version(txn: &mut dyn WriteTxn, version: u32) -> Result<(), TalaDbError> {
     let bytes = postcard::to_allocvec(&version)?;
@@ -242,7 +302,10 @@ pub fn run_migrations(
     let rtxn = backend.begin_read()?;
     let mut current_version = match stored_state(rtxn.as_ref())? {
         StoredState::Empty => 0,
-        StoredState::Readable(version) => version,
+        StoredState::Readable(version) => {
+            refuse_ciphertext_documents(rtxn.as_ref())?;
+            version
+        }
         StoredState::Unreadable(e) => return Err(e),
     };
     drop(rtxn);
@@ -357,4 +420,29 @@ pub fn rebuild_compound_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErro
         txn.apply_batch(&ctable, &ops)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_header_matches_plaintext_documents_only() {
+        let doc = Document::new(vec![("a".into(), Value::Int(1))]);
+        let plain = postcard::to_allocvec(&doc).unwrap();
+        assert!(has_document_header(&plain));
+
+        // Current ciphertext layout: format byte, then nonce/ciphertext/tag.
+        let mut sealed = vec![0x01];
+        sealed.extend(plain.iter().skip(1));
+        assert!(!has_document_header(&sealed));
+        // Too short, a lowercase ULID, and a letter Crockford base32 omits.
+        assert!(!has_document_header(&plain[..DOCUMENT_HEADER_LEN - 1]));
+        let mut lower = plain.clone();
+        lower[1..DOCUMENT_HEADER_LEN].make_ascii_lowercase();
+        assert!(!has_document_header(&lower));
+        let mut omitted = plain;
+        omitted[5] = b'U';
+        assert!(!has_document_header(&omitted));
+    }
 }
