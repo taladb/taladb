@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "milestone": "v0.13.2 M5.1 final release closeout",
+  "generated": "2026-11-20",
+  "candidate": "1e8129cced2fb4e04da7560267472df46d2d9e8c",
+  "baselines": {"v0.13.1": "236f5f1003d8d50eb5020917c4575200a9f9a9e4", "cumulative_v0.12.1": "a2ef466"},
+  "authoritative_gate": {
+    "workflow": "performance.yml (workflow_dispatch, size=release, cumulative=true)",
+    "run": 44657268466,
+    "head_sha": "1e8129cced2fb4e04da7560267472df46d2d9e8c",
+    "result": "success",
+    "jobs": {
+      "Plan baselines": "success",
+      "Criterion (ubuntu-latest, pr)": "success", "Criterion (ubuntu-24.04-arm, pr)": "success",
+      "Criterion (ubuntu-latest, cumulative)": "success", "Criterion (ubuntu-24.04-arm, cumulative)": "success",
+      "Vector (ubuntu-latest, none, pr)": "success", "Vector (ubuntu-latest, binary, pr)": "success",
+      "Vector (ubuntu-24.04-arm, none, pr)": "success", "Vector (ubuntu-24.04-arm, binary, pr)": "success",
+      "Vector (ubuntu-latest, none, cumulative)": "success", "Vector (ubuntu-latest, binary, cumulative)": "success",
+      "Vector (ubuntu-24.04-arm, none, cumulative)": "success", "Vector (ubuntu-24.04-arm, binary, cumulative)": "success",
+      "Browser worker + OPFS (pr)": "success", "Browser worker + OPFS (cumulative)": "success",
+      "Tier 0": "skipped (placeholder in performance.yml; Tier 0 runs in ci.yml)"
+    },
+    "tolerances": "calibrated profiles, unchanged",
+    "exceptions_applied": [
+      {"case": "doc/count_indexed_eq/100000", "gate": "cumulative", "platform": "ci-linux-aarch64", "measured": 1.055, "max_ratio": 1.08,
+       "approved_by": "akosidencio", "approved_in": "https://github.com/taladb/taladb/pull/125",
+       "note": "pre-existing, unchanged exception (code placement after a version-only change). M5 on 6bc072c did not need it; the 0.13.2 version bump brings back the placement effect it documents. vs v0.13.1 on arm64 the case is 0.999 (neutral)."}
+    ]
+  },
+  "criterion": {
+    "vs_v0.13.1": {
+      "x86_64": {"cases_1k_10k": 78, "neutral": 74, "improvement": 4, "regression": 0, "doc_100k": {"cases": 11, "neutral": 9, "improvement": 2, "regression": 0}, "fingerprints": "78 + 11 compared, 0 differ"},
+      "arm64": {"cases_1k_10k": 78, "neutral": 74, "improvement": 4, "regression": 0, "doc_100k": {"cases": 11, "neutral": 8, "improvement": 3, "regression": 0}, "fingerprints": "78 + 11 compared, 0 differ"}
+    },
+    "vs_v0.12.1_cumulative": {
+      "x86_64": {"cases_1k_10k": 78, "neutral": 61, "improvement": 17, "regression": 0, "doc_100k": {"cases": 11, "neutral": 6, "improvement": 5, "regression": 0}, "fingerprints": "78 + 11 compared, 0 differ"},
+      "arm64": {"cases_1k_10k": 78, "neutral": 56, "improvement": 22, "regression": 0, "doc_100k": {"cases": 11, "neutral": 5, "improvement": 5, "regression": "1 (excepted: count_indexed_eq/100000 1.055)"}, "fingerprints": "78 + 11 compared, 0 differ"}
+    }
+  },
+  "m2_improvements_on_candidate": {
+    "doc/count_indexed_range": {
+      "vs_v0.13.1": {"x86_64": {"1000": 0.073, "10000": 0.055, "100000": 0.050}, "arm64": {"1000": 0.086, "10000": 0.072, "100000": 0.057}},
+      "vs_v0.12.1": {"x86_64": {"1000": 0.092, "10000": 0.079, "100000": 0.059}, "arm64": {"1000": 0.074, "10000": 0.066, "100000": 0.052}}
+    },
+    "doc/aggregate_group": {
+      "vs_v0.13.1": {"x86_64": {"1000": 0.718, "10000": 0.484, "100000": 0.479}, "arm64": {"1000": 0.640, "10000": 0.540, "100000": 0.452}},
+      "vs_v0.12.1": {"x86_64": {"1000": 0.720, "10000": 0.636, "100000": 0.476}, "arm64": {"1000": 0.647, "10000": 0.586, "100000": 0.454}}
+    },
+    "doc/count_indexed_eq/100000": {"vs_v0.13.1": {"x86_64": 1.043, "arm64": 0.999}, "vs_v0.12.1": {"x86_64": 0.997, "arm64": "1.055 (excepted)"}}
+  },
+  "tier0_mem2_on_candidate": {"run": 44656529929, "x86_64": "success", "arm64": "success"},
+  "pr_size_runs": {
+    "pr143_vector_performance": {"run": 44655912087, "result": "8 success + Tier 0 skipped", "note": "PR-size Criterion/Vector/Browser vs dev; superseded by the release-size dispatch on the candidate"},
+    "pr142": "performance.yml not triggered (RN-only paths)"
+  },
+  "r3_read_write_tradeoff": {
+    "status": "not re-measured in M5.1 (no engine change since M5); M5 local numbers stand and are in the CHANGELOG",
+    "m5_local": {"mem_4R2W_writes_per_s": 0.56, "mem_4R2W_write_p99": 4.3, "mem_4R2W_reads_per_s": 4.5, "mem_1R2W_writes_per_s": 0.99, "file_4R2W_writes_per_s": 1.02, "file_write_p99": "1.35-2.5"},
+    "linux": "not_executed"
+  },
+  "not_measured": ["R3 mixed read/write on Linux", "RN on device", "Windows"],
+  "thresholds_changed": false,
+  "failures_suppressed": false,
+  "earlier_runs_reused_as_candidate_evidence": false
+}

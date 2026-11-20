@@ -1,0 +1,9 @@
+
+running 2 tests
+RECIPE wrong passphrase -> encryption error: aead::Error
+RECIPE mixed file -> encryption error: unsupported encrypted-value format version 0x1a; expected 0x01
+.RECIPE indexed=false: repaired, 5 docs readable
+RECIPE indexed=true: repaired, 5 docs readable
+.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 118.05s
+
