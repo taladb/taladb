@@ -1,6 +1,7 @@
 #pragma once
 
 #include <jsi/jsi.h>
+#include <memory>
 #include <string>
 #include "taladb.h"
 
@@ -18,8 +19,15 @@ namespace taladb {
  *
  * JSON is used at the C boundary:
  *   JS object  →  JSON.stringify  →  C string  →  Rust  →  C string  →  JSON.parse  →  JS object
+ *
+ * Lifetime: every function `get` returns holds a shared_ptr to this object, so
+ * JS can keep `const find = __TalaDB__.find` after `__TalaDB__` itself has been
+ * collected without the function pointing at a destroyed object. The database
+ * closes when the last of them is collected, or on an explicit `close()`.
+ * Must be owned by a shared_ptr (see `install`).
  */
-class TalaDBHostObject : public facebook::jsi::HostObject {
+class TalaDBHostObject : public facebook::jsi::HostObject,
+                         public std::enable_shared_from_this<TalaDBHostObject> {
 public:
     explicit TalaDBHostObject(TalaDbHandle *db);
     ~TalaDBHostObject() override;
@@ -36,6 +44,14 @@ public:
 
     /** Install this object as global.__TalaDB__ in the given runtime. */
     static void install(facebook::jsi::Runtime &rt, TalaDbHandle *db);
+
+    /**
+     * Close the database installed as global.__TalaDB__, if any, and clear the
+     * global. Clearing the global alone only closes the database when the JS
+     * garbage collector next frees the HostObject, so the file stays locked and
+     * an immediate reopen of the same path fails.
+     */
+    static void uninstall(facebook::jsi::Runtime &rt);
 
 private:
     TalaDbHandle *db_;

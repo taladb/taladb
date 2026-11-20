@@ -440,12 +440,24 @@ pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
 }
 
 /// Close the database and free the handle.
+///
+/// The file and its lock are released at once, even while watches or
+/// background jobs started from this handle are still alive: those then fail
+/// with a "database is closed" error (a watch reports `WatchClosed`) instead
+/// of keeping the file open. A job whose transaction is already running
+/// finishes it first. If the close itself fails, the handle is still freed and
+/// the error is available from `taladb_last_error`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_close(handle: *mut TalaDbHandle) {
     ffi_guard((), move || {
         clear_last_error();
         if !handle.is_null() {
-            drop(unsafe { Box::from_raw(handle) });
+            // SAFETY: a pointer from `taladb_open*`, closed exactly once.
+            let handle = unsafe { Box::from_raw(handle) };
+            if let Err(e) = handle.db.close() {
+                set_last_error(engine_error(e));
+            }
+            drop(handle);
         }
     })
 }
@@ -2249,9 +2261,10 @@ pub struct TalaDbWatch {
 /// delivers no initial snapshot — read the current state with `taladb_find`
 /// *after* this returns, so no write can fall between the two.
 ///
-/// The watch reads from the database it was created on and keeps its storage
-/// open until `taladb_watch_close`, even after `taladb_close`. Returns NULL on
-/// error.
+/// The watch reads from the database it was created on. After `taladb_close`
+/// it holds no storage: `taladb_watch_next` returns -1 with a `WatchClosed`
+/// error, and `taladb_watch_close` must still be called to free it. Returns
+/// NULL on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_watch(
     handle: *mut TalaDbHandle,
@@ -2441,10 +2454,15 @@ pub unsafe extern "C" fn taladb_find_nearest_start(
         } else {
             unsafe { slice::from_raw_parts(query_ptr, query_len) }.to_vec()
         };
+        // NULL is "no filter"; present but not UTF-8 is an error, not an
+        // unfiltered search (as `taladb_find_nearest` already treats it).
         let filter_owned: Option<String> = if filter_json.is_null() {
             None
         } else {
-            unsafe { cstr_to_string(filter_json) }
+            match unsafe { cstr_to_string(filter_json) } {
+                Some(s) => Some(s),
+                None => return std::ptr::null_mut(),
+            }
         };
 
         spawn_job(handle, move |h| {
@@ -2479,8 +2497,17 @@ pub unsafe extern "C" fn taladb_find_start(
             Some(s) => s,
             None => return std::ptr::null_mut(),
         };
-        let filter_owned =
-            unsafe { cstr_to_string(filter_json) }.unwrap_or_else(|| "{}".to_string());
+        // NULL is "no filter". A filter that is present but not UTF-8 is an
+        // error (`cstr_to_string` sets it) — it used to become `{}` and match
+        // every document, where the synchronous `taladb_find` refuses it.
+        let filter_owned = if filter_json.is_null() {
+            "{}".to_string()
+        } else {
+            match unsafe { cstr_to_string(filter_json) } {
+                Some(s) => s,
+                None => return std::ptr::null_mut(),
+            }
+        };
 
         spawn_job(handle, move |h| {
             let collection = h.db.collection(&col).map_err(engine_error)?;
@@ -3297,6 +3324,47 @@ mod tests {
         unsafe { taladb_close(h) };
     }
 
+    /// v0.13.2 M3 / R4: `taladb_close` releases the file even while a watch
+    /// from the handle is alive (it used to keep the storage open until
+    /// `taladb_watch_close`), and the watch then reports `WatchClosed` at once
+    /// instead of waiting out its timeout forever.
+    #[test]
+    fn close_releases_the_file_and_closes_live_watches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = CString::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let h = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!h.is_null());
+        let col = cstr("todos");
+        let doc = cstr(r#"{"t":"a"}"#);
+        assert!(take_string(unsafe { taladb_insert(h, col.as_ptr(), doc.as_ptr()) }).is_some());
+        let w = unsafe { taladb_watch(h, col.as_ptr(), std::ptr::null()) };
+        assert!(!w.is_null(), "{:?}", last_error());
+
+        unsafe { taladb_close(h) };
+        assert!(last_error().is_none(), "close succeeded");
+
+        let started = std::time::Instant::now();
+        let mut out: *mut c_char = std::ptr::null_mut();
+        assert_eq!(unsafe { taladb_watch_next(w, 10_000, &mut out) }, -1);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a closed watch must not wait out its timeout"
+        );
+        assert_eq!(last_error_code().as_deref(), Some("WatchClosed"));
+        assert!(out.is_null());
+
+        // The file is free while the watch is still allocated.
+        let again = unsafe { taladb_open(path.as_ptr()) };
+        assert!(!again.is_null(), "reopen after close: {:?}", last_error());
+        let count = cstr("count");
+        let args = cstr(r#"["todos", {}]"#);
+        let n = take_string(unsafe { taladb_call(again, count.as_ptr(), args.as_ptr()) });
+        assert_eq!(n.as_deref(), Some("1"), "{:?}", last_error());
+
+        unsafe { taladb_watch_close(w) };
+        unsafe { taladb_close(again) };
+    }
+
     #[test]
     fn watch_rejects_bad_arguments_with_a_message() {
         let (h, _dir) = open_temp_db();
@@ -3609,6 +3677,142 @@ mod tests {
         unsafe { taladb_close(handle) };
     }
 
+    /// Wait for `job` and take its result (None when it failed).
+    fn finish(job: *mut TalaDbJob) -> Option<String> {
+        while unsafe { taladb_job_poll(job) } == 0 {
+            std::thread::yield_now();
+        }
+        take_string(unsafe { taladb_job_take_result(job) })
+    }
+
+    /// S5: the background `find` and `find_nearest` starts turned a filter
+    /// that is present but not UTF-8 into "no filter" — `find_start` matched
+    /// every document and `find_nearest_start` searched unfiltered — where the
+    /// synchronous calls refuse it. A scoped query must never silently widen.
+    #[test]
+    fn background_starts_refuse_a_non_utf8_filter_instead_of_widening_it() {
+        let _slots = exclusive_jobs();
+        let (h, _dir) = open_temp_db();
+        let col = cstr("docs");
+        let field = cstr("v");
+        assert_eq!(
+            unsafe {
+                taladb_create_vector_index(
+                    h,
+                    col.as_ptr(),
+                    field.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            1
+        );
+        for doc in [r#"{"k":1,"v":[1.0,0.0]}"#, r#"{"k":2,"v":[0.0,1.0]}"#] {
+            let doc = cstr(doc);
+            assert!(take_string(unsafe { taladb_insert(h, col.as_ptr(), doc.as_ptr()) }).is_some());
+        }
+        // `{"k":` then 0xFF: present, and not UTF-8.
+        let bad: [c_char; 7] = [0x7b, 0x22, 0x6b, 0x22, 0x3a, -1_i8 as c_char, 0];
+        let q = [1.0f32, 0.0];
+
+        let job = unsafe { taladb_find_start(h, col.as_ptr(), bad.as_ptr()) };
+        let widened = (!job.is_null()).then(|| finish(job)).flatten();
+        assert!(
+            job.is_null(),
+            "find_start accepted a non-UTF-8 filter and returned {widened:?}"
+        );
+        assert!(
+            last_error().unwrap().contains("UTF-8"),
+            "{:?}",
+            last_error()
+        );
+
+        let job = unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                bad.as_ptr(),
+            )
+        };
+        let widened = (!job.is_null()).then(|| finish(job)).flatten();
+        assert!(
+            job.is_null(),
+            "find_nearest_start searched unfiltered and returned {widened:?}"
+        );
+        assert!(
+            last_error().unwrap().contains("UTF-8"),
+            "{:?}",
+            last_error()
+        );
+
+        // Unchanged: NULL is "no filter", and a real filter still filters.
+        let all = finish(unsafe { taladb_find_start(h, col.as_ptr(), std::ptr::null()) }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&all)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let k1 = cstr(r#"{"k":1}"#);
+        let one = finish(unsafe { taladb_find_start(h, col.as_ptr(), k1.as_ptr()) }).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&one)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let near = finish(unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                std::ptr::null(),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&near)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let near = finish(unsafe {
+            taladb_find_nearest_start(
+                h,
+                col.as_ptr(),
+                field.as_ptr(),
+                q.as_ptr(),
+                2,
+                10,
+                k1.as_ptr(),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&near)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        unsafe { taladb_close(h) };
+    }
+
     fn call_json(handle: *mut TalaDbHandle, op: &str, args: &str) -> serde_json::Value {
         let (op, args) = (cstr(op), cstr(args));
         let out = unsafe { taladb_call(handle, op.as_ptr(), args.as_ptr()) };
@@ -3773,6 +3977,39 @@ mod tests {
             "{:?}",
             last_error()
         );
+    }
+
+    /// S1: `taladb_open` without a config on an encrypted file (an app that
+    /// opens before it has read the keychain) used to succeed, migrate the
+    /// ciphertext and leave the file unopenable with the right passphrase.
+    #[test]
+    fn opening_an_encrypted_file_without_its_passphrase_is_refused_and_harmless() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = cstr(dir.path().join("e.db").to_str().unwrap());
+        let right = cstr(r#"{"passphrase":"right"}"#);
+        let col = cstr("c");
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), right.as_ptr()) };
+        assert!(!handle.is_null());
+        let doc = cstr(r#"{"x":1}"#);
+        let id = unsafe { taladb_insert(handle, col.as_ptr(), doc.as_ptr()) };
+        unsafe {
+            taladb_free_string(id);
+            taladb_close(handle);
+        }
+
+        for _ in 0..2 {
+            assert!(unsafe { taladb_open(path.as_ptr()) }.is_null());
+            assert_eq!(last_error_code().as_deref(), Some("Encryption"));
+        }
+
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), right.as_ptr()) };
+        assert!(!handle.is_null(), "{:?}", last_error());
+        let all = cstr("{}");
+        assert_eq!(
+            unsafe { taladb_count(handle, col.as_ptr(), all.as_ptr()) },
+            1
+        );
+        unsafe { taladb_close(handle) };
     }
 
     /// Reading the error must not itself clear it — JS calls it once and may

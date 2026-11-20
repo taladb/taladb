@@ -5,6 +5,8 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace facebook::jsi;
@@ -31,6 +33,37 @@ JSError ffiError(Runtime &rt, const char *prefix) {
     return JSError(rt, msg);
 }
 
+// Convert a JS number to an unsigned integer for the C API. A C++ cast from a
+// double is undefined behaviour for NaN, an infinity, or a value whose integer
+// part does not fit the target, so those are refused with a JS error. Every
+// other number converts exactly as the cast did: fractions truncate toward
+// zero, so -0.5 and 0.5 both give 0.
+template <typename T>
+T toUnsigned(Runtime &rt, const Value &v, const char *what) {
+    static_assert(std::is_unsigned<T>::value, "unsigned targets only");
+    if (!v.isNumber()) {
+        throw JSError(rt, std::string(what) + " must be a number");
+    }
+    const double d = v.getNumber();
+    // 2^digits is exact in a double, and the integer part of every double below
+    // it fits T. The comparisons are false for NaN.
+    const double limit = std::ldexp(1.0, std::numeric_limits<T>::digits);
+    if (!(d > -1.0 && d < limit)) {
+        throw JSError(rt, std::string(what) + " must be a non-negative integer below 2^" +
+                              std::to_string(std::numeric_limits<T>::digits));
+    }
+    return static_cast<T>(d);
+}
+
+// A double outside float's finite range has no float to convert to (undefined
+// behaviour in C++). NaN and the infinities convert as before.
+float toFloat(Runtime &rt, double d) {
+    if (std::isfinite(d) && std::fabs(d) > static_cast<double>(std::numeric_limits<float>::max())) {
+        throw JSError(rt, "query vector value is outside the 32-bit float range");
+    }
+    return static_cast<float>(d);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -54,6 +87,23 @@ void TalaDBHostObject::install(Runtime &rt, TalaDbHandle *db) {
     auto hostObject = std::make_shared<TalaDBHostObject>(db);
     auto jsiObject  = Object::createFromHostObject(rt, hostObject);
     rt.global().setProperty(rt, "__TalaDB__", std::move(jsiObject));
+}
+
+void TalaDBHostObject::uninstall(Runtime &rt) {
+    // Our own `close` never throws. The global is writable from JS, so it may
+    // hold something else whose `close` does; that must not escape into the
+    // JNI / Objective-C caller, and the global is cleared either way.
+    try {
+        auto current = rt.global().getProperty(rt, "__TalaDB__");
+        if (current.isObject()) {
+            auto close = current.getObject(rt).getProperty(rt, "close");
+            if (close.isObject() && close.getObject(rt).isFunction(rt)) {
+                close.getObject(rt).getFunction(rt).call(rt);
+            }
+        }
+    } catch (const JSIException &) {
+    }
+    rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +205,7 @@ void TalaDBHostObject::extractF32Query(Runtime &rt, const Value &val,
             if (!v.isNumber()) {
                 throw JSError(rt, "query array must contain only numbers");
             }
-            out[i] = (float)v.getNumber();
+            out[i] = toFloat(rt, v.getNumber());
         }
         return;
     }
@@ -298,14 +348,16 @@ void TalaDBHostObject::set(Runtime &, const PropNameID &, const Value &) {}
 
 Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     auto name = propName.utf8(rt);
+    // Each returned function keeps this object alive (see the header).
+    auto self = shared_from_this();
 
     if (name == "callAsync") {
         return Function::createFromHostFunction(rt, PropNameID::forAscii(rt, "callAsync"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "callAsync requires an operation and argument array");
                 auto op = args[0].getString(rt).utf8(rt);
                 auto json = stringify(rt, args[1]);
-                return awaitJobAsPromise(rt, taladb_call_start(db_, op.c_str(), json.c_str()), true);
+                return awaitJobAsPromise(rt, taladb_call_start(self->db_, op.c_str(), json.c_str()), true);
             });
     }
     // ------------------------------------------------------------------
@@ -314,11 +366,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "insert") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "insert"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "insert requires 2 arguments");
                 auto col     = args[0].getString(rt).utf8(rt);
                 auto docJson = stringify(rt, args[1]);
-                char *result = taladb_insert(db_, col.c_str(), docJson.c_str());
+                char *result = taladb_insert(self->db_, col.c_str(), docJson.c_str());
                 if (!result) throw JSError(rt, "taladb_insert failed");
                 std::string id(result);
                 taladb_free_string(result);
@@ -332,11 +384,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "insertMany") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "insertMany"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "insertMany requires 2 arguments");
                 auto col      = args[0].getString(rt).utf8(rt);
                 auto docsJson = stringify(rt, args[1]);
-                char *result  = taladb_insert_many(db_, col.c_str(), docsJson.c_str());
+                char *result  = taladb_insert_many(self->db_, col.c_str(), docsJson.c_str());
                 if (!result) throw JSError(rt, "taladb_insert_many failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -350,11 +402,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "find") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "find"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 1) throw JSError(rt, "find requires at least 1 argument");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = count > 1 ? valueToFilterJson(rt, args[1]) : "{}";
-                char *result    = taladb_find(db_, col.c_str(), filterJson.c_str());
+                char *result    = taladb_find(self->db_, col.c_str(), filterJson.c_str());
                 if (!result) throw JSError(rt, "taladb_find failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -368,11 +420,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "findOne") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "findOne"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 1) throw JSError(rt, "findOne requires at least 1 argument");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = count > 1 ? valueToFilterJson(rt, args[1]) : "{}";
-                char *result    = taladb_find_one(db_, col.c_str(), filterJson.c_str());
+                char *result    = taladb_find_one(self->db_, col.c_str(), filterJson.c_str());
                 if (!result) throw JSError(rt, "taladb_find_one failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -386,13 +438,13 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "updateOne") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "updateOne"), 3,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 3) throw JSError(rt, "updateOne requires 3 arguments");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = stringify(rt, args[1]);
                 auto updateJson = stringify(rt, args[2]);
                 int32_t res = taladb_update_one(
-                    db_, col.c_str(), filterJson.c_str(), updateJson.c_str());
+                    self->db_, col.c_str(), filterJson.c_str(), updateJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_update_one failed");
                 return Value(res == 1);
             });
@@ -404,13 +456,13 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "updateMany") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "updateMany"), 3,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 3) throw JSError(rt, "updateMany requires 3 arguments");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = stringify(rt, args[1]);
                 auto updateJson = stringify(rt, args[2]);
                 int32_t res = taladb_update_many(
-                    db_, col.c_str(), filterJson.c_str(), updateJson.c_str());
+                    self->db_, col.c_str(), filterJson.c_str(), updateJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_update_many failed");
                 return Value(static_cast<double>(res));
             });
@@ -422,11 +474,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "deleteOne") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "deleteOne"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "deleteOne requires 2 arguments");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = stringify(rt, args[1]);
-                int32_t res = taladb_delete_one(db_, col.c_str(), filterJson.c_str());
+                int32_t res = taladb_delete_one(self->db_, col.c_str(), filterJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_delete_one failed");
                 return Value(res == 1);
             });
@@ -438,11 +490,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "deleteMany") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "deleteMany"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "deleteMany requires 2 arguments");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = stringify(rt, args[1]);
-                int32_t res = taladb_delete_many(db_, col.c_str(), filterJson.c_str());
+                int32_t res = taladb_delete_many(self->db_, col.c_str(), filterJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_delete_many failed");
                 return Value(static_cast<double>(res));
             });
@@ -454,11 +506,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "count") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "count"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 1) throw JSError(rt, "count requires at least 1 argument");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = count > 1 ? valueToFilterJson(rt, args[1]) : "{}";
-                int32_t res = taladb_count(db_, col.c_str(), filterJson.c_str());
+                int32_t res = taladb_count(self->db_, col.c_str(), filterJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_count failed");
                 return Value(static_cast<double>(res));
             });
@@ -470,11 +522,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "aggregate") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "aggregate"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "aggregate requires 2 arguments");
                 auto col          = args[0].getString(rt).utf8(rt);
                 auto pipelineJson = stringify(rt, args[1]);
-                char *result      = taladb_aggregate(db_, col.c_str(), pipelineJson.c_str());
+                char *result      = taladb_aggregate(self->db_, col.c_str(), pipelineJson.c_str());
                 if (!result) throw JSError(rt, "taladb_aggregate failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -488,8 +540,8 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "listCollectionNames") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "listCollectionNames"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
-                char *result = taladb_list_collection_names(db_);
+            [self](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                char *result = taladb_list_collection_names(self->db_);
                 if (!result) throw JSError(rt, "taladb_list_collection_names failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -503,8 +555,8 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "userVersion") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "userVersion"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
-                int64_t v = taladb_user_version(db_);
+            [self](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int64_t v = taladb_user_version(self->db_);
                 if (v < 0) throw JSError(rt, "taladb_user_version failed");
                 return Value(static_cast<double>(v));
             });
@@ -513,10 +565,10 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "setUserVersion") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "setUserVersion"), 1,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 1) throw JSError(rt, "setUserVersion requires 1 argument");
-                uint32_t version = static_cast<uint32_t>(args[0].getNumber());
-                if (taladb_set_user_version(db_, version) < 0)
+                uint32_t version = toUnsigned<uint32_t>(rt, args[0], "version");
+                if (taladb_set_user_version(self->db_, version) < 0)
                     throw JSError(rt, "taladb_set_user_version failed");
                 return Value::undefined();
             });
@@ -525,8 +577,8 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "flush") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "flush"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
-                if (taladb_flush(db_) < 0) throw JSError(rt, "taladb_flush failed");
+            [self](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                if (taladb_flush(self->db_) < 0) throw JSError(rt, "taladb_flush failed");
                 return Value::undefined();
             });
     }
@@ -538,15 +590,15 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
         name == "createFtsIndex" || name == "dropFtsIndex") {
         return Function::createFromHostFunction(
             rt, PropNameID::forUtf8(rt, name), 2,
-            [this, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, (name + " requires 2 arguments").c_str());
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
                 int32_t res;
-                if      (name == "createIndex")    res = taladb_create_index    (db_, col.c_str(), field.c_str());
-                else if (name == "dropIndex")      res = taladb_drop_index      (db_, col.c_str(), field.c_str());
-                else if (name == "createFtsIndex") res = taladb_create_fts_index(db_, col.c_str(), field.c_str());
-                else                               res = taladb_drop_fts_index  (db_, col.c_str(), field.c_str());
+                if      (name == "createIndex")    res = taladb_create_index    (self->db_, col.c_str(), field.c_str());
+                else if (name == "dropIndex")      res = taladb_drop_index      (self->db_, col.c_str(), field.c_str());
+                else if (name == "createFtsIndex") res = taladb_create_fts_index(self->db_, col.c_str(), field.c_str());
+                else                               res = taladb_drop_fts_index  (self->db_, col.c_str(), field.c_str());
                 if (res < 0) throw ffiError(rt, (name + " failed").c_str());
                 return Value::undefined();
             });
@@ -558,13 +610,13 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "createCompoundIndex" || name == "dropCompoundIndex") {
         return Function::createFromHostFunction(
             rt, PropNameID::forUtf8(rt, name), 2,
-            [this, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, (name + " requires 2 arguments").c_str());
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto fieldsJson = stringify(rt, args[1]);   // string[] → JSON array
                 int32_t res = name == "createCompoundIndex"
-                    ? taladb_create_compound_index(db_, col.c_str(), fieldsJson.c_str())
-                    : taladb_drop_compound_index(db_, col.c_str(), fieldsJson.c_str());
+                    ? taladb_create_compound_index(self->db_, col.c_str(), fieldsJson.c_str())
+                    : taladb_drop_compound_index(self->db_, col.c_str(), fieldsJson.c_str());
                 if (res < 0) throw ffiError(rt, (name + " failed").c_str());
                 return Value::undefined();
             });
@@ -577,12 +629,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "createVectorIndex") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "createVectorIndex"), 4,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 3) throw JSError(rt, "createVectorIndex requires (collection, field, dimensions, opts?)");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
-                if (!args[2].isNumber()) throw JSError(rt, "dimensions must be a number");
-                size_t dims = (size_t)args[2].getNumber();
+                size_t dims = toUnsigned<size_t>(rt, args[2], "dimensions");
 
                 std::string metricStr;
                 std::string hnswJson;
@@ -607,7 +658,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 }
 
                 int32_t res = taladb_create_vector_index(
-                    db_, col.c_str(), field.c_str(), dims, metricPtr, hnswPtr);
+                    self->db_, col.c_str(), field.c_str(), dims, metricPtr, hnswPtr);
                 if (res < 0) throw ffiError(rt, "taladb_create_vector_index failed");
                 return Value::undefined();
             });
@@ -619,11 +670,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "dropVectorIndex") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "dropVectorIndex"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "dropVectorIndex requires 2 arguments");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
-                int32_t res = taladb_drop_vector_index(db_, col.c_str(), field.c_str());
+                int32_t res = taladb_drop_vector_index(self->db_, col.c_str(), field.c_str());
                 if (res < 0) throw ffiError(rt, "taladb_drop_vector_index failed");
                 return Value::undefined();
             });
@@ -635,11 +686,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "upgradeVectorIndex") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "upgradeVectorIndex"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 2) throw JSError(rt, "upgradeVectorIndex requires 2 arguments");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
-                int32_t res = taladb_upgrade_vector_index(db_, col.c_str(), field.c_str());
+                int32_t res = taladb_upgrade_vector_index(self->db_, col.c_str(), field.c_str());
                 if (res < 0) throw ffiError(rt, "taladb_upgrade_vector_index failed");
                 return Value::undefined();
             });
@@ -656,8 +707,8 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "rebuildVectorIndexes") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "rebuildVectorIndexes"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
-                int32_t res = taladb_rebuild_hnsw_indexes(db_);
+            [self](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int32_t res = taladb_rebuild_hnsw_indexes(self->db_);
                 if (res < 0) throw ffiError(rt, "taladb_rebuild_hnsw_indexes failed");
                 return Value::undefined();
             });
@@ -670,21 +721,20 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "findNearest") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "findNearest"), 5,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 4) throw JSError(rt, "findNearest requires (collection, field, query, topK, filter?)");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
                 std::vector<float> qbuf;
                 extractF32Query(rt, args[2], qbuf);
-                if (!args[3].isNumber()) throw JSError(rt, "topK must be a number");
-                size_t topK = (size_t)args[3].getNumber();
+                size_t topK = toUnsigned<size_t>(rt, args[3], "topK");
                 std::string filterJson = count > 4
                     ? valueToFilterJson(rt, args[4])
                     : std::string();
                 const char *filterPtr = count > 4 ? filterJson.c_str() : nullptr;
 
                 char *result = taladb_find_nearest(
-                    db_, col.c_str(), field.c_str(),
+                    self->db_, col.c_str(), field.c_str(),
                     qbuf.data(), qbuf.size(), topK, filterPtr);
                 if (!result) throw ffiError(rt, "taladb_find_nearest failed");
                 std::string json(result);
@@ -700,21 +750,20 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "findNearestAsync") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "findNearestAsync"), 5,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 4) throw JSError(rt, "findNearestAsync requires (collection, field, query, topK, filter?)");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
                 std::vector<float> qbuf;
                 extractF32Query(rt, args[2], qbuf);
-                if (!args[3].isNumber()) throw JSError(rt, "topK must be a number");
-                size_t topK = (size_t)args[3].getNumber();
+                size_t topK = toUnsigned<size_t>(rt, args[3], "topK");
                 std::string filterJson = count > 4
                     ? valueToFilterJson(rt, args[4])
                     : std::string();
                 const char *filterPtr = count > 4 ? filterJson.c_str() : nullptr;
 
                 TalaDbJob *job = taladb_find_nearest_start(
-                    db_, col.c_str(), field.c_str(),
+                    self->db_, col.c_str(), field.c_str(),
                     qbuf.data(), qbuf.size(), topK, filterPtr);
                 return awaitJobAsPromise(rt, job, /*parseAsJson=*/true);
             });
@@ -727,13 +776,12 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "searchText") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "searchText"), 6,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 4) throw JSError(rt, "searchText requires (collection, field, query, topK, filter?, options?)");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto field = args[1].getString(rt).utf8(rt);
                 auto query = args[2].getString(rt).utf8(rt);
-                if (!args[3].isNumber()) throw JSError(rt, "topK must be a number");
-                size_t topK = (size_t)args[3].getNumber();
+                size_t topK = toUnsigned<size_t>(rt, args[3], "topK");
 
                 std::string filterJson = count > 4 ? valueToFilterJson(rt, args[4]) : std::string();
                 const char *filterPtr = count > 4 && !args[4].isNull() && !args[4].isUndefined()
@@ -742,7 +790,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 const char *optionsPtr = !optionsJson.empty() ? optionsJson.c_str() : nullptr;
 
                 char *result = taladb_search_text(
-                    db_, col.c_str(), field.c_str(), query.c_str(), topK, filterPtr, optionsPtr);
+                    self->db_, col.c_str(), field.c_str(), query.c_str(), topK, filterPtr, optionsPtr);
                 if (!result) throw ffiError(rt, "taladb_search_text failed");
                 std::string json(result);
                 taladb_free_string(result);
@@ -758,7 +806,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "hybridSearch") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "hybridSearch"), 8,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 6) throw JSError(rt, "hybridSearch requires (collection, textField, text, vectorField, vector, topK, filter?, options?)");
                 auto col   = args[0].getString(rt).utf8(rt);
                 auto tf    = args[1].getString(rt).utf8(rt);
@@ -766,8 +814,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 auto vf    = args[3].getString(rt).utf8(rt);
                 std::vector<float> vbuf;
                 extractF32Query(rt, args[4], vbuf);
-                if (!args[5].isNumber()) throw JSError(rt, "topK must be a number");
-                size_t topK = (size_t)args[5].getNumber();
+                size_t topK = toUnsigned<size_t>(rt, args[5], "topK");
 
                 std::string filterJson = count > 6 ? valueToFilterJson(rt, args[6]) : std::string();
                 const char *filterPtr = count > 6 && !args[6].isNull() && !args[6].isUndefined()
@@ -776,7 +823,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 const char *optionsPtr = !optionsJson.empty() ? optionsJson.c_str() : nullptr;
 
                 char *result = taladb_hybrid_search(
-                    db_, col.c_str(), tf.c_str(), text.c_str(), vf.c_str(),
+                    self->db_, col.c_str(), tf.c_str(), text.c_str(), vf.c_str(),
                     vbuf.data(), vbuf.size(), topK, filterPtr, optionsPtr);
                 if (!result) throw ffiError(rt, "taladb_hybrid_search failed");
                 std::string json(result);
@@ -791,11 +838,11 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "findAsync") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "findAsync"), 2,
-            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+            [self](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
                 if (count < 1) throw JSError(rt, "findAsync requires at least 1 argument");
                 auto col        = args[0].getString(rt).utf8(rt);
                 auto filterJson = count > 1 ? valueToFilterJson(rt, args[1]) : std::string("{}");
-                TalaDbJob *job = taladb_find_start(db_, col.c_str(), filterJson.c_str());
+                TalaDbJob *job = taladb_find_start(self->db_, col.c_str(), filterJson.c_str());
                 return awaitJobAsPromise(rt, job, /*parseAsJson=*/true);
             });
     }
@@ -806,8 +853,8 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "compact") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "compact"), 0,
-            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
-                int32_t res = taladb_compact(db_);
+            [self](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int32_t res = taladb_compact(self->db_);
                 if (res < 0) throw JSError(rt, "taladb_compact failed");
                 return Value::undefined();
             });
@@ -819,10 +866,10 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     if (name == "close") {
         return Function::createFromHostFunction(
             rt, PropNameID::forAscii(rt, "close"), 0,
-            [this](Runtime &, const Value &, const Value *, size_t) -> Value {
-                if (db_) {
-                    taladb_close(db_);
-                    db_ = nullptr;
+            [self](Runtime &, const Value &, const Value *, size_t) -> Value {
+                if (self->db_) {
+                    taladb_close(self->db_);
+                    self->db_ = nullptr;
                 }
                 return Value::undefined();
             });

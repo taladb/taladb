@@ -1,5 +1,125 @@
 # Changelog
 
+## 0.13.2 — Unreleased
+
+A stabilization release: two query speed-ups, seven correctness and reliability fixes, and six security fixes. The most important one stops an encrypted database from being damaged when it is opened without its passphrase. **If your app uses encryption, read "Encrypted databases opened without a passphrase" below.**
+
+### Security
+
+- **An encrypted database opened without its passphrase is no longer damaged.** In 0.13.1 and earlier, opening an encrypted database without a passphrase (`Database::open`, Node `open` without `passphrase`, React Native or FFI without `passphrase` in the config) read the encrypted schema-version record as plaintext version 1. It then ran the version 1 → 2 migration and committed a plaintext version record. From then on the correct passphrase could not open the database ("ciphertext too short"). This only committed when the database had no secondary index. With one, the migration failed and nothing was written. Now every open checks what is stored before it writes anything:
+  - An encrypted database opened without a passphrase is refused with an `Encryption` error. Nothing is written.
+  - A plaintext database opened with a passphrase is refused ("this database is not encrypted; open it without a passphrase"). No `.taladb-salt` file is created next to it. Before, a salt file was created and left behind.
+  - An existing encrypted database whose `.taladb-salt` file is missing is refused. Before, a new salt was generated, which can never decrypt the existing data.
+  - A file already damaged by an earlier release is refused with or without the passphrase, and the error points to these release notes. See "Encrypted databases opened without a passphrase" for the repair.
+  - No marker or storage-format change was needed.
+- **Deeply nested values no longer crash the process.** A document, snapshot or backup holding arrays or objects nested thousands of levels deep overflowed the stack and aborted the process. `Value` nesting is now limited to 128 levels (`document::MAX_VALUE_DEPTH`). A deeper value is refused on write. A stored one, from a file or snapshot written elsewhere, reads back as a `Serialization` error; the database still opens and nothing is written. Every binding already caps JSON input at 64 levels, so only Rust callers building `Value`s by hand can reach the new limit.
+- **Node: a deeply nested or self-referencing argument no longer crashes the process.** The Node binding converted each JavaScript argument with napi-rs's recursive conversion, which has no depth limit and runs before TalaDB's 64-level check. On Node 22 (macOS x86_64), an object nested 10,000 levels deep, such as `JSON.parse` of a request body of about 50 KB, or an object that contains itself ended the process with a segmentation fault. Every argument of every method is now converted with a 256-level limit: a deeper or self-referencing argument is refused with an error ("invalid argument: value nested deeper than 256 levels") before anything past that depth is read. Arguments up to 256 levels convert exactly as before, and the 64-level limit on filters, documents and updates is unchanged. Only an argument between 257 levels and the old crash depth gets a different error message than before. The TypeScript declarations are unchanged.
+- **C FFI: a background `find` or `findNearest` with a filter that is not valid UTF-8 now fails.** `taladb_find_start` and `taladb_find_nearest_start` treated such a filter as no filter and returned every document, or an unfiltered search. They now return NULL and set `taladb_last_error`, like the synchronous calls.
+- **React Native: a method kept after the database object is collected no longer reads freed memory.** Every function on `global.__TalaDB__` held a raw pointer to its native object. Code such as `const { find } = __TalaDB__` could call `find` after the garbage collector had freed that object: a use-after-free. Each function now keeps the object alive, so the database closes on an explicit `close()` or when the last reference is collected.
+- **React Native: invalid numbers are refused instead of cast.** `topK`, vector `dimensions` and `setUserVersion` converted any JS number straight to an unsigned integer, which is undefined behavior in C++ for NaN, an infinity, a negative number or one too large. Those now throw an error. A non-number `setUserVersion` argument hit an assertion; it also throws now. Every in-range number converts as before, and fractions still truncate. A `number[]` query vector holding a finite value outside the 32-bit float range now throws as well.
+
+### Performance
+
+- **`count` on a filter an index fully answers** (a scalar range, `$in`, a multi-bound `$and` on one indexed field that never held an array, or compound equality) now counts index keys and never reads a document. `doc/count_indexed_range` takes 5–9% of its 0.13.1 time on Linux CI runners (x86_64 and arm64), 16–20× faster at 100,000 documents. Allocations at 100,000 documents fall from 78 MB to 1.9 KB.
+- **An aggregation that starts with `$match` followed by `$group`** now decodes only the fields the filter, the group key and the accumulators read. `doc/aggregate_group` takes 45–72% of its 0.13.1 time on Linux CI runners. Peak memory at 100,000 documents falls from 90.8 MB to 15.7 MB (local x86_64). Every other pipeline shape is unchanged.
+
+### Fixes
+
+- **Restored snapshots are migrated like opened files.** `restore_from_snapshot`, and the browser's IndexedDB fallback that uses it, copied an old snapshot's tables without running the built-in migrations. A version 1 snapshot kept stale index keys, and an index-served `count` could return 0 where a file with the same contents returned 1. Restore now runs the same migration chain as opening a file, and returns a fully migrated database or an error. Restoring a version 1 snapshot is slower, because its indexes are rebuilt. The snapshot format is unchanged.
+- **`updateMany`, `updateOne`, `deleteOne` and `deleteMany` choose their documents inside the write transaction.** They used to select matches in a separate read first. A matching document committed by another writer in between was skipped: `updateMany` left it unchanged, and `updateOne` or `deleteOne` returned `false` while a match existed.
+- **Reads no longer wait behind a queued writer.** A writer waiting for the write slot blocked every new read until the active writer committed: in one test a read went from about 13 µs to 1.35 s. Reads now start at once. See "Known limitations" for the effect on write throughput.
+- **`close` releases the file while collections and live queries are still held.** Dropping the database left the file open and locked while any `Collection` handle or watch existed. A reopen of the same path then failed with "Database already open", and a waiting watch never ended. `Database::close`, Node `close()` and FFI `taladb_close` now release the file. Afterwards every operation through a retained handle fails with "database is closed", and every watch ends with `WatchClosed`. Transactions already running finish first.
+- **React Native: `TalaDBModule.close()` closes the database.** It only removed `global.__TalaDB__`, which left the file open and locked until the JavaScript garbage collector ran. An immediate `initialize()` of the same database failed with "Database already open". Close and reopen now work in sequence. A re-`initialize()` also closes the database it replaces.
+- **Indexed equality returns each document once.** A document whose array held both `"a"` and a string starting with `"a\0"` was returned once per matching index key, up to four times in the tests. `find`, compound-index equality, and the counts reported by `updateMany`, `deleteMany` and `aggregate` were affected.
+- **Aggregation is deterministic over `$or`, multi-field `$and` and full-text plans.** These plans fetched documents in hash-set order, which changed from call to call. `$push`, `$addToSet`, `$first`, `$last`, tie-breaking `$min`/`$max` and the last bits of a float `$sum` could differ between identical calls. Documents are now fetched in `_id` order, the order a full scan uses, so the indexed and unindexed results match exactly. `doc/aggregate_group` became 9–16% faster as a side effect.
+
+### Behavior changes
+
+- Opening an encrypted database without its passphrase, or a plaintext one with a passphrase, now fails instead of succeeding (see Security). Code that relied on the old silent behavior gets an `Encryption` error.
+- An index-covered `count` no longer reads documents. On damaged storage: an undecodable document under a matching key is counted, an undecodable index key is an error, and an index key with no document is counted. Healthy databases count exactly as before.
+- An `updateOne` or `deleteOne` that matches nothing now briefly opens, and rolls back, a write transaction. It therefore waits for the write slot like any other write.
+- After `close`, retained collection handles fail instead of keeping the file open (Rust, Node, FFI, React Native).
+- Counts reported by `updateMany`, `deleteMany` and `aggregate` drop where the duplicate-match bug inflated them.
+- Order-dependent aggregation results over `$or`, multi-field `$and` and full-text plans may differ from a given 0.13.1 result, and are now the same on every call.
+- New public Rust API, all additive: `Database::close`, `StorageBackend::close` (with a default that does nothing), and `document::MAX_VALUE_DEPTH`.
+
+### Encrypted databases opened without a passphrase (0.13.1 and earlier)
+
+A file damaged as described under Security has intact encrypted documents and one plaintext record: the schema version. 0.13.2 refuses to open it in either mode, with an error naming this damage, and writes nothing. The repair puts an encrypted version record back.
+
+**The repair exists only as Rust code using the `taladb` crate.** No Node, browser or React Native API can repair a file. A database in browser storage (OPFS or IndexedDB) cannot be repaired this way.
+
+**Before you start:**
+
+1. Stop every process that uses the database. The file is locked while open.
+2. Copy both the database file and its salt file, `<database file>.taladb-salt` (for example `app.redb.taladb-salt`), somewhere safe. Keep the copies until the repaired database has opened and you have checked your data.
+3. You need the passphrase and the **original** salt file. If the salt file was lost or replaced, the key cannot be derived and the data cannot be recovered with this procedure.
+4. Use `taladb` 0.13.2 with the `encryption` feature, plus `postcard = { version = "1", features = ["alloc"] }`.
+
+**Repair:**
+
+```rust
+use std::path::Path;
+use std::sync::Arc;
+
+use taladb::crypto::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, derive_key};
+use taladb::engine::{RedbBackend, StorageBackend};
+use taladb::index::{META_VERSION_KEY, META_VERSION_TABLE};
+use taladb::{CURRENT_SCHEMA_VERSION, Database, TalaDbError};
+
+fn repair(db: &Path, salt_file: &Path, passphrase: &str) -> Result<(), TalaDbError> {
+    let salt = std::fs::read(salt_file).map_err(|e| TalaDbError::Storage(e.to_string()))?;
+    let key = derive_key(passphrase, &salt, MIN_PBKDF2_ITERATIONS)?;
+    let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(db)?);
+    let enc = EncryptedBackend::new(raw, key);
+
+    // 1. Decrypt every document. This proves the passphrase and the salt, and
+    //    that no collection holds plaintext documents. On any error, stop:
+    //    nothing has been written.
+    {
+        let txn = enc.begin_read()?;
+        for table in txn.list_tables()? {
+            if table.starts_with("docs::") {
+                txn.scan_all(&table)?;
+            }
+        }
+    }
+
+    // 2. Write the schema version back, encrypted.
+    let mut txn = enc.begin_write()?;
+    txn.put(META_VERSION_TABLE, META_VERSION_KEY, &postcard::to_allocvec(&CURRENT_SCHEMA_VERSION)?)?;
+    txn.commit()?;
+    drop(enc);
+
+    // 3. Check that the passphrase opens it again.
+    Database::open_encrypted(db, passphrase)?.close()
+}
+```
+
+**Limitations:**
+
+- **The repair cannot fix a file that later received plaintext writes.** After the damage, a 0.13.1 open without the passphrase could still add plaintext documents. Step 1 then fails ("unsupported encrypted-value format version 0x1a") and nothing is written. No tool here separates such a mixture: restore the copy you made before the damage, or export the readable data by other means.
+- If you use Rust `Database::open_with_migrations`, your own migrations share the schema-version record. Write the version your last applied migration reached instead of `CURRENT_SCHEMA_VERSION`. The damaged record no longer holds it. Bindings' `userVersion` is stored separately and is unaffected.
+- **Detection reads only the first document of each collection.** It catches the damage, and later plaintext writes whose `_id` sorts after the encrypted documents (the usual case, since generated ids increase with time). It does **not** catch:
+  - plaintext documents whose `_id` sorts before every encrypted document in the collection, such as an older caller-supplied or synced `_id`;
+  - a damaged database with no documents, for example one with only indexes or one whose documents were all deleted.
+
+  In those cases a plain open succeeds, as it did in 0.13.1, and an open with the passphrase reports "this database is not encrypted". For the first case, step 1 of the repair fails safely. For an empty database, the repair works.
+
+### Known limitations
+
+- **`export_snapshot` / `exportSnapshot` of an encrypted database writes a plaintext snapshot.** Treat snapshots and backups of encrypted databases as unencrypted data.
+- **Reads no longer wait for writers, at some cost to write throughput under heavy read load.** In local x86_64 measurements (4 cores), an in-memory database with 4 busy readers and 2 writers completed 44% fewer writes per second than 0.13.1, and the 99th-percentile write latency was 4.3× higher, while reads per second rose 4.5×. Without that read load, in-memory write throughput is unchanged. For file-backed databases, write throughput is unchanged and 99th-percentile write latency was 1.35–2.5× higher. Linux mixed read/write timings were not measured.
+- `compact()` on an encrypted database does nothing and reports success.
+- `aggregate` does not decrypt field-encrypted values (Rust API).
+- In the browser, a wrong passphrase reports a bare `aead::Error` rather than the "wrong passphrase" message other bindings give.
+
+### Known regressions
+
+- **Indexed equality `count` at 100,000 documents on arm64 Linux** (`doc/count_indexed_eq/100000`) is still about 5% slower than in 0.12.1, as in 0.13.0 and 0.13.1. The 0.13.2 release benchmark run measured 1.055× against 0.12.1 and 0.999× against 0.13.1. It stays within the existing benchmark exception (up to 8%, `benchmarks/gates/exceptions.json`), which is unchanged. x86_64 is unchanged.
+
+No storage, index, snapshot or vector format changed, and the C ABI stays at version 2 (`TALADB_FFI_ABI_VERSION`). Rust MSRV stays 1.90, and cache budgets and durability defaults are unchanged. No index rebuild is needed, except that restoring a version 1 snapshot rebuilds its indexes. Because no format changed, 0.13.1 opens files written by 0.13.2. Going back to 0.13.1 brings back the behavior fixed above, including the damage from opening an encrypted database without its passphrase.
+
 ## 0.13.1 — 2026-11-15
 
 ### Fixes

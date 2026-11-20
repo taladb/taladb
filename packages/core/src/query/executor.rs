@@ -215,7 +215,32 @@ pub fn execute_limited(
         collection,
         deadline,
         limit,
-        false,
+        None,
+        &mut |doc| docs.push(doc),
+    )?;
+    Ok(docs)
+}
+
+/// [`execute`] that decodes only `fields` of each document (and its id), for a
+/// caller that reads nothing else. `fields` must include every field `filter`
+/// names, so the post-filter sees what it tests. The projected decoder checks
+/// skipped values as fully as a whole decode, so damaged bodies fail the same.
+pub(crate) fn execute_projected(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+    fields: super::filter_document::Fields<'_>,
+) -> Result<Vec<Document>, TalaDbError> {
+    let mut docs = Vec::new();
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        None,
+        None,
+        Some(fields),
         &mut |doc| docs.push(doc),
     )?;
     Ok(docs)
@@ -237,7 +262,7 @@ pub(crate) fn candidate_ids(
         collection,
         None,
         None,
-        true,
+        Some(super::filter_document::fields(filter)),
         &mut |doc| ids.push(doc.id),
     )?;
     Ok(ids)
@@ -273,7 +298,8 @@ fn execute_into(
     collection: &str,
     deadline: Option<Instant>,
     limit: Option<usize>,
-    ids_only: bool,
+    // `Some`: decode only these fields of each document (see `DocumentSink`).
+    fields: Option<super::filter_document::Fields<'_>>,
     emit: &mut dyn FnMut(Document),
 ) -> Result<(), TalaDbError> {
     // Check deadline up-front so callers that pass an already-expired deadline
@@ -289,7 +315,7 @@ fn execute_into(
     let mut results = DocumentSink {
         emit,
         count: 0,
-        fields: ids_only.then(|| super::filter_document::fields(filter)),
+        fields,
     };
 
     // `true` while more documents are still wanted.
@@ -353,6 +379,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 None,
+                Some(start.len()),
             )?;
         }
         QueryPlan::IndexRange { field, start, end } => {
@@ -368,6 +395,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 Some(&mut seen),
+                None,
             )?;
         }
         QueryPlan::IndexIn { field, ranges } => {
@@ -385,6 +413,7 @@ fn execute_into(
                     limit,
                     &mut results,
                     Some(&mut seen),
+                    None,
                 )?;
                 if !wants_more(&results) {
                     break;
@@ -428,7 +457,7 @@ fn execute_into(
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
                 .unwrap_or_default();
-            let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(intersection);
             fetch_filtered(
                 txn,
                 collection,
@@ -453,6 +482,7 @@ fn execute_into(
                 limit,
                 &mut results,
                 None,
+                Some(start.len()),
             )?;
         }
 
@@ -467,7 +497,7 @@ fn execute_into(
                     seen.insert(id_bytes);
                 }
             }
-            let ulids: Vec<Ulid> = seen.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(seen);
             fetch_filtered(
                 txn,
                 collection,
@@ -506,6 +536,7 @@ fn execute_into(
                         limit,
                         &mut results,
                         None,
+                        None,
                     )?;
                 }
                 return Ok(());
@@ -527,7 +558,7 @@ fn execute_into(
                 .into_iter()
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
                 .unwrap_or_default();
-            let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
+            let ulids = id_order(intersection);
             fetch_filtered(
                 txn,
                 collection,
@@ -541,6 +572,21 @@ fn execute_into(
     }
 
     Ok(())
+}
+
+/// The ids of an id-set plan (`IndexOr`, `IndexAnd`, `FtsSearch`) in id order.
+///
+/// Those plans gather ids in a `HashSet`, whose iteration order is seeded per
+/// set, so fetching in that order made the document order — and with it
+/// `aggregate`'s `$push`, `$addToSet`, `$first`, `$last`, tie-breaking
+/// `$min`/`$max` and the bits of a float `$sum` — change between identical
+/// calls. Id order is the order a full scan visits the docs table, so the
+/// result no longer depends on which plan was chosen, and the fetch walks the
+/// docs B-tree in key order.
+fn id_order(ids: HashSet<[u8; 16]>) -> Vec<Ulid> {
+    let mut ulids: Vec<Ulid> = ids.into_iter().map(Ulid::from_bytes).collect();
+    ulids.sort_unstable();
+    ulids
 }
 
 /// A filter with its per-query work (regex compilation, query tokenization)
@@ -737,6 +783,15 @@ fn fetch_filtered(
 /// Keep only a bounded page of index IDs ahead of the document fetch. Resume
 /// after the last raw key, preserving range order and deduplicating array and
 /// overlapping `$in` entries before decoding their bodies.
+///
+/// `exact_key_len` is for equality ranges (`value-prefix ++ 00…` to
+/// `value-prefix ++ FF…`): only keys of exactly that length hold the value
+/// itself. A Str/Bytes value with an escaped NUL extends a shorter value's
+/// prefix (`"a\0b"` is `"a"`'s prefix ++ 0xFF ++ …), so its keys also fall in
+/// the range — and an array holding both values used to be emitted twice.
+/// Skipping them returns each matching document once and never fetches a
+/// document whose only key in the range is another value. This is the same
+/// rule the key-only `count` applies.
 #[allow(clippy::too_many_arguments)]
 fn fetch_index_range(
     txn: &dyn ReadTxn,
@@ -749,6 +804,7 @@ fn fetch_index_range(
     limit: Option<usize>,
     out: &mut DocumentSink<'_>,
     mut seen: Option<&mut HashSet<Ulid>>,
+    exact_key_len: Option<usize>,
 ) -> Result<(), TalaDbError> {
     let mut last: Option<Vec<u8>> = None;
     loop {
@@ -769,7 +825,8 @@ fn fetch_index_range(
             let cursor = next.get_or_insert_with(Vec::new);
             cursor.clear();
             cursor.extend_from_slice(key);
-            if let Some(id) = ulid_from_index_key(key)
+            if exact_key_len.is_none_or(|n| key.len() == n)
+                && let Some(id) = ulid_from_index_key(key)
                 && seen.as_mut().is_none_or(|set| set.insert(id))
             {
                 ids.push(id);
@@ -886,15 +943,48 @@ pub fn count_matching(
     txn: &dyn ReadTxn,
     collection: &str,
 ) -> Result<u64, TalaDbError> {
+    count_matching_with_indexes(plan, filter, txn, collection, &[], &[])
+}
+
+/// [`count_matching`], also answering from index keys alone when
+/// [`visit_unique`](super::index_filter::visit_unique) can prove the filter
+/// from them — each matching document's key visited exactly once — so ranges,
+/// `$in` and compound equality count without fetching or decoding a body.
+///
+/// Like the equality count, a covered count reads no bodies: a damaged body
+/// under a matching key is counted rather than reported, and an undecodable
+/// index key is an error.
+pub(crate) fn count_matching_with_indexes(
+    plan: &QueryPlan,
+    filter: &Filter,
+    txn: &dyn ReadTxn,
+    collection: &str,
+    indexes: &[IndexDef],
+    compounds: &[CompoundIndexDef],
+) -> Result<u64, TalaDbError> {
     // An index scan whose plan exactly reproduces the filter needs no documents:
     // every entry in the range is a match by construction.
     if plan_is_exact_for(plan, filter) {
         return count_plan_entries(plan, txn, collection);
     }
+    let mut covered = 0u64;
+    if super::index_filter::visit_unique(filter, indexes, compounds, txn, collection, &mut |_| {
+        covered += 1;
+        Ok(())
+    })? {
+        return Ok(covered);
+    }
     let mut count = 0;
-    execute_into(plan, filter, txn, collection, None, None, true, &mut |_| {
-        count += 1
-    })?;
+    execute_into(
+        plan,
+        filter,
+        txn,
+        collection,
+        None,
+        None,
+        Some(super::filter_document::fields(filter)),
+        &mut |_| count += 1,
+    )?;
     Ok(count)
 }
 

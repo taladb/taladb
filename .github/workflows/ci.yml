@@ -185,6 +185,38 @@ jobs:
         run: cargo test -p taladb-web --target wasm32-unknown-unknown
 
   # ---------------------------------------------------------------------------
+  # Test — core engine on Linux arm64 hardware
+  #
+  # Every other test job runs on x86_64. Before this job, arm64 was covered
+  # only by benchmark fingerprints (Tier 0) and timing gates, which compare
+  # results but never run the functional suite, and an emulated (qemu) run of
+  # it takes hours. This runs the core crate's full suite on a native arm64
+  # runner: the same `--all-features` reasoning as `rust-check` applies.
+  # Scoped to `-p taladb` because the bindings add little arm64-specific code
+  # and lint/format already run once in `rust-check`.
+  # ---------------------------------------------------------------------------
+  rust-test-arm64:
+    name: Rust — test (linux arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: setup
+    if: needs.setup.outputs.code == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same as rust-check: `rust-toolchain.toml` decides the version.
+      - name: Sync pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64
+
+      - name: cargo test (core, all features)
+        run: cargo test -p taladb --all-features --locked
+
+  # ---------------------------------------------------------------------------
   # Benchmark Tier 0 — deterministic gates that need no baseline build
   #
   # Compared with the committed v0.12.1 references in benchmarks/baselines/:
@@ -677,6 +709,15 @@ jobs:
         working-directory: packages/bindings/node
         run: pnpm build
 
+      # The binding's own tests against the module just built. Deeply nested
+      # and self-referencing arguments must be refused with an error, not
+      # crash the process (napi's recursive conversion; v0.13.2 K7). The
+      # pathological cases run in child processes, so a regression is
+      # reported as a signal rather than killing the runner.
+      - name: Native module tests
+        working-directory: packages/bindings/node
+        run: node --test "tests/*.test.mjs"
+
       - name: Upload native module
         uses: actions/upload-artifact@v4
         with:
@@ -825,6 +866,7 @@ jobs:
     needs:
       - setup
       - rust-check
+      - rust-test-arm64
       - rust-audit
       - rust-msrv
       - rust-miri

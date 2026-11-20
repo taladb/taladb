@@ -137,6 +137,13 @@ int32_t taladb_compact(struct TalaDbHandle *handle);
 
 /**
  * Close the database and free the handle.
+ *
+ * The file and its lock are released at once, even while watches or
+ * background jobs started from this handle are still alive: those then fail
+ * with a "database is closed" error (a watch reports `WatchClosed`) instead
+ * of keeping the file open. A job whose transaction is already running
+ * finishes it first. If the close itself fails, the handle is still freed and
+ * the error is available from `taladb_last_error`.
  */
 void taladb_close(struct TalaDbHandle *handle);
 
@@ -448,9 +455,10 @@ char *taladb_call(struct TalaDbHandle *handle, const char *op, const char *args_
  * delivers no initial snapshot — read the current state with `taladb_find`
  * *after* this returns, so no write can fall between the two.
  *
- * The watch reads from the database it was created on and keeps its storage
- * open until `taladb_watch_close`, even after `taladb_close`. Returns NULL on
- * error.
+ * The watch reads from the database it was created on. After `taladb_close`
+ * it holds no storage: `taladb_watch_next` returns -1 with a `WatchClosed`
+ * error, and `taladb_watch_close` must still be called to free it. Returns
+ * NULL on error.
  */
 struct TalaDbWatch *taladb_watch(struct TalaDbHandle *handle,
                                  const char *collection,

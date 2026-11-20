@@ -357,8 +357,11 @@ pub fn index_table_name(collection: &str, field: &str) -> String {
     format!("idx::{collection}::{field}")
 }
 
+/// Prefix of every document table; [`docs_table_name`] builds the full name.
+pub(crate) const DOCS_TABLE_PREFIX: &str = "docs::";
+
 pub fn docs_table_name(collection: &str) -> String {
-    format!("docs::{collection}")
+    format!("{DOCS_TABLE_PREFIX}{collection}")
 }
 
 /// Table-name prefixes left behind by the replication engine removed in 0.11.

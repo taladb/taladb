@@ -48,8 +48,8 @@ RCT_EXPORT_MODULE(TalaDB)
 + (NSString * _Nullable)installInRuntime:(facebook::jsi::Runtime &)rt
                   dbPath:(NSString *)path
               configJson:(NSString * _Nullable)configJson {
-    // Release any previous HostObject before reopening the same redb file.
-    rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+    // Close any previous database before reopening the same redb file.
+    taladb::TalaDBHostObject::uninstall(rt);
     TalaDbHandle *handle = nullptr;
     if (configJson != nil) {
         handle = taladb_open_with_config(path.UTF8String, configJson.UTF8String);
@@ -137,7 +137,7 @@ RCT_EXPORT_METHOD(close:(RCTPromiseResolveBlock)resolve
     }
     bridge.jsCallInvoker->invokeAsync([bridge, resolve]() {
         auto &rt = *(Runtime *)bridge.runtime;
-        rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+        taladb::TalaDBHostObject::uninstall(rt);
         resolve(nil);
     });
 }

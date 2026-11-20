@@ -29,9 +29,11 @@ export declare class TalaDbNode {
   /**
    * Close the database, releasing the file handle and its lock.
    *
-   * Subsequent calls on this object return an error. Collections obtained
-   * before `close()` keep the underlying storage alive until they are
-   * garbage-collected — drop them too to fully release the file.
+   * The lock is released at once, even while collections obtained before
+   * `close()` are still reachable from JavaScript (they used to keep the
+   * file open until garbage-collected). Subsequent calls on this object, and
+   * on those collections, return a "database is closed" error. Calling
+   * `close()` again is a no-op.
    */
   close(): void
   /** List user collection names (excludes reserved `_`-prefixed collections). */
