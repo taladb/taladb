@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.2 — Unreleased
+## 0.13.2 — 2026-11-20
 
 A stabilization release: two query speed-ups, seven correctness and reliability fixes, and six security fixes. The most important one stops an encrypted database from being damaged when it is opened without its passphrase. **If your app uses encryption, read "Encrypted databases opened without a passphrase" below.**
 
