@@ -1,5 +1,0 @@
-PASS insert of a 100-level object is refused, not a crash -> taladb_insert failed
-PASS insert of a 10000-level object is refused, not a crash -> Maximum nesting level in JSON stringifyer exceeded
-PASS insert of a 100000-level object is refused, not a crash -> Maximum nesting level in JSON stringifyer exceeded
-PASS database still usable after deep inputs
-HARNESS EXIT failures=0
