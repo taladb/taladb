@@ -101,9 +101,9 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
     // -----------------------------------------------------------------------
 
     override fun close(promise: Promise) {
-        // The HostObject destructor calls taladb_close() when the JS GC
-        // collects `global.__TalaDB__`. For an explicit close, replace the
-        // global with undefined to trigger the destructor immediately.
+        // nativeClose closes the database through the HostObject, then clears
+        // `global.__TalaDB__`. Clearing the global alone would leave the file
+        // open until the JS GC collected the HostObject.
         try {
             reactContext.runOnJSQueueThread {
                 try {

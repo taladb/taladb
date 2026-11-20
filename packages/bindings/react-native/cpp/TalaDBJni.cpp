@@ -29,9 +29,9 @@ Java_com_taladb_TalaDBModule_nativeInstall(
         jstring  dbPathJ,
         jstring  configJsonJ)
 {
-    // Release any previous HostObject before reopening the same redb file.
+    // Close any previous database before reopening the same redb file.
     auto &rt = *reinterpret_cast<Runtime *>(jsContextNativePtr);
-    rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+    taladb::TalaDBHostObject::uninstall(rt);
 
     // Resolve db path
     const char *dbPathC = env->GetStringUTFChars(dbPathJ, nullptr);
@@ -60,5 +60,5 @@ Java_com_taladb_TalaDBModule_nativeInstall(
 extern "C" JNIEXPORT void JNICALL
 Java_com_taladb_TalaDBModule_nativeClose(JNIEnv *, jobject, jlong jsContextNativePtr) {
     auto &rt = *reinterpret_cast<Runtime *>(jsContextNativePtr);
-    rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+    taladb::TalaDBHostObject::uninstall(rt);
 }
