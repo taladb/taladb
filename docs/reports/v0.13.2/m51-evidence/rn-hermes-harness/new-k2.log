@@ -1,0 +1,27 @@
+PASS findNearest topK=NaN -> topK must be a non-negative integer below 2^64
+PASS searchText topK=NaN -> topK must be a non-negative integer below 2^64
+PASS findNearest topK=-1 -> topK must be a non-negative integer below 2^64
+PASS searchText topK=-1 -> topK must be a non-negative integer below 2^64
+PASS findNearest topK=Infinity -> topK must be a non-negative integer below 2^64
+PASS searchText topK=Infinity -> topK must be a non-negative integer below 2^64
+PASS findNearest topK=-Infinity -> topK must be a non-negative integer below 2^64
+PASS searchText topK=-Infinity -> topK must be a non-negative integer below 2^64
+PASS findNearest topK=100000000000000000000 -> topK must be a non-negative integer below 2^64
+PASS searchText topK=100000000000000000000 -> topK must be a non-negative integer below 2^64
+PASS findNearest topK=20000000000000000000 -> topK must be a non-negative integer below 2^64
+PASS searchText topK=20000000000000000000 -> topK must be a non-negative integer below 2^64
+PASS createVectorIndex dims=NaN -> dimensions must be a non-negative integer below 2^64
+PASS createVectorIndex dims=-5 -> dimensions must be a non-negative integer below 2^64
+PASS setUserVersion(NaN) -> version must be a non-negative integer below 2^32
+PASS setUserVersion(-1) -> version must be a non-negative integer below 2^32
+PASS setUserVersion(4294967296) -> version must be a non-negative integer below 2^32
+PASS setUserVersion(1e+300) -> version must be a non-negative integer below 2^32
+PASS setUserVersion(Infinity) -> version must be a non-negative integer below 2^32
+PASS setUserVersion("3") (not a number) -> version must be a number
+PASS findNearest query value 1e39 (beyond float) -> query vector value is outside the 32-bit float range
+PASS setUserVersion(2^32-1) accepted
+PASS setUserVersion(3.9) truncates to 3 as before
+PASS findNearest topK=1 works
+PASS findNearest topK=1.7 truncates to 1
+PASS findNearest topK=0 returns nothing
+HARNESS EXIT failures=0

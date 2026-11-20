@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "milestone": "v0.13.2 M5.1 final release closeout",
+  "generated": "2026-11-20",
+  "status_words": {
+    "verified": "run in M5.1 and the result seen",
+    "pending": "started, no result yet",
+    "not_executed": "nobody ran it"
+  },
+  "commits": {
+    "baseline_v0131": "236f5f1003d8d50eb5020917c4575200a9f9a9e4",
+    "dev_after_141": "ae525dca91961743dc47181645ac14f21cfcb0e8",
+    "pr142_head": "58e87df8379e520678346472c4655e5916dded90",
+    "pr143_head": "00a569a0a9f49abefa8a04b9a936242f08934917",
+    "release_candidate_source": "1e8129cced2fb4e04da7560267472df46d2d9e8c",
+    "pr144_docs_only": "10006db, merged as a461176 (CHANGELOG.md only)",
+    "dev_head": "a461176098e2ee58c56dc4cd6589050832b67889"
+  },
+  "pull_requests": {
+    "141": {
+      "state": "merged",
+      "merged_at": "2026-11-20T00:15:30Z",
+      "merged_by": "akosidencio",
+      "merge_commit": "ae525dc"
+    },
+    "142": {
+      "state": "merged",
+      "merged_at": "2026-11-20T01:49:53Z",
+      "merged_by": "akosidencio",
+      "merge_commit": "18938a0",
+      "pr_ci": {
+        "run": 44655653021,
+        "result": "16/16 pass",
+        "completed": "2026-11-20T01:55:48Z",
+        "note": "merged ~6 min before its own CI finished; performance.yml not triggered (path filter: no core/web/Cargo change)"
+      }
+    },
+    "143": {
+      "state": "merged",
+      "merged_at": "2026-11-20T01:50:34Z",
+      "merged_by": "akosidencio",
+      "merge_commit": "1e8129c",
+      "pr_ci": {
+        "runs": {
+          "CI": 44655912015,
+          "Vector performance": 44655912087
+        },
+        "result": "24 pass, 1 skipping (performance.yml Tier 0 placeholder, by design)",
+        "note": "merged before CI (01:54:31Z) and Vector performance finished"
+      }
+    },
+    "144": {
+      "state": "merged",
+      "merged_at": "2026-11-20T02:53:08Z",
+      "merged_by": "akosidencio",
+      "merge_commit": "a461176",
+      "content": "CHANGELOG numbers from run 44657268466 + Known regressions entry",
+      "pr_ci": "2 pass, 13 skipping (docs-only)",
+      "dev_push_ci": "not run (docs-only change)"
+    }
+  },
+  "release_candidate_ci": {
+    "commit": "1e8129cced2fb4e04da7560267472df46d2d9e8c",
+    "dev_push_ci": {
+      "run": 44656529929,
+      "result": "success",
+      "jobs": "16/16",
+      "jobs_list": [
+        "Setup — resolve build matrix",
+        "TypeScript — type check",
+        "Rust — MSRV",
+        "Rust — fmt / clippy / test",
+        "Rust — fuzz (smoke)",
+        "Rust — cargo audit",
+        "React Native — native glue",
+        "Rust — miri (FFI pointer layer)",
+        "Benchmarks — Tier 0 (ubuntu-latest)",
+        "Benchmarks — Tier 0 (ubuntu-24.04-arm)",
+        "Build — CLI (ubuntu-latest)",
+        "Build — Node.js (ubuntu-latest)",
+        "Build — WASM",
+        "Build — @taladb/react (TS)",
+        "Build — taladb (TS)",
+        "CI — all checks passed"
+      ]
+    },
+    "intermediate_18938a0_push_ci": {
+      "run": 44656447855,
+      "result": "16/16 success"
+    },
+    "tier2_performance": {
+      "run": 44657268466,
+      "result": "success",
+      "jobs": "15 pass + Tier 0 placeholder skipped",
+      "see": "V0132_FINAL_RELEASE_PERFORMANCE_RESULTS.json"
+    }
+  },
+  "required_checks_on_candidate": {
+    "rust_workspace_tests_fmt_clippy": "verified (CI 44656529929, Rust — fmt / clippy / test)",
+    "msrv_1_90": "verified (CI 44656529929)",
+    "browser_wasm_opfs": "verified: Build — WASM (CI 44656529929); Browser worker + OPFS pr + cumulative (Tier 2 44657268466)",
+    "node_build_client_tests": "verified: Build — Node.js, Build — taladb (TS), Build — @taladb/react (TS) (CI 44656529929)",
+    "ffi_header": "verified: React Native — native glue incl. gen-header.sh --check (CI 44656529929); locally on both branches",
+    "linux_x86_64_arm64_benchmark_gates": "verified: Tier 0 both archs (CI 44656529929); Criterion + Vector both archs (Tier 2 44657268466)",
+    "tier0_fingerprints_mem2": "verified: Benchmarks — Tier 0 x86_64 + arm64 green (CI 44656529929)",
+    "tier2_vs_v0131_and_cumulative_v0121": "verified: run 44657268466 green; one pre-approved exception applied (arm64 cumulative doc/count_indexed_eq/100000 1.055)",
+    "cargo_audit": "verified (CI 44656529929)",
+    "miri": "verified (CI 44656529929, FFI pointer layer)",
+    "fuzz_smoke": "verified (CI 44656529929)",
+    "linux_arm64_functional_tests": "pending: emulated qemu run on the ae525dc tree (packages/core identical to 1e8129c except fuzz/Cargo.lock); partial 16 binaries, 348 passed, 0 failed when read; not complete",
+    "react_native_device": "not_executed (iOS simulator, Android emulator, device)",
+    "windows": "not_executed"
+  },
+  "local_m51": {
+    "pr141_review_probes": {
+      "file": "m51-evidence/s1-probes/m51probe_mixed.rs",
+      "output": "m51-evidence/s1-probes/probe-output.txt",
+      "commit": "ae525dc",
+      "result": "6 passed (observation tests)",
+      "observations": {
+        "A_plaintext_after_ciphertext_same_collection": "plain open refused (names 0.13.1); strict repair refuses, writes nothing",
+        "B_plaintext_supplied_old_ulid_sorts_first": "plain open OPENS; passphrase open says 'not encrypted'; strict repair refuses",
+        "C_plaintext_derived_id": "plain open refused in 64/64 trials",
+        "D_damaged_zero_documents_index_only": "plain open OPENS; passphrase open says 'not encrypted'; strict repair repairs; then opens (0 docs)",
+        "E_damaged_all_documents_deleted": "plain open OPENS; passphrase open says 'not encrypted'; strict repair repairs",
+        "F_B_then_public_api_insert": "insert succeeds (plaintext); strict repair refuses"
+      }
+    },
+    "changelog_repair_recipe": {
+      "file": "m51-evidence/s1-probes/m51probe_recipe.rs",
+      "output": "m51-evidence/s1-probes/recipe-output.txt",
+      "commit": "ae525dc",
+      "result": "2 passed: repairs both shapes (5/5 docs + index readable); refuses wrong passphrase (aead::Error) and mixed file (format version 0x1a) with every table unchanged"
+    },
+    "rn_hermes_host_harness": {
+      "runtime": "Hermes 0.14.1 (hermes-ios debug artifact, macosx slice, sha1 450a62e73a8884823a4ccea10b9e59c079b82e28), ASan + UBSan (vptr off), libtaladb_ffi.a debug from ae525dc",
+      "files": "m51-evidence/rn-hermes-harness/",
+      "dev_ae525dc": {
+        "smoke": "15 pass, 3 fail (reopen after TalaDBModule.close() locked, also after forced GC)",
+        "k1": "ASan heap-use-after-free, exit 134",
+        "k2": "UBSan float-cast-overflow at lines 518/585/680/736, invalid values accepted, JSI assert abort, exit 134",
+        "deep": "4/4"
+      },
+      "pr142": {
+        "smoke": "22/22",
+        "k1": "3/3",
+        "k2": "26/26",
+        "deep": "4/4"
+      }
+    },
+    "rn_cpp_syntax": "clang++ -fsyntax-only -Wall -Wextra TalaDBHostObject.cpp + TalaDBJni.cpp vs RN 0.83.4 JSI: clean (PR #142)",
+    "ffi_header_check": "gen-header.sh --check exit 0 on release/v0.13.2 and fix/v0132-m51-rn-jsi-safety; TALADB_FFI_ABI_VERSION 2",
+    "sync_version_check": "node scripts/sync-version.js --check 0.13.2: pass",
+    "node_k7_depth": {
+      "binary": "@taladb/node darwin-x64 built from 39bd9ac (Node binding identical to dev)",
+      "node": "v22.23.4",
+      "results": {
+        "100": "error (64-level)",
+        "1000": "error",
+        "2000": "error",
+        "4000": "error",
+        "6000": "error",
+        "10000": "SIGSEGV exit 139"
+      }
+    },
+    "arm64_emulated": {
+      "status": "pending",
+      "container": "8596dbb53085",
+      "image": "rust:1.98-slim-bookworm linux/arm64 (qemu)",
+      "command": "cargo test -p taladb --all-features",
+      "tree": "ae525dc packages/ (diff -rq identical)",
+      "partial": "16 binaries, 348 passed, 0 failed",
+      "evidence_on_completion": "m51-evidence/arm64-emulated.txt",
+      "caveat": "ARM_EXIT in its log is grep's exit status; read the test result lines"
+    }
+  },
+  "not_executed": [
+    "React Native on iOS simulator, Android emulator or device; TalaDB.mm compilation",
+    "Swift / Kotlin beyond CI compilation",
+    "S1-damaged OPFS file in a real browser",
+    "R3 mixed read/write timing on Linux",
+    "Linux arm64 functional tests on real hardware",
+    "Windows",
+    "Published npm / crates artifacts (nothing published)"
+  ]
+}

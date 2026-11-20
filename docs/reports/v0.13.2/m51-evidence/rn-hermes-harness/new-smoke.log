@@ -1,0 +1,24 @@
+PASS insert returns an id
+PASS find all
+PASS find filter
+PASS findOne
+PASS count
+PASS updateOne
+PASS deleteOne
+PASS indexed find
+PASS userVersion
+PASS callAsync find
+PASS findAsync
+PASS method after close() errors instead of crashing -> taladb_find failed
+PASS reopen after close() sees data
+PASS reopen keeps index + userVersion
+OBSERVE TalaDBModule.close() then immediate reopen of the same file -> ok 
+PASS module close releases the file (reopen succeeds)
+PASS encrypted insert/find
+PASS plain open of encrypted db is refused -> encryption error: the database's schema version record cannot be read with the key it was opened with (none, or a different one): the databa
+PASS wrong passphrase is refused -> encryption error: wrong passphrase, or the file was not encrypted with it (aead::Error)
+PASS correct passphrase after refusals opens with data intact
+PASS passphrase open of plaintext db is refused -> encryption error: this database is not encrypted; open it without a passphrase. Nothing was changed
+PASS no salt sidecar invented for the plaintext db
+PASS plaintext db still opens plainly after refused passphrase open
+HARNESS EXIT failures=0

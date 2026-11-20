@@ -1,0 +1,24 @@
+
+running 6 tests
+PROBE A same-collection, plaintext AFTER ciphertext (new ULID): plain open -> refused: encryption error: this database's schema version record is not encrypted but the documents in `docs::secrets` are: the damage an open without the passphrase causes in TalaDB 0.13.1 and earlier. The documents are intact; see the 0.13.2 release notes to repair it. Nothing was changed
+PROBE A same-collection, plaintext AFTER ciphertext (new ULID): passphrase open before repair -> Err(Encryption("this database's schema version record is not encrypted but its documents are: the damage an open without the passphrase causes in TalaDB 0.13.1 and earlier. The documents are intact; see the 0.13.2 release notes to repair it. Nothing was changed"))
+PROBE A same-collection, plaintext AFTER ciphertext (new ULID): strict repair -> Err("docs::secrets: encryption error: unsupported encrypted-value format version 0x1a; expected 0x01")
+PROBE A same-collection, plaintext AFTER ciphertext (new ULID): passphrase open after repair -> Err(Encryption("this database's schema version record is not encrypted but its documents are: the damage an open without the passphrase causes in TalaDB 0.13.1 and earlier. The documents are intact; see the 0.13.2 release notes to repair it. Nothing was changed"))
+.PROBE B same-collection, plaintext FIRST (supplied old ULID): plain open -> OPENED
+PROBE B same-collection, plaintext FIRST (supplied old ULID): passphrase open before repair -> Err(Encryption("this database is not encrypted; open it without a passphrase. Nothing was changed"))
+PROBE B same-collection, plaintext FIRST (supplied old ULID): strict repair -> Err("docs::secrets: encryption error: unsupported encrypted-value format version 0x1a; expected 0x01")
+PROBE B same-collection, plaintext FIRST (supplied old ULID): passphrase open after repair -> Err(Encryption("this database is not encrypted; open it without a passphrase. Nothing was changed"))
+.PROBE C derived-id plaintext doc in encrypted collection: plain open OPENED in 0/64 trials
+.PROBE D encrypted DB, zero documents (index only): plain open -> OPENED
+PROBE D encrypted DB, zero documents (index only): passphrase open before repair -> Err(Encryption("this database is not encrypted; open it without a passphrase. Nothing was changed"))
+PROBE D encrypted DB, zero documents (index only): strict repair -> Ok(())
+PROBE D encrypted DB, zero documents (index only): passphrase open after repair -> Ok(Ok(0))
+.PROBE E encrypted DB, all documents deleted: plain open -> OPENED
+PROBE E encrypted DB, all documents deleted: passphrase open before repair -> Err(Encryption("this database is not encrypted; open it without a passphrase. Nothing was changed"))
+PROBE E encrypted DB, all documents deleted: strict repair -> Ok(())
+PROBE E encrypted DB, all documents deleted: passphrase open after repair -> Ok(Ok(0))
+.PROBE F plain insert after B -> Ok("inserted")
+PROBE F strict repair -> Err("docs::secrets: encryption error: unsupported encrypted-value format version 0x1a; expected 0x01")
+.
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 649.26s
+
