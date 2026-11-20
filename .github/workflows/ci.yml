@@ -677,6 +677,15 @@ jobs:
         working-directory: packages/bindings/node
         run: pnpm build
 
+      # The binding's own tests against the module just built. Deeply nested
+      # and self-referencing arguments must be refused with an error, not
+      # crash the process (napi's recursive conversion; v0.13.2 K7). The
+      # pathological cases run in child processes, so a regression is
+      # reported as a signal rather than killing the runner.
+      - name: Native module tests
+        working-directory: packages/bindings/node
+        run: node --test "tests/*.test.mjs"
+
       - name: Upload native module
         uses: actions/upload-artifact@v4
         with:
