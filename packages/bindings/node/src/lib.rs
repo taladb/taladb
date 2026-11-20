@@ -8,6 +8,8 @@ use taladb_core::{
     VectorMetric, VectorSearchResult,
 };
 
+mod napi_json;
+
 fn err_to_napi(e: TalaDbError) -> napi::Error {
     napi::Error::from_reason(format!("{}: {}", e.code(), e))
 }
@@ -18,10 +20,11 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
 
 /// Reject caller-supplied JSON nested deeper than the engine's ceiling.
 ///
-/// napi builds a `serde_json::Value` by walking a live JS object graph, with no
-/// depth limit of its own — `serde_json`'s 128-level cap applies only to its
-/// string parser, which this path never uses. Without this, a caller sets the
-/// recursion depth of `json_to_filter`, `json_to_update` and `json_to_value`.
+/// Arguments arrive as `serde_json::Value`s built from a live JS object graph
+/// by [`napi_json::JsonValue`], whose only limit is a 256-level conversion
+/// bound — `serde_json`'s 128-level cap applies only to its string parser,
+/// which this path never uses. Without this, a caller sets the recursion depth
+/// of `json_to_filter`, `json_to_update` and `json_to_value` up to that bound.
 ///
 /// Applied inside the three converters rather than at each of the ~20 exported
 /// methods, so a new method cannot forget it.
@@ -364,24 +367,26 @@ pub struct CollectionNode {
 impl CollectionNode {
     /// Insert a document. Returns the ULID string id.
     #[napi]
-    pub fn insert(&self, doc: JsonValue) -> napi::Result<String> {
-        let fields = obj_to_fields(doc)?;
+    pub fn insert(&self, doc: napi_json::JsonValue) -> napi::Result<String> {
+        let fields = obj_to_fields(doc.into_inner())?;
         let id = self.inner.insert(fields).map_err(err_to_napi)?;
         Ok(id.to_string())
     }
 
     /// Insert multiple documents.
     #[napi(js_name = "insertMany")]
-    pub fn insert_many(&self, docs: Vec<JsonValue>) -> napi::Result<Vec<String>> {
-        let items: napi::Result<Vec<Vec<(String, Value)>>> =
-            docs.into_iter().map(obj_to_fields).collect();
+    pub fn insert_many(&self, docs: Vec<napi_json::JsonValue>) -> napi::Result<Vec<String>> {
+        let items: napi::Result<Vec<Vec<(String, Value)>>> = docs
+            .into_iter()
+            .map(|d| obj_to_fields(d.into_inner()))
+            .collect();
         let ids = self.inner.insert_many(items?).map_err(err_to_napi)?;
         Ok(ids.iter().map(taladb_core::Ulid::to_string).collect())
     }
 
     /// Find documents matching the filter.
     #[napi]
-    pub fn find(&self, filter: JsonValue) -> napi::Result<Vec<JsonValue>> {
+    pub fn find(&self, filter: napi_json::JsonValue) -> napi::Result<Vec<JsonValue>> {
         let f = json_to_filter(&filter)?;
         let docs = self.inner.find(f).map_err(err_to_napi)?;
         Ok(docs.iter().map(doc_to_json).collect())
@@ -389,7 +394,7 @@ impl CollectionNode {
 
     /// Find a single document or return null.
     #[napi(js_name = "findOne")]
-    pub fn find_one(&self, filter: JsonValue) -> napi::Result<Option<JsonValue>> {
+    pub fn find_one(&self, filter: napi_json::JsonValue) -> napi::Result<Option<JsonValue>> {
         let f = json_to_filter(&filter)?;
         let doc = self.inner.find_one(f).map_err(err_to_napi)?;
         Ok(doc.map(|d| doc_to_json(&d)))
@@ -399,7 +404,7 @@ impl CollectionNode {
     /// stage objects (`$match`, `$group`, `$sort`, `$skip`, `$limit`,
     /// `$project`). Returns the resulting documents.
     #[napi]
-    pub fn aggregate(&self, pipeline: JsonValue) -> napi::Result<Vec<JsonValue>> {
+    pub fn aggregate(&self, pipeline: napi_json::JsonValue) -> napi::Result<Vec<JsonValue>> {
         let pl = taladb_core::aggregate::parse_pipeline(&pipeline, &|v| {
             json_to_filter(v).map_err(|e| e.to_string())
         })
@@ -410,37 +415,45 @@ impl CollectionNode {
 
     /// Update the first matching document.
     #[napi(js_name = "updateOne")]
-    pub fn update_one(&self, filter: JsonValue, update: JsonValue) -> napi::Result<bool> {
+    pub fn update_one(
+        &self,
+        filter: napi_json::JsonValue,
+        update: napi_json::JsonValue,
+    ) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
-        let u = json_to_update(update)?;
+        let u = json_to_update(update.into_inner())?;
         self.inner.update_one(f, u).map_err(err_to_napi)
     }
 
     /// Update all matching documents.
     #[napi(js_name = "updateMany")]
-    pub fn update_many(&self, filter: JsonValue, update: JsonValue) -> napi::Result<u32> {
+    pub fn update_many(
+        &self,
+        filter: napi_json::JsonValue,
+        update: napi_json::JsonValue,
+    ) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let u = json_to_update(update)?;
+        let u = json_to_update(update.into_inner())?;
         self.inner.update_many_u32(f, u).map_err(err_to_napi)
     }
 
     /// Delete the first matching document.
     #[napi(js_name = "deleteOne")]
-    pub fn delete_one(&self, filter: JsonValue) -> napi::Result<bool> {
+    pub fn delete_one(&self, filter: napi_json::JsonValue) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
         self.inner.delete_one(f).map_err(err_to_napi)
     }
 
     /// Delete all matching documents.
     #[napi(js_name = "deleteMany")]
-    pub fn delete_many(&self, filter: JsonValue) -> napi::Result<u32> {
+    pub fn delete_many(&self, filter: napi_json::JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         self.inner.delete_many_u32(f).map_err(err_to_napi)
     }
 
     /// Count documents matching the filter.
     #[napi]
-    pub fn count(&self, filter: JsonValue) -> napi::Result<u32> {
+    pub fn count(&self, filter: napi_json::JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         let n = self.inner.count(f).map_err(err_to_napi)?;
         count_to_u32(n)
@@ -544,14 +557,14 @@ impl CollectionNode {
         field: String,
         query: String,
         top_k: u32,
-        filter: Option<JsonValue>,
-        options: Option<JsonValue>,
+        filter: Option<napi_json::JsonValue>,
+        options: Option<napi_json::JsonValue>,
     ) -> napi::Result<Vec<JsonValue>> {
         let pre_filter = match filter {
             Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
             _ => None,
         };
-        let bm25 = parse_bm25_options(options.as_ref());
+        let bm25 = parse_bm25_options(options.as_deref());
 
         let results = self
             .inner
@@ -580,8 +593,8 @@ impl CollectionNode {
         vector_field: String,
         vector: Vec<f64>,
         top_k: u32,
-        filter: Option<JsonValue>,
-        options: Option<JsonValue>,
+        filter: Option<napi_json::JsonValue>,
+        options: Option<napi_json::JsonValue>,
     ) -> napi::Result<Vec<JsonValue>> {
         let vector_f32: Vec<f32> = vector.iter().map(|&f| f as f32).collect();
         let pre_filter = match filter {
@@ -597,8 +610,8 @@ impl CollectionNode {
             top_k as usize,
         );
         query.filter = pre_filter;
-        query.bm25 = parse_bm25_options(options.as_ref());
-        query.rrf = parse_rrf_options(options.as_ref());
+        query.bm25 = parse_bm25_options(options.as_deref());
+        query.rrf = parse_rrf_options(options.as_deref());
         query.candidates = options
             .as_ref()
             .and_then(|o| o.get("candidates"))
@@ -624,15 +637,18 @@ impl CollectionNode {
 
     /// Internal command protocol for advanced vector search and index lifecycle.
     #[napi(js_name = "vectorCommand")]
-    pub fn vector_command(&self, request: JsonValue) -> napi::Result<JsonValue> {
-        run_vector_command(&self.inner, request)
+    pub fn vector_command(&self, request: napi_json::JsonValue) -> napi::Result<JsonValue> {
+        run_vector_command(&self.inner, request.into_inner())
     }
 
     #[napi(js_name = "vectorCommandAsync", ts_return_type = "Promise<any>")]
-    pub fn vector_command_async(&self, request: JsonValue) -> AsyncTask<VectorCommandTask> {
+    pub fn vector_command_async(
+        &self,
+        request: napi_json::JsonValue,
+    ) -> AsyncTask<VectorCommandTask> {
         AsyncTask::new(VectorCommandTask {
             collection: Arc::clone(&self.inner),
-            request,
+            request: request.into_inner(),
         })
     }
 
@@ -647,7 +663,7 @@ impl CollectionNode {
         field: String,
         query: Vec<f64>,
         top_k: u32,
-        filter: Option<JsonValue>,
+        filter: Option<napi_json::JsonValue>,
     ) -> napi::Result<Vec<JsonValue>> {
         let query_f32: Vec<f32> = query.iter().map(|&f| f as f32).collect();
 
@@ -673,7 +689,7 @@ impl CollectionNode {
         field: String,
         query: Float32Array,
         top_k: u32,
-        filter: Option<JsonValue>,
+        filter: Option<napi_json::JsonValue>,
     ) -> napi::Result<Vec<JsonValue>> {
         let pre_filter = match filter {
             Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
@@ -697,7 +713,7 @@ impl CollectionNode {
         field: String,
         query: Float32Array,
         top_k: u32,
-        filter: Option<JsonValue>,
+        filter: Option<napi_json::JsonValue>,
     ) -> napi::Result<AsyncTask<FindNearestTask>> {
         let pre_filter = match filter {
             Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
@@ -715,7 +731,7 @@ impl CollectionNode {
     /// Async variant of `find` — runs on the libuv thread pool so large
     /// collection scans don't block the JS thread.
     #[napi(js_name = "findAsync", ts_return_type = "Promise<Array<any>>")]
-    pub fn find_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<FindTask>> {
+    pub fn find_async(&self, filter: napi_json::JsonValue) -> napi::Result<AsyncTask<FindTask>> {
         let f = json_to_filter(&filter)?;
         Ok(AsyncTask::new(FindTask {
             collection: Arc::clone(&self.inner),
@@ -726,8 +742,8 @@ impl CollectionNode {
     /// Async variant of `insert` — the write runs on the libuv thread pool
     /// instead of blocking the JS thread.
     #[napi(js_name = "insertAsync", ts_return_type = "Promise<string>")]
-    pub fn insert_async(&self, doc: JsonValue) -> napi::Result<AsyncTask<InsertTask>> {
-        let fields = obj_to_fields(doc)?;
+    pub fn insert_async(&self, doc: napi_json::JsonValue) -> napi::Result<AsyncTask<InsertTask>> {
+        let fields = obj_to_fields(doc.into_inner())?;
         Ok(AsyncTask::new(InsertTask {
             collection: Arc::clone(&self.inner),
             fields: Some(fields),
@@ -738,10 +754,12 @@ impl CollectionNode {
     #[napi(js_name = "insertManyAsync", ts_return_type = "Promise<Array<string>>")]
     pub fn insert_many_async(
         &self,
-        docs: Vec<JsonValue>,
+        docs: Vec<napi_json::JsonValue>,
     ) -> napi::Result<AsyncTask<InsertManyTask>> {
-        let items: napi::Result<Vec<Vec<(String, Value)>>> =
-            docs.into_iter().map(obj_to_fields).collect();
+        let items: napi::Result<Vec<Vec<(String, Value)>>> = docs
+            .into_iter()
+            .map(|d| obj_to_fields(d.into_inner()))
+            .collect();
         Ok(AsyncTask::new(InsertManyTask {
             collection: Arc::clone(&self.inner),
             items: Some(items?),
@@ -752,13 +770,13 @@ impl CollectionNode {
     #[napi(js_name = "updateOneAsync", ts_return_type = "Promise<boolean>")]
     pub fn update_one_async(
         &self,
-        filter: JsonValue,
-        update: JsonValue,
+        filter: napi_json::JsonValue,
+        update: napi_json::JsonValue,
     ) -> napi::Result<AsyncTask<UpdateOneTask>> {
         Ok(AsyncTask::new(UpdateOneTask {
             collection: Arc::clone(&self.inner),
             filter: json_to_filter(&filter)?,
-            update: json_to_update(update)?,
+            update: json_to_update(update.into_inner())?,
         }))
     }
 
@@ -766,19 +784,22 @@ impl CollectionNode {
     #[napi(js_name = "updateManyAsync", ts_return_type = "Promise<number>")]
     pub fn update_many_async(
         &self,
-        filter: JsonValue,
-        update: JsonValue,
+        filter: napi_json::JsonValue,
+        update: napi_json::JsonValue,
     ) -> napi::Result<AsyncTask<UpdateManyTask>> {
         Ok(AsyncTask::new(UpdateManyTask {
             collection: Arc::clone(&self.inner),
             filter: json_to_filter(&filter)?,
-            update: json_to_update(update)?,
+            update: json_to_update(update.into_inner())?,
         }))
     }
 
     /// Async variant of `deleteOne`.
     #[napi(js_name = "deleteOneAsync", ts_return_type = "Promise<boolean>")]
-    pub fn delete_one_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<DeleteOneTask>> {
+    pub fn delete_one_async(
+        &self,
+        filter: napi_json::JsonValue,
+    ) -> napi::Result<AsyncTask<DeleteOneTask>> {
         Ok(AsyncTask::new(DeleteOneTask {
             collection: Arc::clone(&self.inner),
             filter: json_to_filter(&filter)?,
@@ -787,7 +808,10 @@ impl CollectionNode {
 
     /// Async variant of `deleteMany`.
     #[napi(js_name = "deleteManyAsync", ts_return_type = "Promise<number>")]
-    pub fn delete_many_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<DeleteManyTask>> {
+    pub fn delete_many_async(
+        &self,
+        filter: napi_json::JsonValue,
+    ) -> napi::Result<AsyncTask<DeleteManyTask>> {
         Ok(AsyncTask::new(DeleteManyTask {
             collection: Arc::clone(&self.inner),
             filter: json_to_filter(&filter)?,
@@ -1151,18 +1175,18 @@ mod close_tests {
         let path = file.to_string_lossy().into_owned();
         let mut db = TalaDBNode::open(path.clone(), None, None).unwrap();
         let col = db.collection("c".into()).unwrap();
-        col.insert(serde_json::json!({"x": 1})).unwrap();
+        col.insert(serde_json::json!({"x": 1}).into()).unwrap();
 
         db.close().unwrap();
         db.close().unwrap(); // idempotent
 
-        let err = col.count(serde_json::json!({})).unwrap_err();
+        let err = col.count(serde_json::json!({}).into()).unwrap_err();
         assert!(err.reason.contains("closed"), "{}", err.reason);
         let reopened = TalaDBNode::open(path, None, None).expect("lock released");
         let n = reopened
             .collection("c".into())
             .unwrap()
-            .count(serde_json::json!({}))
+            .count(serde_json::json!({}).into())
             .unwrap();
         assert_eq!(n, 1);
         drop(reopened);
