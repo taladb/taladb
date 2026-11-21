@@ -16,7 +16,9 @@
  *  How the module reaches the JS runtime depends on the architecture:
  *   - New Architecture (always on from React Native 0.82, where the legacy
  *     bridge is gone): the TurboModule manager hands the runtime and its
- *     CallInvoker to `installJSIBindingsWithRuntime:callInvoker:`. It only
+ *     CallInvoker to `installJSIBindingsWithRuntime:callInvoker:` (RN 0.77+),
+ *     or only the runtime to `installJSIBindingsWithRuntime:` (RN 0.75–0.76;
+ *     the CallInvoker then comes from `getTurboModule:`'s params). It only
  *     does so for modules that implement `getTurboModule:`, so that is
  *     implemented here with the Codegen spec.
  *   - Legacy bridge (RN < 0.82 with the New Architecture disabled):
@@ -64,9 +66,9 @@ using namespace facebook::jsi;
 
 @implementation TalaDB {
 #if TALADB_USE_JSI_BINDINGS
-    // Set by installJSIBindingsWithRuntime:callInvoker: before any JS call can
-    // reach this module. Both belong to the React instance that owns this
-    // module and are torn down with it on reload.
+    // Set by getTurboModule: and installJSIBindingsWithRuntime:[callInvoker:]
+    // before any JS call can reach this module. Both belong to the React
+    // instance that owns this module and are torn down with it on reload.
     facebook::jsi::Runtime *_runtime;
     std::shared_ptr<facebook::react::CallInvoker> _callInvoker;
 #endif
@@ -77,14 +79,28 @@ RCT_EXPORT_MODULE(TalaDB)
 #if TALADB_USE_JSI_BINDINGS
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params {
+    // The manager's JS CallInvoker. RN 0.75–0.76 never pass it to the
+    // one-argument installer below, so keep it from here.
+    _callInvoker = params.jsInvoker;
     return std::make_shared<facebook::react::NativeTalaDBSpecJSI>(params);
 }
 
+// RN 0.77+: preferred by the manager when implemented (0.82+ only call this).
 - (void)installJSIBindingsWithRuntime:(facebook::jsi::Runtime &)runtime
                           callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
     _runtime = &runtime;
     _callInvoker = callInvoker;
 }
+
+// RN 0.75–0.76: the only variant the manager calls, right after
+// getTurboModule:. Deprecated in 0.77–0.81 and ignored there, because the
+// manager calls the callInvoker variant above instead.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+- (void)installJSIBindingsWithRuntime:(facebook::jsi::Runtime &)runtime {
+    _runtime = &runtime;
+}
+#pragma clang diagnostic pop
 #endif
 
 // Runs `work` on the JS thread with the live runtime. Returns NO when no
