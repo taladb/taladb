@@ -10,9 +10,19 @@
  *
  * Runtime flow
  * ------------
- *  AppDelegate calls `[TalaDB installInRuntime:rt dbPath:path]` once the
- *  React bridge is ready.  This opens the Rust database and installs
+ *  `initialize(dbName)` opens the Rust database on the JS thread and installs
  *  `global.__TalaDB__` as a JSI HostObject.
+ *
+ *  How the module reaches the JS runtime depends on the architecture:
+ *   - New Architecture (always on from React Native 0.82, where the legacy
+ *     bridge is gone): the TurboModule manager hands the runtime and its
+ *     CallInvoker to `installJSIBindingsWithRuntime:callInvoker:` (RN 0.77+),
+ *     or only the runtime to `installJSIBindingsWithRuntime:` (RN 0.75–0.76;
+ *     the CallInvoker then comes from `getTurboModule:`'s params). It only
+ *     does so for modules that implement `getTurboModule:`, so that is
+ *     implemented here with the Codegen spec.
+ *   - Legacy bridge (RN < 0.82 with the New Architecture disabled):
+ *     `RCTCxxBridge` exposes `runtime` and `jsCallInvoker`.
  *
  *  NativeTalaDB.ts routes all synchronous CRUD calls directly through
  *  `global.__TalaDB__` — the TurboModule stubs below satisfy Codegen but
@@ -23,12 +33,23 @@
 #import <ReactCommon/RCTTurboModule.h>
 #import <ReactCommon/CallInvoker.h>
 #import <jsi/jsi.h>
+
+#if defined(RCT_NEW_ARCH_ENABLED) && __has_include(<ReactCommon/RCTTurboModuleWithJSIBindings.h>)
+#define TALADB_USE_JSI_BINDINGS 1
+#import <ReactCommon/RCTTurboModuleWithJSIBindings.h>
+#import <TalaDB/TalaDB.h> // Codegen: NativeTalaDBSpecJSI
+#else
+#define TALADB_USE_JSI_BINDINGS 0
 #import <React/RCTBridge+Private.h>
+#endif
 
 #include "../cpp/TalaDBHostObject.h"
 #include "../cpp/taladb.h"
 
 #import <Foundation/Foundation.h>
+
+#include <functional>
+#include <memory>
 
 using namespace facebook::jsi;
 
@@ -36,12 +57,73 @@ using namespace facebook::jsi;
 // TalaDB — Obj-C TurboModule
 // ---------------------------------------------------------------------------
 
+#if TALADB_USE_JSI_BINDINGS
+@interface TalaDB : NSObject <RCTBridgeModule, RCTTurboModule, RCTTurboModuleWithJSIBindings>
+#else
 @interface TalaDB : NSObject <RCTBridgeModule, RCTTurboModule>
+#endif
 @end
 
-@implementation TalaDB
+@implementation TalaDB {
+#if TALADB_USE_JSI_BINDINGS
+    // Set by getTurboModule: and installJSIBindingsWithRuntime:[callInvoker:]
+    // before any JS call can reach this module. Both belong to the React
+    // instance that owns this module and are torn down with it on reload.
+    facebook::jsi::Runtime *_runtime;
+    std::shared_ptr<facebook::react::CallInvoker> _callInvoker;
+#endif
+}
 
 RCT_EXPORT_MODULE(TalaDB)
+
+#if TALADB_USE_JSI_BINDINGS
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params {
+    // The manager's JS CallInvoker. RN 0.75–0.76 never pass it to the
+    // one-argument installer below, so keep it from here.
+    _callInvoker = params.jsInvoker;
+    return std::make_shared<facebook::react::NativeTalaDBSpecJSI>(params);
+}
+
+// RN 0.77+: preferred by the manager when implemented (0.82+ only call this).
+- (void)installJSIBindingsWithRuntime:(facebook::jsi::Runtime &)runtime
+                          callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
+    _runtime = &runtime;
+    _callInvoker = callInvoker;
+}
+
+// RN 0.75–0.76: the only variant the manager calls, right after
+// getTurboModule:. Deprecated in 0.77–0.81 and ignored there, because the
+// manager calls the callInvoker variant above instead.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+- (void)installJSIBindingsWithRuntime:(facebook::jsi::Runtime &)runtime {
+    _runtime = &runtime;
+}
+#pragma clang diagnostic pop
+#endif
+
+// Runs `work` on the JS thread with the live runtime. Returns NO when no
+// runtime is reachable yet, so the caller can reject its promise.
+- (BOOL)runOnJSThread:(std::function<void(Runtime &)>)work {
+#if TALADB_USE_JSI_BINDINGS
+    Runtime *runtime = _runtime;
+    if (!runtime || !_callInvoker) {
+        return NO;
+    }
+    _callInvoker->invokeAsync([runtime, work = std::move(work)]() { work(*runtime); });
+    return YES;
+#else
+    RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
+    if (!bridge || !bridge.runtime) {
+        return NO;
+    }
+    bridge.jsCallInvoker->invokeAsync([bridge, work = std::move(work)]() {
+        work(*(Runtime *)bridge.runtime);
+    });
+    return YES;
+#endif
+}
 
 // ---- Class method: open DB and install the JSI HostObject ----------------
 
@@ -98,15 +180,8 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
             }
         }
 
-        RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
-        if (!bridge || !bridge.runtime) {
-            reject(@"TALADB_NO_BRIDGE", @"JSI bridge not available", nil);
-            return;
-        }
-
         // Install the HostObject on the JS thread
-        bridge.jsCallInvoker->invokeAsync([bridge, dbPath, configJson, resolve, reject]() {
-            auto &rt = *(Runtime *)bridge.runtime;
+        BOOL scheduled = [self runOnJSThread:[dbPath, configJson, resolve, reject](Runtime &rt) {
             NSString *error = [TalaDB installInRuntime:rt dbPath:dbPath configJson:configJson];
             if (error) reject(@"TALADB_INSTALL_ERROR", error, nil);
             else {
@@ -120,7 +195,10 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
                 [saltURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
                 resolve(nil);
             }
-        });
+        }];
+        if (!scheduled) {
+            reject(@"TALADB_NO_BRIDGE", @"JSI runtime not available", nil);
+        }
     } @catch (NSException *ex) {
         reject(@"TALADB_INIT_ERROR", ex.reason, nil);
     }
@@ -130,16 +208,13 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
 
 RCT_EXPORT_METHOD(close:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
-    RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
-    if (!bridge || !bridge.runtime) {
-        reject(@"TALADB_NO_BRIDGE", @"JSI bridge not available", nil);
-        return;
-    }
-    bridge.jsCallInvoker->invokeAsync([bridge, resolve]() {
-        auto &rt = *(Runtime *)bridge.runtime;
+    BOOL scheduled = [self runOnJSThread:[resolve](Runtime &rt) {
         taladb::TalaDBHostObject::uninstall(rt);
         resolve(nil);
-    });
+    }];
+    if (!scheduled) {
+        reject(@"TALADB_NO_BRIDGE", @"JSI runtime not available", nil);
+    }
 }
 
 // ---- Synchronous stubs — all real work goes through the JSI HostObject ---

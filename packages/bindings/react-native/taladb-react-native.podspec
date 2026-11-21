@@ -16,6 +16,8 @@ Pod::Spec.new do |s|
 
   # TypeScript / JS sources (not compiled by Xcode, just bundled)
   s.source_files  = "ios/**/*.{h,m,mm}", "cpp/**/*.{h,cpp}"
+  # Android-only JNI glue: needs <jni.h>, which the iOS SDK does not have.
+  s.exclude_files = "cpp/TalaDBJni.cpp"
 
   # ---------------------------------------------------------------------------
   # Pre-built Rust XCFramework
@@ -24,7 +26,8 @@ Pod::Spec.new do |s|
   #   cargo build --target aarch64-apple-ios        --release  (device)
   #   cargo build --target aarch64-apple-ios-sim    --release  (Apple Silicon simulator)
   #   cargo build --target x86_64-apple-ios         --release  (Intel simulator)
-  #   lipo sim slices → fat sim lib
+  #   lipo sim slices → fat sim lib (named libtaladb_ffi.a, like the device
+  #   slice — CocoaPods rejects xcframeworks whose slices differ in name)
   #   xcodebuild -create-xcframework → ios/TalaDBFfi.xcframework
   s.vendored_frameworks = "ios/TalaDBFfi.xcframework"
 
@@ -41,7 +44,15 @@ Pod::Spec.new do |s|
   # ---------------------------------------------------------------------------
   # React Native dependencies
   # ---------------------------------------------------------------------------
-  s.dependency "React-Core"
-  s.dependency "React-jsi"
-  s.dependency "ReactCommon/turbomodule/core"
+  # install_modules_dependencies (RN >= 0.71) adds the React Native pods, the
+  # Codegen header path (<TalaDB/TalaDB.h>) and -DRCT_NEW_ARCH_ENABLED when the
+  # New Architecture is on — TalaDB.mm needs all three. It merges into the
+  # pod_target_xcconfig above, so it must run after it.
+  if respond_to?(:install_modules_dependencies, true)
+    install_modules_dependencies(s)
+  else
+    s.dependency "React-Core"
+    s.dependency "React-jsi"
+    s.dependency "ReactCommon/turbomodule/core"
+  end
 end
