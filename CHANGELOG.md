@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.3 — Unreleased
+## 0.13.3 — 2026-11-21
 
 A React Native iOS hotfix. In 0.13.2 (and in every release checked back to 0.12.0), `@taladb/react-native` could not be installed or built in an iOS app. Android, the core engine and every other binding are unchanged.
 
@@ -11,7 +11,7 @@ A React Native iOS hotfix. In 0.13.2 (and in every release checked back to 0.12.
 - **React Native iOS: the module builds and runs on React Native 0.82 and later.** The iOS module reached the JavaScript runtime through `RCTCxxBridge`, the legacy bridge that React Native removed in 0.82, so it did not compile. With the New Architecture, it now receives the runtime from React Native's TurboModule manager (`installJSIBindingsWithRuntime:callInvoker:`). For that, the module now implements `getTurboModule:` with the Codegen spec. Apps on React Native 0.73–0.81 with the New Architecture disabled keep the legacy bridge path. The podspec now calls `install_modules_dependencies`, which provides the Codegen header and the `RCT_NEW_ARCH_ENABLED` flag that selects the path.
 - **`scripts/build-ios.sh` completes.** Its last step merged the device (arm64) and simulator (arm64 + x86_64) libraries into one flat `ios/libtaladb_ffi.a`. `lipo` cannot merge two arm64 slices, so the script failed after building the xcframework. That flat library was never published, and the step is removed.
 
-## 0.13.2 — Unreleased
+## 0.13.2 — 2026-11-20
 
 A stabilization release: two query speed-ups, seven correctness and reliability fixes, and six security fixes. The most important one stops an encrypted database from being damaged when it is opened without its passphrase. **If your app uses encryption, read "Encrypted databases opened without a passphrase" below.**
 
