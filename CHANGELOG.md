@@ -11,6 +11,10 @@ A React Native iOS hotfix. In 0.13.2 (and in every release checked back to 0.12.
 - **React Native iOS: the module builds and runs on React Native 0.82 and later.** The iOS module reached the JavaScript runtime through `RCTCxxBridge`, the legacy bridge that React Native removed in 0.82, so it did not compile. With the New Architecture, it now receives the runtime from React Native's TurboModule manager: through `installJSIBindingsWithRuntime:callInvoker:` on React Native 0.77 and later, and through `installJSIBindingsWithRuntime:` on 0.75–0.76. For that, the module now implements `getTurboModule:` with the Codegen spec. Apps on React Native 0.73–0.81 with the New Architecture disabled keep the legacy bridge path. The podspec now calls `install_modules_dependencies`, which provides the Codegen header and the `RCT_NEW_ARCH_ENABLED` flag that selects the path.
 - **`scripts/build-ios.sh` completes.** Its last step merged the device (arm64) and simulator (arm64 + x86_64) libraries into one flat `ios/libtaladb_ffi.a`. `lipo` cannot merge two arm64 slices, so the script failed after building the xcframework. That flat library was never published, and the step is removed.
 
+### Documentation
+
+- **React Native 0.78 and earlier need Metro package exports enabled.** `taladb` selects its React Native entry point through the `exports` field of its `package.json`, which Metro reads by default only from React Native 0.79. Without `resolver.unstable_enablePackageExports: true` in `metro.config.js`, Metro may resolve `taladb` to its Node.js entry point instead. The React Native guide shows the setting. This is an existing requirement; package resolution is unchanged.
+
 ## 0.13.2 — 2026-11-20
 
 A stabilization release: two query speed-ups, seven correctness and reliability fixes, and six security fixes. The most important one stops an encrypted database from being damaged when it is opened without its passphrase. **If your app uses encryption, read "Encrypted databases opened without a passphrase" below.**

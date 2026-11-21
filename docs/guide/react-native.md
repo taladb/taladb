@@ -33,6 +33,20 @@ cd ios && pod install
 
 No extra steps — Gradle links the native library automatically.
 
+### Metro (React Native 0.78 and earlier)
+
+`taladb` selects its React Native entry point through the `exports` field of its `package.json`. Metro reads `exports` by default only from React Native 0.79. On 0.78 and earlier, Metro may resolve `taladb` to its Node.js entry point instead, and the bundle fails or loads the wrong build. Enable package exports in `metro.config.js`:
+
+```js
+const config = {
+  resolver: {
+    unstable_enablePackageExports: true,
+  },
+};
+```
+
+Merge this into your existing `metro.config.js` (for example, into the object you pass to `mergeConfig`). Do not replace your app's current configuration with it.
+
 ### Enable the New Architecture
 
 TalaDB requires the New Architecture for its JSI integration.
