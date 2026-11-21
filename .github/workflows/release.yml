@@ -454,17 +454,20 @@ jobs:
 
       - name: Create simulator fat library and xcframework
         run: |
-          # Merge Apple Silicon + Intel simulator slices into one sim fat lib
+          # Merge Apple Silicon + Intel simulator slices into one sim fat lib.
+          # It keeps the device slice's file name (libtaladb_ffi.a): CocoaPods
+          # refuses an xcframework whose slices have different binary names.
+          mkdir -p /tmp/ios-sim-universal
           lipo -create \
             target/aarch64-apple-ios-sim/release/libtaladb_ffi.a \
             target/x86_64-apple-ios/release/libtaladb_ffi.a \
-            -output /tmp/libtaladb_ffi_sim.a
+            -output /tmp/ios-sim-universal/libtaladb_ffi.a
 
           # Build XCFramework (device slice + universal simulator slice)
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libtaladb_ffi.a \
             -headers packages/bindings/react-native/cpp \
-            -library /tmp/libtaladb_ffi_sim.a \
+            -library /tmp/ios-sim-universal/libtaladb_ffi.a \
             -headers packages/bindings/react-native/cpp \
             -output packages/bindings/react-native/ios/TalaDBFfi.xcframework
 
@@ -492,7 +495,7 @@ jobs:
           mkdir -p dist-swift
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libtaladb_ffi.a -headers "$HEADERS" \
-            -library /tmp/libtaladb_ffi_sim.a -headers "$HEADERS" \
+            -library /tmp/ios-sim-universal/libtaladb_ffi.a -headers "$HEADERS" \
             -library /tmp/libtaladb_ffi_macos.a -headers "$HEADERS" \
             -output dist-swift/TalaDBFFI.xcframework
           cd dist-swift
