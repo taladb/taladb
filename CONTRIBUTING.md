@@ -9,7 +9,7 @@ I welcome help in all areas: from core Rust optimizations to documentation and p
 ### Prerequisites
 
 To build and test TalaDB locally, you will need:
-- [Rust](https://rustup.rs/) (stable 1.75+)
+- [Rust](https://rustup.rs/) (1.90+; the repo pins its toolchain in `rust-toolchain.toml`)
 - [Node.js](https://nodejs.org/) (18+)
 - [pnpm](https://pnpm.io/) (9+)
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/) (for browser builds)
@@ -45,7 +45,7 @@ cargo test --workspace
 pnpm --filter taladb test
 
 # Browser WASM tests
-wasm-pack test packages/@taladb/web --headless --chrome
+wasm-pack test --headless --chrome packages/bindings/web
 ```
 
 ## How to Contribute

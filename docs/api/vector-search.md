@@ -7,9 +7,8 @@ description: On-device vector similarity search in TalaDB — createVectorIndex,
 
 TalaDB stores vector embeddings alongside your documents and searches them
 on-device — no vector database service, no API key, no data leaving the
-device. It is the first embedded JavaScript database to combine document
-queries with native vector similarity search across the browser, Node.js, and
-React Native.
+device. Document queries and vector similarity search run in the same engine,
+on every platform TalaDB supports.
 
 The typical flow: generate an embedding with an on-device model, store it on a
 document, then rank documents by similarity to a query embedding — optionally

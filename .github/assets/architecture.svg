@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 344" width="900" height="344" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">TalaDB architecture</title>
+  <desc id="d">Six platform packages (browser, Node.js, React Native, Android, iOS and macOS, Rust) each bind to the same Rust engine, which stores data with redb: files on native platforms, OPFS in the browser with an IndexedDB fallback.</desc>
+
+  <!-- Opaque panel so the figure reads the same on GitHub light and dark themes -->
+  <rect x="0" y="0" width="900" height="344" rx="16" fill="#F6F7F9"/>
+
+  <!-- Group labels -->
+  <rect x="17" y="16" width="428" height="26" rx="13" fill="#E6ECFB"/>
+  <text x="231" y="33.5" text-anchor="middle" font-size="12.5" font-weight="600" fill="#24409E">JavaScript &amp; TypeScript · one API from the taladb package</text>
+  <rect x="455" y="16" width="428" height="26" rx="13" fill="#E6ECFB"/>
+  <text x="669" y="33.5" text-anchor="middle" font-size="12.5" font-weight="600" fill="#24409E">Native · idiomatic per-language APIs</text>
+
+  <!-- Connectors (drawn first, under the boxes) -->
+  <g stroke="#9AA3B2" stroke-width="1.5">
+    <line x1="85" y1="132" x2="85" y2="172"/>
+    <line x1="231" y1="132" x2="231" y2="172"/>
+    <line x1="377" y1="132" x2="377" y2="172"/>
+    <line x1="523" y1="132" x2="523" y2="172"/>
+    <line x1="669" y1="132" x2="669" y2="172"/>
+    <line x1="815" y1="132" x2="815" y2="172"/>
+  </g>
+
+  <!-- Platform bindings -->
+  <g font-size="11">
+    <g>
+      <rect x="17" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="85" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">Browser</text>
+      <text x="85" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#3157D9">@taladb/web</text>
+      <text x="85" y="117" text-anchor="middle" fill="#4B5263">WebAssembly worker</text>
+    </g>
+    <g>
+      <rect x="163" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="231" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">Node.js</text>
+      <text x="231" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#3157D9">@taladb/node</text>
+      <text x="231" y="117" text-anchor="middle" fill="#4B5263">napi-rs module</text>
+    </g>
+    <g>
+      <rect x="309" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="377" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">React Native</text>
+      <text x="377" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#3157D9">@taladb/react-native</text>
+      <text x="377" y="117" text-anchor="middle" fill="#4B5263">JSI · C FFI</text>
+    </g>
+    <g>
+      <rect x="455" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="523" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">Android</text>
+      <text x="523" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#3157D9">taladb-kotlin</text>
+      <text x="523" y="117" text-anchor="middle" fill="#4B5263">Kotlin · JNI · C FFI</text>
+    </g>
+    <g>
+      <rect x="601" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="669" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">iOS &amp; macOS</text>
+      <text x="669" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#3157D9">taladb-swift</text>
+      <text x="669" y="117" text-anchor="middle" fill="#4B5263">Swift · C FFI</text>
+    </g>
+    <g>
+      <rect x="747" y="52" width="136" height="80" rx="10" fill="#FFFFFF" stroke="#D5DAE3"/>
+      <text x="815" y="78" text-anchor="middle" font-size="14.5" font-weight="600" fill="#14171B">Rust</text>
+      <text x="815" y="98" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#3157D9">taladb</text>
+      <text x="815" y="117" text-anchor="middle" fill="#4B5263">the engine crate</text>
+    </g>
+  </g>
+
+  <!-- Engine -->
+  <rect x="17" y="172" width="866" height="92" rx="14" fill="#12151A"/>
+  <text x="41" y="201" font-size="16" font-weight="600" fill="#F0EEE8">TalaDB engine <tspan font-weight="400" fill="#AAB1BE" font-size="13">· Rust crate </tspan><tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#7C9AF5">taladb</tspan></text>
+  <text x="41" y="227" font-size="12.5" fill="#D6D9E0">Documents and collections · Filters and aggregation · Secondary indexes · Vector search (flat, HNSW)</text>
+  <text x="41" y="248" font-size="12.5" fill="#D6D9E0">BM25 full-text · Hybrid search (RRF) · ACID transactions · Migrations · Live queries · Encryption at rest</text>
+
+  <!-- Storage -->
+  <rect x="17" y="274" width="866" height="52" rx="12" fill="#3157D9"/>
+  <text x="41" y="305" font-size="13" fill="#FFFFFF"><tspan font-weight="600">Storage · redb B-tree:</tspan> files on Node.js, React Native, Android, iOS and Rust · OPFS in the browser, with an IndexedDB fallback</text>
+</svg>
