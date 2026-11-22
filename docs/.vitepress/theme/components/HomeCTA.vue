@@ -16,11 +16,6 @@
             rel="noopener"
           >Star on GitHub</a>
         </div>
-        <p class="cta-sponsor">
-          TalaDB is maintained by one person.
-          <a href="https://github.com/sponsors/tala-sh" target="_blank" rel="noopener">Sponsoring on GitHub</a>
-          funds continued development.
-        </p>
       </div>
 
       <nav class="cta-links" aria-label="Project links">
@@ -75,19 +70,7 @@ const columns = [
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin: 28px 0 20px;
-}
-
-.cta-sponsor {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--vp-c-text-3);
-}
-
-.cta-sponsor a {
-  color: var(--vp-c-text-2);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  margin-top: 28px;
 }
 
 .cta-links {

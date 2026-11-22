@@ -147,7 +147,7 @@ cargo add taladb
 - Live demos: [web](https://demo-web.taladb.dev/), [React Native](https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta) and [Android (Kotlin)](https://play.google.com/store/apps/details?id=dev.thinkgrid.notewell) on Google Play
 - [Example: local-first storefront](examples/vite-spa-storefront) (Vite + `@taladb/react/query`)
 - [Changelog](CHANGELOG.md) · [Releases](https://github.com/taladb/taladb/releases) · [Roadmap](https://taladb.dev/roadmap)
-- [Discussions](https://github.com/taladb/taladb/discussions) · [Sponsor](https://github.com/sponsors/tala-sh)
+- [Discussions](https://github.com/taladb/taladb/discussions)
 
 ## Development
 
