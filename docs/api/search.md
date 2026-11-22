@@ -88,7 +88,7 @@ and a paraphrase surface from one query.
 ### `hybridSearch(text, vector, topK, filter?, options?)`
 
 Rank by BM25 keyword relevance **and** vector similarity, then fuse the two
-rankings with [reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf).
+rankings with [reciprocal rank fusion](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf).
 Requires an FTS index on `text.textField` and a vector index on
 `vector.vectorField`.
 
