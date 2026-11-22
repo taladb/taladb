@@ -180,7 +180,7 @@ const all = await posts.find({ body: { $contains: 'rust embedded database' } })
 
 ## Hybrid search — keyword + vector, fused
 
-Keyword search misses paraphrases; vector search misses exact identifiers, SKUs, and rare proper nouns. **`hybridSearch`** runs both retrievers and fuses their rankings with [reciprocal rank fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (RRF) — the standard recipe for production RAG retrieval, running entirely on-device.
+Keyword search misses paraphrases; vector search misses exact identifiers, SKUs, and rare proper nouns. **`hybridSearch`** runs both retrievers and fuses their rankings with [reciprocal rank fusion](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf) (RRF) — the standard recipe for production RAG retrieval, running entirely on-device.
 
 ```ts
 await articles.createFtsIndex('body')

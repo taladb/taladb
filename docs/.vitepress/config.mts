@@ -204,7 +204,6 @@ export default defineConfig({
 
     socialLinks: [
       { icon: "github", link: "https://github.com/taladb/taladb" },
-      { icon: "heart", link: "https://github.com/sponsors/tala-sh" },
     ],
 
     footer: {
@@ -213,8 +212,7 @@ export default defineConfig({
         <a href="https://www.npmjs.com/package/taladb" target="_blank" rel="noopener">npm</a> ·
         <a href="/roadmap">Roadmap</a> ·
         <a href="https://github.com/taladb/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
-        <a href="https://github.com/taladb/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
-        <a href="https://github.com/sponsors/tala-sh" target="_blank" rel="noopener">Sponsor</a>
+        <a href="https://github.com/taladb/taladb/releases" target="_blank" rel="noopener">Changelog</a>
         <br/>Released under the MIT or Apache-2.0 license.
       `,
       copyright: "Copyright &copy; 2025-2026 TalaDB",
