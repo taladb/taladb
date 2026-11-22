@@ -10,7 +10,7 @@ TalaDB's Node.js integration uses a prebuilt native `.node` module via [napi-rs]
 ## Requirements
 
 - Node.js **18+**
-- Supported platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` (Apple Silicon), `win32-x64`
+- Prebuilt binaries: `linux-x64` (glibc), `darwin-arm64` (Apple Silicon), `win32-x64`. Other targets, such as Intel macOS and Linux arm64, have no prebuilt binary yet.
 
 ## Installation
 

@@ -1,16 +1,22 @@
 import { defineConfig, type HeadConfig } from "vitepress";
+import pkg from "../../package.json" with { type: "json" };
+
+// The workspace version is kept in sync with every published package by
+// `scripts/sync-version.js`, so the nav badge never drifts from the release.
+const version = `v${pkg.version}`;
 
 const title = "TalaDB";
 const description =
-  "The embedded vector and document database for on-device AI. Store documents, run structured queries, and search vectors in one Rust database — across the browser, Node.js, React Native, Android, and iOS. No cloud required.";
+  "TalaDB is an embedded document and vector database with a Rust core. Store documents, run structured queries, and use vector, full-text, and hybrid search in the browser, Node.js, React Native, Android, and iOS. Local-first, no server required.";
 const siteUrl = "https://taladb.dev";
 const ogImage = `${siteUrl}/tala-db-banner.png`;
 
 export default defineConfig({
   title,
   description,
-  base: "/", // update to "/" once taladb.dev is live
-  appearance: false,
+  base: "/",
+  // Internal reports live in docs/reports/ (gitignored). Never build them.
+  srcExclude: ["reports/**"],
 
   transformHead({ pageData }) {
     const canonicalUrl = `${siteUrl}/${pageData.relativePath}`
@@ -68,7 +74,7 @@ export default defineConfig({
       "link",
       {
         rel: "stylesheet",
-        href: "https://api.fontshare.com/v2/css?f[]=general-sans@500,600,700,800&display=swap",
+        href: "https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap",
       },
     ],
     [
@@ -101,9 +107,8 @@ export default defineConfig({
       { text: "Docs", link: "/introduction" },
       { text: "Guides", link: "/guide/web" },
       { text: "API", link: "/api/collection" },
-      { text: "Roadmap", link: "/roadmap" },
       {
-        text: "Live Demo",
+        text: "Demos",
         items: [
           { text: "Web Demo", link: "https://demo-web.taladb.dev/" },
           { text: "React Native Demo", link: "https://play.google.com/store/apps/details?id=dev.thinkgrid.kepta" },
@@ -111,12 +116,13 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.13.3",
+        text: version,
         items: [
           {
             text: "Changelog",
             link: "https://github.com/taladb/taladb/releases",
           },
+          { text: "Roadmap", link: "/roadmap" },
           {
             text: "Contributing",
             link: "https://github.com/taladb/taladb/blob/main/CONTRIBUTING.md",
@@ -129,53 +135,69 @@ export default defineConfig({
       },
     ],
 
+    // Same pages and URLs as before; only grouping and order changed so the
+    // reader meets install → concepts → their platform → reference in order.
     sidebar: [
       {
         text: "Getting Started",
         items: [
           { text: "Introduction", link: "/introduction" },
           { text: "Core Concepts", link: "/concepts" },
-          { text: "Features", link: "/features" },
+          { text: "Feature Overview", link: "/features" },
         ],
       },
       {
         text: "Platform Guides",
         items: [
-          { text: "Web (Browser / WASM)", link: "/guide/web" },
+          { text: "Browser (WASM)", link: "/guide/web" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
           { text: "Android (Kotlin)", link: "/guide/android" },
           { text: "iOS & macOS (Swift)", link: "/guide/swift" },
           { text: "Rust", link: "/guide/rust" },
-          { text: "CLI Dev Tools", link: "/guide/cli" },
-          { text: "Vector Benchmarks", link: "/guide/vector-benchmarks" },
         ],
       },
       {
-        text: "Packages",
+        text: "React",
         items: [
-          { text: "React Hooks (@taladb/react)", link: "/guide/react" },
-          { text: "Local-First Data (@taladb/react/query)", link: "/guide/query" },
-          {
-            text: "Migrating from TanStack Query",
-            link: "/guide/react-query-migration",
-          },
+          { text: "React Hooks", link: "/guide/react" },
+          { text: "Local-First Data (react/query)", link: "/guide/query" },
+          { text: "Migrating from TanStack Query", link: "/guide/react-query-migration" },
         ],
       },
       {
-        text: "API Reference",
+        text: "Documents",
+        items: [
+          { text: "Collection", link: "/api/collection" },
+          { text: "Filters", link: "/api/filters" },
+          { text: "Updates", link: "/api/updates" },
+          { text: "Aggregation", link: "/api/aggregation" },
+          { text: "Schema Validation", link: "/api/schema" },
+          { text: "Live Queries", link: "/api/live-queries" },
+        ],
+      },
+      {
+        text: "Search",
         items: [
           { text: "Vector Search", link: "/api/vector-search" },
-          { text: "Search (FTS & Hybrid)", link: "/api/search" },
-          { text: "Collection", link: "/api/collection" },
-          { text: "Schema Validation", link: "/api/schema" },
-          { text: "Filters", link: "/api/filters" },
-          { text: "Aggregation", link: "/api/aggregation" },
-          { text: "Updates", link: "/api/updates" },
+          { text: "Full-Text & Hybrid Search", link: "/api/search" },
+        ],
+      },
+      {
+        text: "Data & Operations",
+        items: [
           { text: "Migrations", link: "/api/migrations" },
           { text: "Encryption", link: "/api/encryption" },
-          { text: "Live Queries", link: "/api/live-queries" },
           { text: "Change Webhook", link: "/api/webhook" },
+        ],
+      },
+      {
+        text: "Tools & Performance",
+        collapsed: true,
+        items: [
+          { text: "CLI Dev Tools", link: "/guide/cli" },
+          { text: "Vector Benchmarks", link: "/guide/vector-benchmarks" },
+          { text: "Roadmap", link: "/roadmap" },
         ],
       },
     ],
@@ -193,7 +215,7 @@ export default defineConfig({
         <a href="https://github.com/taladb/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
         <a href="https://github.com/taladb/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
         <a href="https://github.com/sponsors/tala-sh" target="_blank" rel="noopener">Sponsor</a>
-        <br/>Released under the Apache License 2.0.
+        <br/>Released under the MIT or Apache-2.0 license.
       `,
       copyright: "Copyright &copy; 2025-2026 TalaDB",
     },
@@ -206,6 +228,10 @@ export default defineConfig({
     search: {
       provider: "local",
     },
+
+    outline: { level: [2, 3], label: "On this page" },
+    docFooter: { prev: "Previous", next: "Next" },
+    externalLinkIcon: true,
   },
 
   markdown: {

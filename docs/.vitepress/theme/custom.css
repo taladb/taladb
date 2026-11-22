@@ -1,1197 +1,347 @@
 /* ============================================================
-   TALADB — Custom Theme
+   TalaDB theme
+   One small token layer on top of VitePress's own variables.
+   Components use the semantic --tdb-* / --vp-* tokens below, never raw
+   colors, so light and dark mode stay in step.
    ============================================================ */
 
 /* ----------------------------------------------------------
-   Brand tokens
+   1. Tokens
    ---------------------------------------------------------- */
 :root {
-    --vp-c-brand-1: #3157d9;
-    --vp-c-brand-2: #5b7bde;
-    --vp-c-brand-3: #24409e;
-    --vp-c-brand-soft: rgba(49, 87, 217, 0.12);
+    /* Brand: #3157D9 primary, #5B7BDE secondary, #24409E deep. */
+    --tdb-blue-500: #3157d9;
+    --tdb-blue-400: #5b7bde;
+    --tdb-blue-300: #7c9af5; /* the "DB" tint of logo-dark.svg */
+    --tdb-blue-700: #24409e;
+    --tdb-ink: #14171b;
+    --tdb-ink-surface: #12151a;
 
-    --vp-c-text-1: #14171b;
+    /* VitePress: brand-1 = text/links, brand-2 = hover, brand-3 = solid fill */
+    --vp-c-brand-1: var(--tdb-blue-500);
+    --vp-c-brand-2: var(--tdb-blue-700);
+    --vp-c-brand-3: var(--tdb-blue-500);
+    --vp-c-brand-soft: rgba(49, 87, 217, 0.1);
+
+    --vp-c-text-1: var(--tdb-ink);
     --vp-c-text-2: #4b5263;
-    --vp-c-text-3: #7c8495;
+    --vp-c-text-3: #687082;
 
     --vp-c-bg: #ffffff;
-    --vp-c-bg-alt: #f7f7f8;
-    --vp-c-border: #e5e7eb;
-    --vp-c-divider: #eaecf0;
+    --vp-c-bg-alt: #f6f7f9;
+    --vp-c-bg-soft: #f1f3f6;
+    --vp-c-bg-elv: #ffffff;
+    --vp-c-border: #dde1e8;
+    --vp-c-divider: #e8eaef;
+    --vp-c-gutter: #e8eaef;
+
+    --vp-button-brand-text: #ffffff;
+    --vp-button-brand-hover-text: #ffffff;
+    --vp-button-brand-active-text: #ffffff;
 
     --vp-font-family-base:
         "General Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --vp-font-family-mono:
         "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-    /* Spacing scale used across marketing sections */
-    --section-py: 88px;
-    --section-px: 32px;
-    /* Match VitePress nav: max-width calc(1440px - 64px) with 32px side padding */
-    --section-max: calc(var(--vp-layout-max-width) - 64px);
+    --vp-code-font-size: 0.875em;
+    --vp-code-block-bg: var(--vp-c-bg-alt);
 
-    /* Code window */
-    --code-bg: #12151a;
-    --code-header-bg: #1d2229;
+    --vp-home-hero-name-color: var(--vp-c-brand-1);
 
-    /* Buttons */
-    --btn-radius: 8px;
+    /* Marketing-page scale */
+    --tdb-radius-sm: 6px;
+    --tdb-radius: 10px;
+    --tdb-radius-lg: 14px;
+    --tdb-shadow: 0 1px 2px rgba(20, 23, 27, 0.04), 0 4px 16px rgba(20, 23, 27, 0.05);
+    --tdb-section-y: 96px;
+    --tdb-gutter: 32px;
+    --tdb-max: 1152px;
 }
 
-/* Prevent full-bleed sections (width:100vw + negative margin trick)
-   from triggering horizontal scroll at any viewport width */
-html,
-body {
-    overflow-x: hidden;
+.dark {
+    --vp-c-brand-1: var(--tdb-blue-300);
+    --vp-c-brand-2: var(--tdb-blue-400);
+    --vp-c-brand-3: var(--tdb-blue-500);
+    --vp-c-brand-soft: rgba(124, 154, 245, 0.14);
+
+    --vp-c-text-1: #f0eee8; /* the "Tala" tint of logo-dark.svg */
+    --vp-c-text-2: #aab1be;
+    --vp-c-text-3: #8089a0;
+
+    --vp-c-bg: var(--tdb-ink-surface);
+    --vp-c-bg-alt: #0e1014;
+    --vp-c-bg-soft: #1a1e25;
+    --vp-c-bg-elv: #1a1e25;
+    --vp-c-border: #2c3440;
+    --vp-c-divider: #232a34;
+    --vp-c-gutter: #0e1014;
+
+    --tdb-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+@media (max-width: 960px) {
+    :root {
+        --tdb-section-y: 72px;
+        --tdb-gutter: 24px;
+    }
+}
+
+@media (max-width: 640px) {
+    :root {
+        --tdb-section-y: 56px;
+        --tdb-gutter: 16px;
+    }
 }
 
 /* ----------------------------------------------------------
-   Hide VitePress default home layout elements —
-   we use fully custom components
+   2. Global accessibility
    ---------------------------------------------------------- */
-.VPHome .VPHero,
-.VPHome .VPFeatures,
-.VPHome .VPHomeHero,
-.VPHome .VPHomeFeatures {
-    display: none !important;
+:where(a, button, [tabindex]):focus-visible {
+    outline: 2px solid var(--vp-c-brand-1);
+    outline-offset: 2px;
+    border-radius: 4px;
 }
 
-/* Override the scoped .container inside VPHomeContent that caps width at 1280px */
-.VPHome .vp-doc.container {
-    max-width: 100% !important;
-    width: 100% !important;
-    padding: 0 !important;
-    margin-left: 0 !important;
-    margin-right: 0 !important;
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
 }
 
-.VPHome {
-    margin-bottom: 0 !important;
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }
 
 /* ----------------------------------------------------------
-   Global layout helpers
+   3. Documentation pages
    ---------------------------------------------------------- */
-
-/* Full-bleed: every marketing section breaks out of VitePress's
-   1280px VPHomeContent container and spans the full viewport */
-.home-hero,
-.social-proof,
-.home-features,
-.home-usecases,
-.home-quickstart,
-.home-cta {
-    width: 100vw;
-    position: relative;
-    left: 50%;
-    margin-left: -50vw;
-    box-sizing: border-box;
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+    letter-spacing: -0.015em;
+    font-weight: 600;
 }
 
-.section-container {
-    max-width: var(--section-max);
+.vp-doc h1 {
+    font-size: 2rem;
+    line-height: 1.25;
+}
+
+.vp-doc h2 {
+    font-size: 1.5rem;
+    margin-top: 56px;
+}
+
+.vp-doc h3 {
+    font-size: 1.2rem;
+}
+
+/* Long API names must wrap instead of pushing the page sideways */
+.vp-doc :is(h1, h2, h3, h4) {
+    overflow-wrap: anywhere;
+}
+
+.vp-doc :not(pre) > code {
+    overflow-wrap: anywhere;
+}
+
+/* Tables: keep VitePress's own scroll container (display:block +
+   overflow-x:auto) so wide tables scroll inside the column on mobile. */
+.vp-doc table {
+    font-size: 0.9rem;
+}
+
+.vp-doc th {
+    font-weight: 600;
+    color: var(--vp-c-text-1);
+}
+
+.vp-doc div[class*="language-"] {
+    border: 1px solid var(--vp-c-divider);
+}
+
+@media (max-width: 639px) {
+    /* VitePress bleeds code blocks to the screen edge on phones; a border
+       there reads as a rendering glitch. */
+    .vp-doc div[class*="language-"] {
+        border-left: 0;
+        border-right: 0;
+    }
+}
+
+.vp-doc .custom-block {
+    border-radius: var(--tdb-radius);
+}
+
+/* ----------------------------------------------------------
+   4. Navigation
+   ---------------------------------------------------------- */
+.VPNavBar .VPNavBarTitle .logo {
+    height: 28px;
+}
+
+/* ----------------------------------------------------------
+   5. Home page — layout
+   index.md sets `markdownStyles: false`, so the sections below own their
+   width; no full-bleed tricks or overflow clipping are needed.
+   ---------------------------------------------------------- */
+.tdb-section {
+    padding: var(--tdb-section-y) var(--tdb-gutter);
+    border-top: 1px solid var(--vp-c-divider);
+}
+
+.tdb-section--alt {
+    background: var(--vp-c-bg-alt);
+}
+
+.tdb-container {
+    max-width: var(--tdb-max);
     margin: 0 auto;
-    padding: var(--section-py) var(--section-px);
 }
 
-.section-header {
-    text-align: center;
-    margin-bottom: 56px;
+.tdb-section-head {
+    max-width: 640px;
+    margin: 0 0 48px;
 }
 
-.section-title {
-    font-size: clamp(1.75rem, 3vw, 2.5rem);
-    font-weight: 700;
+.tdb-eyebrow {
+    margin: 0 0 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--vp-c-brand-1);
+}
+
+.tdb-h2 {
+    margin: 0 0 12px;
+    font-size: clamp(1.625rem, 2.6vw, 2.125rem);
+    font-weight: 600;
     line-height: 1.2;
     letter-spacing: -0.02em;
     color: var(--vp-c-text-1);
-    margin: 0 0 16px;
 }
 
-.section-sub {
-    font-size: 1.1rem;
-    color: var(--vp-c-text-2);
-    margin: 0 auto !important;
-    line-height: 1.6;
-    text-align: center !important;
-}
-
-/* ----------------------------------------------------------
-   Shared button styles
-   ---------------------------------------------------------- */
-.btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 10px 22px;
-    border-radius: var(--btn-radius);
-    font-size: 0.95rem;
-    font-weight: 600;
-    text-decoration: none !important;
-    transition: all 0.18s ease;
-    cursor: pointer;
-    border: 1.5px solid transparent;
-    white-space: nowrap;
-}
-
-.btn-primary {
-    background: var(--vp-c-brand-1);
-    color: #fff !important;
-    border-color: var(--vp-c-brand-1);
-}
-.btn-primary:hover {
-    background: var(--vp-c-brand-3);
-    border-color: var(--vp-c-brand-3);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(181, 75, 49, 0.35);
-}
-
-.btn-secondary {
-    background: transparent;
-    color: var(--vp-c-brand-1) !important;
-    border-color: var(--vp-c-brand-1);
-}
-.btn-secondary:hover {
-    background: var(--vp-c-brand-soft);
-    transform: translateY(-1px);
-}
-
-.btn-ghost {
-    background: transparent;
-    color: var(--vp-c-text-2) !important;
-    border-color: var(--vp-c-border);
-}
-.btn-ghost:hover {
-    background: var(--vp-c-bg-alt);
-    color: var(--vp-c-text-1) !important;
-}
-
-.btn-lg {
-    padding: 13px 30px;
-    font-size: 1rem;
-}
-
-/* ----------------------------------------------------------
-   Hero Section
-   ---------------------------------------------------------- */
-.home-hero {
-    background: linear-gradient(160deg, #fdfcfb 0%, #f5f0ed 60%, #faf8f7 100%);
-    border-bottom: 1px solid var(--vp-c-divider);
-    overflow: hidden;
-}
-
-.hero-container {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 48px;
-    align-items: center;
-    max-width: var(--section-max);
-    margin: 0 auto;
-    padding: 80px var(--section-px) 88px;
-}
-
-.hero-eyebrow {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-}
-
-.badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 10px;
-    border-radius: 100px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-
-.badge-rust {
-    background: #f5ddd8;
-    color: #7a2a12;
-}
-.badge-open {
-    background: #dbeafe;
-    color: #1e3a8a;
-}
-.badge-beta {
-    background: #fef3c7;
-    color: #78350f;
-}
-
-.hero-headline {
-    font-size: clamp(2.2rem, 4.5vw, 3.5rem);
-    font-weight: 800;
-    line-height: 1.12;
-    letter-spacing: -0.03em;
-    color: var(--vp-c-text-1);
-    margin: 0 0 20px;
-}
-
-.hero-accent {
-    color: var(--vp-c-brand-1);
-    position: relative;
-}
-
-.hero-sub {
-    font-size: 1.1rem;
-    line-height: 1.7;
-    color: var(--vp-c-text-2);
-    margin: 0 0 32px;
-    max-width: 500px;
-}
-
-.hero-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-bottom: 24px;
-}
-
-.hero-install {
+.tdb-lede {
     margin: 0;
-}
-
-.hero-install code {
-    font-family: "Menlo", "Monaco", "Consolas", monospace;
-    font-size: 0.85rem;
-    background: rgba(0, 0, 0, 0.06);
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 6px;
-    padding: 6px 14px;
-    color: var(--vp-c-text-2);
-    user-select: all;
-}
-
-/* Grid cells must not blow out their column on any viewport */
-.hero-left,
-.hero-right {
-    min-width: 0;
-}
-
-/* Code window */
-.code-window {
-    background: var(--code-bg);
-    border-radius: 14px;
-    overflow: hidden;
-    max-width: 100%;
-    box-sizing: border-box;
-    box-shadow:
-        0 0 0 1px rgba(255, 255, 255, 0.06),
-        0 24px 64px rgba(0, 0, 0, 0.28),
-        0 8px 24px rgba(0, 0, 0, 0.18);
-}
-
-.code-window-header {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 12px 16px;
-    background: var(--code-header-bg);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-}
-.dot-red {
-    background: #ff5f57;
-}
-.dot-yellow {
-    background: #febc2e;
-}
-.dot-green {
-    background: #28c840;
-}
-
-.code-window-title {
-    margin-left: 8px;
-    font-size: 0.78rem;
-    color: rgba(255, 255, 255, 0.4);
-    font-family: monospace;
-}
-
-.code-window-body {
-    margin: 0;
-    padding: 24px;
-    overflow-x: auto;
-    font-size: 0.82rem;
-    line-height: 1.75;
-    font-family: "Menlo", "Monaco", "Consolas", monospace;
-    color: #cdd6f4;
-}
-
-.code-window-body .token-keyword {
-    color: #89b4fa;
-}
-.code-window-body .token-string {
-    color: #a6e3a1;
-}
-.code-window-body .token-comment {
-    color: #6c7086;
-    font-style: italic;
-}
-.code-window-body .token-function {
-    color: #89dceb;
-}
-.code-window-body .token-number {
-    color: #fab387;
-}
-.code-window-body .token-operator {
-    color: #89b4fa;
-}
-.code-window-body .token-punctuation {
-    color: #cdd6f4;
-}
-
-/* ----------------------------------------------------------
-   Social Proof Bar
-   ---------------------------------------------------------- */
-.social-proof {
-    background: var(--vp-c-bg-alt);
-    border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.sp-container {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 18px;
-    flex-wrap: wrap;
-    max-width: var(--section-max);
-    margin: 0 auto;
-    padding: 18px var(--section-px);
-}
-
-.sp-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 0.82rem;
-    font-weight: 500;
-    color: var(--vp-c-text-2);
-    text-decoration: none !important;
-    transition: color 0.15s;
-}
-a.sp-badge:hover {
-    color: var(--vp-c-brand-1);
-}
-
-.sp-badge-static {
-    cursor: default;
-}
-
-.sp-divider {
-    color: var(--vp-c-divider);
-    font-size: 1.1rem;
-}
-
-/* ----------------------------------------------------------
-   Features Grid
-   ---------------------------------------------------------- */
-.home-features {
-    background: var(--vp-c-bg);
-    border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.features-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 24px;
-}
-
-.feature-card {
-    background: var(--vp-c-bg-alt);
-    border: 1px solid var(--vp-c-border);
-    border-radius: 12px;
-    padding: 28px 24px 24px;
-    transition:
-        box-shadow 0.18s,
-        border-color 0.18s,
-        transform 0.18s;
-}
-
-.feature-card:hover {
-    border-color: var(--vp-c-brand-1);
-    box-shadow: 0 4px 24px rgba(181, 75, 49, 0.1);
-    transform: translateY(-2px);
-}
-
-.feature-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
-    margin-bottom: 16px;
-    color: var(--vp-c-brand-1);
-}
-
-.feature-title {
-    font-size: 1rem;
-    font-weight: 700;
-    color: var(--vp-c-text-1);
-    margin: 0 0 8px;
-}
-
-.feature-desc {
-    font-size: 0.875rem;
-    color: var(--vp-c-text-2);
+    font-size: 1.0625rem;
     line-height: 1.65;
-    margin: 0 0 16px;
-}
-
-.feature-code {
-    background: var(--code-bg);
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.feature-code pre {
-    margin: 0;
-    padding: 14px 16px;
-    font-size: 0.76rem;
-    line-height: 1.7;
-    font-family: "Menlo", "Monaco", "Consolas", monospace;
-    overflow-x: auto;
-    color: #cdd6f4;
-}
-
-.feature-code .token-keyword {
-    color: #89b4fa;
-}
-.feature-code .token-string {
-    color: #a6e3a1;
-}
-.feature-code .token-comment {
-    color: #6c7086;
-    font-style: italic;
-}
-.feature-code .token-function {
-    color: #89dceb;
-}
-.feature-code .token-number {
-    color: #fab387;
-}
-.feature-code .token-punctuation {
-    color: #cdd6f4;
-}
-
-/* ----------------------------------------------------------
-   Comparison Table
-   ---------------------------------------------------------- */
-.home-comparison {
-    /* Full-bleed: break out of any parent max-width constraint */
-    width: 100vw;
-    position: relative;
-    left: 50%;
-    right: 50%;
-    margin-left: -50vw;
-    margin-right: -50vw;
-    background: var(--vp-c-bg-alt);
-    border-bottom: 1px solid var(--vp-c-divider);
-    box-sizing: border-box;
-}
-
-.comparison-inner {
-    max-width: var(--section-max);
-    margin: 0 auto;
-    padding: var(--section-py) var(--section-px);
-}
-
-.comparison-table-wrap {
-    overflow-x: auto;
-    border-radius: 12px;
-    border: 1px solid var(--vp-c-border);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}
-
-.comparison-table {
-    width: 100%;
-    table-layout: fixed;
-    border-collapse: collapse;
-    background: var(--vp-c-bg);
-    font-size: 0.875rem;
-}
-
-/* Capability column gets more space, value columns share the rest equally */
-.comparison-table .col-feature {
-    width: 30%;
-}
-
-.comparison-table th:not(.col-feature),
-.comparison-table td:not(.col-feature) {
-    width: calc(70% / 5);
-}
-
-.comparison-table thead tr {
-    background: var(--vp-c-bg-alt);
-}
-
-.comparison-table th {
-    padding: 14px 16px;
-    font-weight: 600;
-    color: var(--vp-c-text-2);
-    text-align: center;
-    border-bottom: 2px solid var(--vp-c-border);
-    white-space: nowrap;
-    font-size: 0.82rem;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-}
-
-.comparison-table th.col-feature {
-    text-align: left;
-    min-width: 220px;
-    padding-left: 20px;
-}
-
-.comparison-table th.col-tala {
-    background: rgba(181, 75, 49, 0.06);
-}
-
-.col-tala-label {
-    color: var(--vp-c-brand-1);
-    font-weight: 700;
-}
-
-.comparison-table td {
-    padding: 12px 16px;
-    text-align: center;
-    border-bottom: 1px solid var(--vp-c-divider);
     color: var(--vp-c-text-2);
 }
 
-.comparison-table td.col-feature {
-    text-align: left;
-    font-weight: 500;
-    color: var(--vp-c-text-1);
-    padding-left: 20px;
-}
-
-.comparison-table td.col-tala {
-    background: rgba(181, 75, 49, 0.04);
-}
-
-.comparison-table tbody tr:last-child td {
-    border-bottom: none;
-}
-
-.comparison-table tbody tr:hover {
-    background: var(--vp-c-bg-alt);
-}
-
-.cell-val {
-    font-size: 0.95rem;
-}
-.cell-val.yes {
-    color: #16a34a;
-    font-weight: 700;
-}
-.cell-val.no {
-    color: #9ca3af;
-}
-.cell-val.partial {
-    color: #d97706;
-}
-
-.comparison-footnote {
-    text-align: center;
-    font-size: 0.8rem;
-    color: var(--vp-c-text-3);
-    margin: 16px var(--section-px) 0;
-    padding-bottom: 8px;
-}
-
-/* ----------------------------------------------------------
-   Use Cases
-   ---------------------------------------------------------- */
-.home-usecases {
-    background: var(--vp-c-bg);
-    border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.usecases-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 24px;
-}
-
-.usecase-card {
-    background: var(--vp-c-bg-alt);
-    border: 1px solid var(--vp-c-border);
-    border-radius: 12px;
-    padding: 28px 24px;
-    transition:
-        box-shadow 0.18s,
-        border-color 0.18s,
-        transform 0.18s;
-}
-
-.usecase-card:hover {
-    border-color: var(--vp-c-brand-1);
-    box-shadow: 0 4px 24px rgba(181, 75, 49, 0.1);
-    transform: translateY(-2px);
-}
-
-.usecase-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    margin-bottom: 16px;
-    gap: 12px;
-}
-
-.usecase-icon-wrap {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
-    flex-shrink: 0;
-    color: var(--vp-c-brand-1);
-}
-
-.usecase-platform-tags {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-
-.platform-tag {
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    background: rgba(181, 75, 49, 0.1);
-    color: var(--vp-c-brand-1);
-    letter-spacing: 0.02em;
-}
-
-.usecase-title {
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: var(--vp-c-text-1);
-    margin: 0 0 10px;
-}
-
-.usecase-desc {
-    font-size: 0.875rem;
-    color: var(--vp-c-text-2);
-    line-height: 1.65;
-    margin: 0 0 16px;
-}
-
-.usecase-bullets {
-    padding: 0 0 0 16px;
-    margin: 0;
-    list-style: disc;
-}
-
-.usecase-bullets li {
-    font-size: 0.82rem;
-    color: var(--vp-c-text-2);
-    line-height: 1.6;
-    margin-bottom: 4px;
-}
-
-/* ----------------------------------------------------------
-   Quick Start
-   ---------------------------------------------------------- */
-.home-quickstart {
-    background: var(--vp-c-bg-alt);
-    border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.qs-tabs {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 32px;
-    border-bottom: 2px solid var(--vp-c-border);
-    padding-bottom: 0;
-}
-
-.qs-tab {
-    padding: 9px 18px;
-    font-size: 0.9rem;
-    font-weight: 500;
-    color: var(--vp-c-text-2);
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-    cursor: pointer;
-    border-radius: 0;
-    transition:
-        color 0.15s,
-        border-color 0.15s;
-}
-
-.qs-tab.active {
-    color: var(--vp-c-brand-1);
-    border-bottom-color: var(--vp-c-brand-1);
-    font-weight: 600;
-}
-
-.qs-tab:hover:not(.active) {
-    color: var(--vp-c-text-1);
-}
-
-.qs-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 28px;
-}
-
-.qs-step {
-    display: flex;
-    gap: 20px;
-    align-items: flex-start;
-}
-
-.qs-step-num {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: var(--vp-c-brand-1);
-    color: #fff;
-    font-size: 0.85rem;
-    font-weight: 700;
-    flex-shrink: 0;
-    margin-top: 4px;
-}
-
-.qs-step-body {
-    flex: 1;
-    min-width: 0;
-}
-
-.qs-step-title {
-    font-size: 1rem;
-    font-weight: 700;
-    color: var(--vp-c-text-1);
-    margin: 0 0 6px;
-}
-
-.qs-step-desc {
-    font-size: 0.875rem;
-    color: var(--vp-c-text-2);
-    margin: 0 0 12px;
-    line-height: 1.6;
-}
-
-.qs-code-block {
-    background: var(--code-bg);
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.qs-code-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 14px;
-    background: var(--code-header-bg);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.qs-code-lang {
-    font-size: 0.72rem;
-    color: rgba(255, 255, 255, 0.35);
-    font-family: monospace;
-    letter-spacing: 0.04em;
-}
-
-.qs-copy-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: rgba(255, 255, 255, 0.35);
-    padding: 2px;
-    display: flex;
-    align-items: center;
-    transition: color 0.15s;
-}
-.qs-copy-btn:hover {
-    color: rgba(255, 255, 255, 0.75);
-}
-
-.qs-code {
-    margin: 0;
-    padding: 16px;
-    font-size: 0.82rem;
-    line-height: 1.75;
-    font-family: "Menlo", "Monaco", "Consolas", monospace;
-    color: #cdd6f4;
-    overflow-x: auto;
-}
-
-.qs-code .token-keyword {
-    color: #89b4fa;
-}
-.qs-code .token-string {
-    color: #a6e3a1;
-}
-.qs-code .token-comment {
-    color: #6c7086;
-    font-style: italic;
-}
-.qs-code .token-function {
-    color: #89dceb;
-}
-.qs-code .token-number {
-    color: #fab387;
-}
-.qs-code .token-punctuation {
-    color: #cdd6f4;
-}
-.qs-code .token-operator {
-    color: #89b4fa;
-}
-
-.qs-footer {
-    margin-top: 36px;
-    text-align: center;
-}
-
-.qs-guide-link {
-    font-size: 0.9rem;
+.tdb-link {
     font-weight: 600;
     color: var(--vp-c-brand-1);
-    text-decoration: none !important;
-    transition: opacity 0.15s;
-}
-.qs-guide-link:hover {
-    opacity: 0.8;
+    text-decoration: none;
 }
 
-/* ----------------------------------------------------------
-   CTA Section
-   ---------------------------------------------------------- */
-.home-cta {
-    background: linear-gradient(135deg, #1a0f0a 0%, #2d1506 50%, #1a0f0a 100%);
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.cta-container {
-    max-width: var(--section-max);
-    margin: 0 auto;
-    padding: var(--section-py) var(--section-px);
-    text-align: center;
-}
-
-.cta-headline {
-    font-size: clamp(1.8rem, 3.5vw, 2.8rem);
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    color: #fff;
-    margin: 0 0 16px;
-}
-
-.cta-sub {
-    font-size: 1.1rem;
-    color: rgba(255, 255, 255, 0.6);
-    margin: 0 0 36px;
-    line-height: 1.6;
-}
-
-.cta-actions {
-    display: flex;
-    gap: 14px;
-    justify-content: center;
-    flex-wrap: wrap;
-    margin-bottom: 28px;
-}
-
-.cta-actions .btn-primary {
-    background: var(--vp-c-brand-1);
-    border-color: var(--vp-c-brand-1);
-}
-
-.cta-actions .btn-secondary {
-    background: transparent;
-    border-color: rgba(255, 255, 255, 0.3);
-    color: rgba(255, 255, 255, 0.85) !important;
-}
-.cta-actions .btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.5);
-}
-
-.cta-links {
-    display: flex;
-    gap: 12px;
-    justify-content: center;
-    align-items: center;
-    font-size: 0.85rem;
-}
-
-.cta-links a {
-    color: rgba(255, 255, 255, 0.45);
-    text-decoration: none !important;
-    transition: color 0.15s;
-}
-.cta-links a:hover {
-    color: rgba(255, 255, 255, 0.8);
-}
-
-.cta-links span {
-    color: rgba(255, 255, 255, 0.2);
-}
-
-.cta-sponsor-note {
-    margin-top: 20px;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.38);
-}
-
-.cta-sponsor-note a {
-    color: rgba(255, 255, 255, 0.55);
+.tdb-link:hover {
     text-decoration: underline;
-    text-underline-offset: 2px;
-    transition: color 0.15s;
+    text-underline-offset: 3px;
 }
 
-.cta-sponsor-note a:hover {
-    color: rgba(255, 255, 255, 0.85);
+/* Buttons (sized for 44px touch targets) */
+.tdb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 20px;
+    border: 1px solid transparent;
+    border-radius: var(--tdb-radius-sm);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition:
+        background-color 0.15s,
+        border-color 0.15s,
+        color 0.15s;
 }
 
-/* ----------------------------------------------------------
-   VitePress nav / footer overrides
-   ---------------------------------------------------------- */
-.VPNav {
-    border-bottom: 1px solid var(--vp-c-divider) !important;
-    backdrop-filter: saturate(180%) blur(12px);
-    background: rgba(255, 255, 255, 0.88) !important;
+.tdb-btn--primary {
+    background: var(--vp-c-brand-3);
+    color: #fff;
 }
 
-.VPFooter {
+.tdb-btn--primary:hover {
+    background: var(--tdb-blue-700);
+}
+
+.tdb-btn--secondary {
+    background: var(--vp-c-bg);
+    border-color: var(--vp-c-border);
+    color: var(--vp-c-text-1);
+}
+
+.tdb-btn--secondary:hover {
+    border-color: var(--vp-c-text-3);
+}
+
+/* Code panels on the home page reuse VitePress's Shiki output; this only
+   frames them. */
+.tdb-code {
+    border: 1px solid var(--vp-c-divider);
+    border-radius: var(--tdb-radius);
+    background: var(--vp-c-bg-alt);
+    overflow: hidden;
+}
+
+.tdb-code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--vp-c-divider);
+    font-family: var(--vp-font-family-mono);
+    font-size: 0.75rem;
+    color: var(--vp-c-text-2);
+}
+
+.tdb-code .vp-doc div[class*="language-"] {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.tdb-code .vp-doc div[class*="language-"] + div[class*="language-"] {
     border-top: 1px solid var(--vp-c-divider);
-    padding: 24px var(--section-px);
 }
 
-.vp-doc table {
-    display: revert !important;
+.tdb-code .vp-doc pre {
+    padding: 16px 0;
 }
 
-.vp-doc p {
-    margin: 0px !important;
+.tdb-code .vp-doc code {
+    font-size: 0.8125rem;
 }
 
-/* ----------------------------------------------------------
-   Responsive
-   ---------------------------------------------------------- */
+/* The lang label duplicates the panel header */
+.tdb-code .vp-doc div[class*="language-"] > span.lang {
+    display: none;
+}
 
-/* ── Tablet / large mobile (≤ 860px) ── */
-@media (max-width: 860px) {
-    :root {
-        --section-py: 60px;
-        --section-px: 24px;
+@media (max-width: 639px) {
+    /* Undo VitePress's phone-width bleed inside framed panels */
+    .tdb-code .vp-doc div[class*="language-"] {
+        margin: 0;
     }
 
-    .hero-container {
-        grid-template-columns: 1fr;
-        padding-top: 48px;
-        padding-bottom: 56px;
-        gap: 40px;
-    }
-
-    /* Code window appears above the copy on narrow screens */
-    .hero-right {
-        order: -1;
-        min-width: 0; /* prevent grid blowout */
-        max-width: 100%;
-    }
-
-    .hero-headline {
-        font-size: clamp(2rem, 6vw, 2.8rem);
-    }
-
-    .code-window-body {
+    .tdb-code .vp-doc code {
         font-size: 0.75rem;
-        padding: 16px;
-    }
-
-    /* Comparison table: enable horizontal scroll and shrink columns */
-    .comparison-table-wrap {
-        -webkit-overflow-scrolling: touch;
-    }
-
-    .comparison-table .col-feature {
-        min-width: 160px;
-    }
-
-    /* Quick-start tabs: allow horizontal scroll on tight viewports */
-    .qs-tabs {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        flex-wrap: nowrap;
-        padding-bottom: 0;
-    }
-    .qs-tabs::-webkit-scrollbar {
-        display: none;
-    }
-
-    .qs-tab {
-        white-space: nowrap;
-    }
-}
-
-/* ── Small mobile (≤ 560px) ── */
-@media (max-width: 560px) {
-    :root {
-        --section-py: 48px;
-        --section-px: 16px;
-    }
-
-    /* Hero */
-    .hero-actions {
-        flex-direction: column;
-    }
-    .hero-actions .btn {
-        width: 100%;
-        justify-content: center;
-    }
-    .hero-sub {
-        font-size: 1rem;
-    }
-    .hero-install code {
-        font-size: 0.78rem;
-    }
-
-    /* Code window */
-    .code-window-body {
-        font-size: 0.72rem;
-        padding: 12px;
-    }
-    .code-window-header {
-        padding: 10px 12px;
-    }
-
-    /* Social proof */
-    .sp-container {
-        gap: 10px;
-    }
-    .sp-divider {
-        display: none;
-    }
-
-    /* Features / use-cases — single column on very small screens */
-    .features-grid,
-    .usecases-grid {
-        grid-template-columns: 1fr;
-    }
-
-    /* Comparison table — switch to auto layout so columns shrink naturally */
-    .comparison-table {
-        font-size: 0.8rem;
-        table-layout: auto;
-    }
-    .comparison-table .col-feature {
-        width: auto;
-    }
-    .comparison-table th:not(.col-feature),
-    .comparison-table td:not(.col-feature) {
-        width: auto;
-    }
-    .comparison-table th,
-    .comparison-table td {
-        padding: 10px 10px;
-    }
-    .comparison-table th.col-feature,
-    .comparison-table td.col-feature {
-        min-width: 130px;
-        padding-left: 12px;
-    }
-
-    /* Quick-start tabs */
-    .qs-tab {
-        padding: 8px 12px;
-        font-size: 0.82rem;
-    }
-
-    /* Quick-start steps — tighter gap */
-    .qs-step {
-        gap: 14px;
-    }
-    .qs-step-num {
-        width: 28px;
-        height: 28px;
-        font-size: 0.78rem;
-    }
-
-    /* CTA */
-    .cta-headline {
-        font-size: clamp(1.5rem, 7vw, 2rem);
-    }
-    .cta-actions {
-        flex-direction: column;
-        align-items: center;
-    }
-    .cta-actions .btn {
-        width: 100%;
-        max-width: 300px;
-        justify-content: center;
-    }
-    .cta-links {
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 8px;
-    }
-
-    /* Section headers */
-    .section-header {
-        margin-bottom: 36px;
-    }
-    .section-sub {
-        font-size: 1rem;
-    }
-
-    /* Footer links — stack on very narrow screens */
-    .VPFooter .message {
-        line-height: 2;
-    }
-}
-
-/* ── Extra-small (≤ 375px) ── */
-@media (max-width: 375px) {
-    :root {
-        --section-px: 12px;
-    }
-
-    .hero-headline {
-        font-size: clamp(1.7rem, 8vw, 2.2rem);
-    }
-
-    .badge {
-        font-size: 0.65rem;
-        padding: 2px 8px;
-    }
-
-    .qs-tab {
-        padding: 7px 10px;
-        font-size: 0.78rem;
-    }
-
-    .comparison-table {
-        font-size: 0.75rem;
-    }
-    .comparison-table th,
-    .comparison-table td {
-        padding: 8px 8px;
     }
 }

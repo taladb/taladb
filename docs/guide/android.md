@@ -32,7 +32,7 @@ plugins {
 }
 
 dependencies {
-    implementation("dev.taladb:taladb-android:0.1.1")
+    implementation("dev.taladb:taladb-android:0.2.3")
 }
 ```
 

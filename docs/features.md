@@ -9,7 +9,7 @@ TalaDB combines a full document database with built-in vector search. Documents,
 
 ## Vector index and similarity search
 
-TalaDB v0.2 introduces on-device vector indexes — the first embedded JavaScript database to natively combine document queries with vector similarity search.
+Vector indexes live in the same engine as your documents, so one query can combine metadata filters with vector similarity search.
 
 ### Creating a vector index
 
